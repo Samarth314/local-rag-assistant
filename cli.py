@@ -7,7 +7,8 @@ Usage:
     python cli.py serve
 
 Answer tiers (all retrieval stays local; only --deep leaves the machine):
-  (no flag)  auto-route: a cheap classifier picks fast vs good per question
+  (no flag)  auto-route: a cheap classifier picks fast vs good per question;
+             if the fast answer looks incomplete, it auto-retries once on good
   --fast     force the small/fast local model (CHAT_MODEL)
   --good     force the stronger local model (GOOD_MODEL)
   --deep     escalate to Claude in the cloud (needs ANTHROPIC_API_KEY)
@@ -46,7 +47,8 @@ def main():
         import time
         from pathlib import Path
 
-        from llm import chat, cloud_chat, embed, expand_query, route_query
+        from llm import (chat, cloud_chat, embed, expand_query, looks_incomplete,
+                         route_query)
         import store
         import config
 
@@ -83,6 +85,14 @@ def main():
         else:
             tier = "fast"
 
+        # The escalate-on-failure backstop only catches auto-routed fast answers:
+        # an explicit --fast/--good/--deep is honored as-is, and it never crosses
+        # to the cloud (good is the ceiling for auto-escalation).
+        escalatable = (
+            config.ESCALATE_ON_FAILURE and config.AUTOROUTE
+            and not (deep or good or fast) and tier == "fast"
+        )
+
         variants = expand_query(question)
         stages.append(("expand", time.perf_counter() - t)); t = time.perf_counter()
 
@@ -117,6 +127,19 @@ def main():
             answer = chat(system_prompt, context_chunks, question, stream=True,
                           model=gen_model)
         stages.append((f"generate ({gen_model})", time.perf_counter() - t))
+
+        # Backstop: if auto-routing chose fast and the answer looks like the
+        # small model couldn't answer -- but retrieval did surface relevant
+        # excerpts (so the info is probably there) -- retry once on the good
+        # tier. Bounded to a single local retry; never touches the cloud.
+        if escalatable and matches and looks_incomplete(answer):
+            t = time.perf_counter()
+            print(f"\n[escalate] fast answer looked incomplete -- retrying on "
+                  f"{config.GOOD_MODEL}\n")
+            gen_model = config.GOOD_MODEL
+            answer = chat(system_prompt, context_chunks, question, stream=True,
+                          model=gen_model)
+            stages.append((f"escalate ({gen_model})", time.perf_counter() - t))
 
         print("\nSources:")
         for m in matches:

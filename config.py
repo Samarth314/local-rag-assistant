@@ -37,6 +37,12 @@ CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
 # cloud -- that stays explicit (--deep). Set RAG_AUTOROUTE=0 to always use the
 # fast tier by default instead.
 AUTOROUTE = os.environ.get("RAG_AUTOROUTE", "1") == "1"
+
+# Escalate-on-failure backstop: when auto-routing chose the fast tier and the
+# answer looks like the model couldn't answer from the context, retry once on
+# the good tier. Only fires under auto-routing (an explicit --fast is honored
+# as-is) and never escalates to the cloud -- that stays explicit (--deep).
+ESCALATE_ON_FAILURE = os.environ.get("RAG_ESCALATE", "1") == "1"
 # Context window per chat call. A hybrid RAG query is ~3-4k tokens (TOP_K
 # chunks + prompt + answer), so 8k gives 2x headroom while keeping the 14B's
 # KV cache to ~1.5GB. 32k ballooned the cache to ~6GB and starved the machine

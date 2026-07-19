@@ -74,6 +74,27 @@ def _build_prompt(context_chunks: list[str], user_query: str) -> str:
     )
 
 
+# Strong signals that the model couldn't answer from the retrieved context.
+# Deliberately narrow -- refusal-style phrasing, not soft qualifiers -- so a
+# genuine answer that happens to say "not specified" in passing doesn't trip it.
+_FAILURE_SIGNALS = (
+    "does not contain", "doesn't contain", "do not contain",
+    "cannot answer", "can't answer", "unable to answer", "cannot determine",
+    "no relevant information", "not enough information", "insufficient information",
+    "does not provide", "doesn't provide", "no information about",
+    "the context does not", "excerpts do not", "not found in the",
+    "no mention of", "does not mention",
+)
+
+
+def looks_incomplete(answer: str) -> bool:
+    """True if the answer reads like the model couldn't answer from the context
+    (refusal / hedging). Used by the escalate-on-failure backstop to decide
+    whether to retry one tier up."""
+    low = answer.lower()
+    return any(sig in low for sig in _FAILURE_SIGNALS)
+
+
 def route_query(question: str) -> str:
     """Classify a question as 'fast' (simple lookup/summary) or 'good' (needs
     synthesis/reasoning), via one cheap call on the small model. Biases toward
