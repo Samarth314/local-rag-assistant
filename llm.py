@@ -74,11 +74,37 @@ def _build_prompt(context_chunks: list[str], user_query: str) -> str:
     )
 
 
+def route_query(question: str) -> str:
+    """Classify a question as 'fast' (simple lookup/summary) or 'good' (needs
+    synthesis/reasoning), via one cheap call on the small model. Biases toward
+    'fast' on any failure or ambiguity -- misrouting an easy question to the big
+    model just wastes a few seconds, so err cheap."""
+    prompt = (
+        "Classify this question for a document assistant as SIMPLE or COMPLEX.\n"
+        "SIMPLE = a direct factual lookup, single value, or short summary "
+        "(who / what / when / where / how much / list).\n"
+        "COMPLEX = comparison, multi-step reasoning, synthesis across topics, "
+        "explaining why, or applying information to a scenario.\n"
+        "Answer with exactly one word: SIMPLE or COMPLEX.\n\n"
+        f"Question: {question}"
+    )
+    try:
+        response = ollama.chat(
+            model=config.EXPAND_MODEL,  # reuse the small model already loaded
+            messages=[{"role": "user", "content": prompt}],
+            options={"num_ctx": 2048, "num_predict": 8},
+        )
+        return "good" if "COMPLEX" in response["message"]["content"].upper() else "fast"
+    except Exception:
+        return "fast"
+
+
 def chat(
     system_prompt: str,
     context_chunks: list[str],
     user_query: str,
     stream: bool = False,
+    model: str | None = None,
 ) -> str:
     prompt = _build_prompt(context_chunks, user_query)
 
@@ -88,13 +114,14 @@ def chat(
     ]
 
     options = {"num_ctx": config.NUM_CTX}
+    model = model or config.CHAT_MODEL
 
     if stream:
         # Print tokens as they arrive, but still return the full text so
         # callers can use the answer the same way as the non-streaming path.
         parts = []
         for chunk in ollama.chat(
-            model=config.CHAT_MODEL, messages=messages, options=options, stream=True
+            model=model, messages=messages, options=options, stream=True
         ):
             piece = chunk["message"]["content"]
             parts.append(piece)
@@ -102,7 +129,7 @@ def chat(
         print()
         return "".join(parts)
 
-    response = ollama.chat(model=config.CHAT_MODEL, messages=messages, options=options)
+    response = ollama.chat(model=model, messages=messages, options=options)
     return response["message"]["content"]
 
 

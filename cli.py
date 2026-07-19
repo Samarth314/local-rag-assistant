@@ -2,13 +2,16 @@
 
 Usage:
     python cli.py index <directory> [--limit N]
-    python cli.py query "<question>" [--deep] [--timing]
+    python cli.py query "<question>" [--fast|--good|--deep] [--timing]
     python cli.py list
     python cli.py serve
 
---deep escalates the question to Claude in the cloud: retrieval still runs
-locally, but the retrieved excerpts and question are sent to the Anthropic API
-(requires ANTHROPIC_API_KEY).
+Answer tiers (all retrieval stays local; only --deep leaves the machine):
+  (no flag)  auto-route: a cheap classifier picks fast vs good per question
+  --fast     force the small/fast local model (CHAT_MODEL)
+  --good     force the stronger local model (GOOD_MODEL)
+  --deep     escalate to Claude in the cloud (needs ANTHROPIC_API_KEY)
+--timing prints a per-stage time breakdown.
 """
 
 import sys
@@ -43,16 +46,18 @@ def main():
         import time
         from pathlib import Path
 
-        from llm import chat, cloud_chat, embed, expand_query
+        from llm import chat, cloud_chat, embed, expand_query, route_query
         import store
         import config
 
-        flags = {"--deep", "--timing"}
+        flags = {"--deep", "--good", "--fast", "--timing"}
         args = [a for a in sys.argv[2:] if a not in flags]
         deep = "--deep" in sys.argv[2:]
+        good = "--good" in sys.argv[2:]
+        fast = "--fast" in sys.argv[2:]
         timing = "--timing" in sys.argv[2:]
         if not args:
-            print('Usage: python cli.py query "<question>" [--deep] [--timing]')
+            print('Usage: python cli.py query "<question>" [--fast|--good|--deep] [--timing]')
             sys.exit(1)
         question = args[0]
         if store.count_rows() == 0:
@@ -61,6 +66,22 @@ def main():
 
         stages: list[tuple[str, float]] = []
         t = time.perf_counter()
+
+        # Decide the tier. Explicit flags win; otherwise auto-route between the
+        # fast and thorough local models (never the cloud -- that's --deep only).
+        if deep:
+            tier = "deep"
+        elif good:
+            tier = "good"
+        elif fast:
+            tier = "fast"
+        elif config.AUTOROUTE:
+            tier = route_query(question)  # "fast" or "good"
+            stages.append(("route", time.perf_counter() - t)); t = time.perf_counter()
+            print(f"[auto] {tier} tier "
+                  f"({config.GOOD_MODEL if tier == 'good' else config.CHAT_MODEL})\n")
+        else:
+            tier = "fast"
 
         variants = expand_query(question)
         stages.append(("expand", time.perf_counter() - t)); t = time.perf_counter()
@@ -76,7 +97,7 @@ def main():
             "You are a personal search assistant with access to the user's own "
             "files. Answer only from the excerpts provided."
         )
-        if deep:
+        if tier == "deep":
             files = sorted({Path(m["path"]).name for m in matches})
             print(f"[deep] Escalating to {config.CLOUD_MODEL} -- sending excerpts "
                   f"from {len(files)} file(s): {', '.join(files)}\n")
@@ -92,8 +113,9 @@ def main():
                 raise
             gen_model = config.CLOUD_MODEL
         else:
-            answer = chat(system_prompt, context_chunks, question, stream=True)
-            gen_model = config.CHAT_MODEL
+            gen_model = config.GOOD_MODEL if tier == "good" else config.CHAT_MODEL
+            answer = chat(system_prompt, context_chunks, question, stream=True,
+                          model=gen_model)
         stages.append((f"generate ({gen_model})", time.perf_counter() - t))
 
         print("\nSources:")

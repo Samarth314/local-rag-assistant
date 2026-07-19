@@ -22,9 +22,21 @@ CHAT_MODEL = os.environ.get("RAG_CHAT_MODEL", "qwen2.5:14b-instruct")
 # a dev-machine accommodation.
 EXPAND_MODEL = os.environ.get("RAG_EXPAND_MODEL", "qwen2.5:7b-instruct-64k")
 
+# Local "thorough" tier (--good, or auto-routed for complex questions): a
+# stronger local model for synthesis/reasoning. gpt-oss:20b (MoE) is the pick
+# on the Jetson -- faster than a dense 14B and better grounded. Doesn't fit a
+# 24GB Mac well, so keep it Jetson-side via the compose env.
+GOOD_MODEL = os.environ.get("RAG_GOOD_MODEL", "gpt-oss:20b")
+
 # Cloud escalation (--deep): retrieval always stays local; only the retrieved
 # excerpts + question are sent, and only when the user explicitly asks.
 CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
+
+# Auto-routing (no flag): a cheap classification call on the small model decides
+# fast tier (CHAT_MODEL) vs thorough tier (GOOD_MODEL). Never auto-routes to the
+# cloud -- that stays explicit (--deep). Set RAG_AUTOROUTE=0 to always use the
+# fast tier by default instead.
+AUTOROUTE = os.environ.get("RAG_AUTOROUTE", "1") == "1"
 # Context window per chat call. A hybrid RAG query is ~3-4k tokens (TOP_K
 # chunks + prompt + answer), so 8k gives 2x headroom while keeping the 14B's
 # KV cache to ~1.5GB. 32k ballooned the cache to ~6GB and starved the machine
