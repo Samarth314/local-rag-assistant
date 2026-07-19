@@ -1,0 +1,16 @@
+# Container dependencies: core only. The reranker (sentence-transformers +
+# torch, ~2GB) is excluded because RERANK_ENABLED is off by default -- add it
+# back here if you ever turn reranking on in the container.
+lancedb
+pyarrow
+ollama
+pymupdf
+python-docx
+openpyxl
+fastapi
+uvicorn
+pydantic
+# OCR for image-based PDFs (Linux path; Apple Vision is Mac-only)
+rapidocr-onnxruntime
+# Cloud escalation (--deep)
+anthropic

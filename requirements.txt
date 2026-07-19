@@ -1,0 +1,20 @@
+lancedb
+pyarrow
+ollama
+pymupdf
+python-docx
+openpyxl
+fastapi
+uvicorn
+pydantic
+# OCR for image-based PDFs: ocrmac uses Apple Vision (macOS only).
+# On Linux/Jetson install rapidocr-onnxruntime instead -- extractors.py
+# picks whichever backend is available at runtime.
+ocrmac; sys_platform == "darwin"
+rapidocr-onnxruntime; sys_platform != "darwin"
+# Cross-encoder reranker (pulls torch + transformers). Runs on Mac (MPS/CPU)
+# and Jetson (CUDA). Model BAAI/bge-reranker-base downloads on first use.
+sentence-transformers
+# Cloud escalation (--deep): sends retrieved excerpts to Claude on explicit
+# request. Needs ANTHROPIC_API_KEY.
+anthropic

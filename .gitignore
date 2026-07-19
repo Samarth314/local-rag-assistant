@@ -1,0 +1,8 @@
+# Personal data -- the index contains extracted text of indexed documents.
+# Never commit.
+data/
+
+.venv/
+__pycache__/
+*.pyc
+.DS_Store

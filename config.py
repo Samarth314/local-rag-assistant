@@ -1,0 +1,92 @@
+import os
+from pathlib import Path
+
+# Where the LanceDB database and indexing state live. Overridable so a
+# container can keep its index on a mounted volume.
+DATA_DIR = Path(os.environ.get("RAG_DATA_DIR", Path(__file__).parent / "data"))
+DB_PATH = str(DATA_DIR / "lancedb")
+STATE_FILE = DATA_DIR / "index_state.json"
+CHUNKS_TABLE = "chunks"
+
+# Ollama models (pull with: ollama pull <model>)
+EMBED_MODEL = "nomic-embed-text"   # 768-dim embeddings
+EMBED_DIM = 768
+# 14B is the deployment target (the Jetson AGX runs it comfortably); it's the
+# default so we tune against production quality, not this dev machine. For fast
+# local iteration, override without editing code:
+#   RAG_CHAT_MODEL=qwen2.5:7b-instruct-64k python cli.py query "..."
+CHAT_MODEL = os.environ.get("RAG_CHAT_MODEL", "qwen2.5:14b-instruct")
+
+# Query expansion is a trivial rewrite task -- run it on a small model so the
+# big model's time goes to answering. Right choice on the Jetson too, not just
+# a dev-machine accommodation.
+EXPAND_MODEL = os.environ.get("RAG_EXPAND_MODEL", "qwen2.5:7b-instruct-64k")
+
+# Cloud escalation (--deep): retrieval always stays local; only the retrieved
+# excerpts + question are sent, and only when the user explicitly asks.
+CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
+# Context window per chat call. A hybrid RAG query is ~3-4k tokens (TOP_K
+# chunks + prompt + answer), so 8k gives 2x headroom while keeping the 14B's
+# KV cache to ~1.5GB. 32k ballooned the cache to ~6GB and starved the machine
+# (memory pressure -> compression -> slow tokens). Bump only if a future
+# whole-document mode needs to stuff a full PDF into one call.
+NUM_CTX = 8192
+
+# Chunking (word-based, no tokenizer dependency needed)
+CHUNK_SIZE_WORDS = 300
+CHUNK_OVERLAP_WORDS = 50
+
+# Retrieval
+TOP_K = 8
+MAX_DISTANCE = 0.55  # cosine distance cutoff; chunks farther than this are treated as noise
+
+# Reranking: hybrid search casts a wide net (RERANK_CANDIDATES), then a
+# cross-encoder rescores those against the query and keeps the true TOP_K.
+# OFF by default: on this corpus the base cross-encoder regressed hard cases
+# (it rewards prose that "sounds like" the query, hurting structured-table
+# lookups, and gets fooled by ambiguous terms shared across documents).
+# Kept behind a flag to revisit with a stronger model. Set RAG_RERANK=1 to try.
+RERANK_ENABLED = os.environ.get("RAG_RERANK", "0") == "1"
+RERANK_MODEL = os.environ.get("RAG_RERANK_MODEL", "BAAI/bge-reranker-base")
+RERANK_CANDIDATES = 30
+
+# Whole-document read: the max characters returned when reading a full document
+# (rather than searching chunks). ~24k chars ≈ 6k tokens, safely under NUM_CTX
+# with room for the prompt and answer. Larger documents are truncated with a
+# note, and the agent is told to fall back to search for those.
+READ_DOC_MAX_CHARS = 24000
+
+# Cap on how many filenames list_documents returns in one call, so a large
+# index can't flood the agent's context window. The agent is told to filter.
+LIST_DOCS_LIMIT = 40
+
+# Document extensions. Deliberately excludes code/config (.py/.js/.json/...):
+# this is a personal-document assistant, and indexing source trees pulled in
+# minified JS bundles, virtualenv assets, and JSON data dumps that polluted
+# retrieval. Point it at a code folder on purpose if you ever want that.
+SUPPORTED_EXTENSIONS = {
+    ".pdf", ".docx", ".xlsx",
+    ".txt", ".md", ".rst",
+}
+
+# Specific files to never index, by exact filename (noise we've chosen to
+# exclude even though the extension is supported).
+EXCLUDED_FILES = {
+    "RealEstatePrinciples.pdf",
+}
+
+# Directories to never walk into
+EXCLUDED_DIRS = {
+    ".git", "node_modules", "__pycache__", ".venv", "venv", "env", "myenv",
+    "dist", "build", ".next", ".cache", "site-packages", ".idea", ".vscode",
+    "miniforge3", "miniconda3", "anaconda3", ".conda",
+    "My Tableau Repository",
+}
+
+# Skip files larger than this (avoid choking on huge binaries/logs)
+MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
+# Tighter cap for plain-text files (.txt/.md/.rst): real notes are small, so a
+# multi-hundred-KB text file is almost always a dataset/log/training corpus
+# (e.g. a 1MB Shakespeare input.txt), not a document. PDFs are exempt.
+MAX_TEXT_FILE_BYTES = 256 * 1024  # 256 KB
+PLAINTEXT_EXTENSIONS = {".txt", ".md", ".rst"}
