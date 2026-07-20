@@ -124,8 +124,9 @@ def main():
             gen_model = config.CLOUD_MODEL
         else:
             gen_model = config.GOOD_MODEL if tier == "good" else config.CHAT_MODEL
+            think = config.GOOD_MODEL_THINK if tier == "good" else None
             answer = chat(system_prompt, context_chunks, question, stream=True,
-                          model=gen_model)
+                          model=gen_model, think=think)
         stages.append((f"generate ({gen_model})", time.perf_counter() - t))
 
         # Backstop: if auto-routing chose fast and the answer looks like the
@@ -138,7 +139,7 @@ def main():
                   f"{config.GOOD_MODEL}\n")
             gen_model = config.GOOD_MODEL
             answer = chat(system_prompt, context_chunks, question, stream=True,
-                          model=gen_model)
+                          model=gen_model, think=config.GOOD_MODEL_THINK)
             stages.append((f"escalate ({gen_model})", time.perf_counter() - t))
 
         print("\nSources:")

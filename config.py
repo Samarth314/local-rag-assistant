@@ -28,6 +28,12 @@ EXPAND_MODEL = os.environ.get("RAG_EXPAND_MODEL", "qwen2.5:7b-instruct-64k")
 # 24GB Mac well, so keep it Jetson-side via the compose env.
 GOOD_MODEL = os.environ.get("RAG_GOOD_MODEL", "gpt-oss:20b")
 
+# Reasoning effort for the good tier (gpt-oss supports low/medium/high via
+# Ollama's `think` param). Unset uses the model's own default. Lower effort
+# trades reasoning depth for speed -- only worth it if quality holds up on
+# real grounded queries, not synthetic ones.
+GOOD_MODEL_THINK = os.environ.get("RAG_GOOD_THINK") or None
+
 # Cloud escalation (--deep): retrieval always stays local; only the retrieved
 # excerpts + question are sent, and only when the user explicitly asks.
 CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")

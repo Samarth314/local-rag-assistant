@@ -141,6 +141,7 @@ def chat(
     user_query: str,
     stream: bool = False,
     model: str | None = None,
+    think: str | None = None,
 ) -> str:
     prompt = _build_prompt(context_chunks, user_query)
 
@@ -151,21 +152,22 @@ def chat(
 
     options = {"num_ctx": config.NUM_CTX}
     model = model or config.CHAT_MODEL
+    kwargs = {"model": model, "messages": messages, "options": options}
+    if think:
+        kwargs["think"] = think
 
     if stream:
         # Print tokens as they arrive, but still return the full text so
         # callers can use the answer the same way as the non-streaming path.
         parts = []
-        for chunk in ollama.chat(
-            model=model, messages=messages, options=options, stream=True
-        ):
+        for chunk in ollama.chat(**kwargs, stream=True):
             piece = chunk["message"]["content"]
             parts.append(piece)
             print(piece, end="", flush=True)
         print()
         return "".join(parts)
 
-    response = ollama.chat(model=model, messages=messages, options=options)
+    response = ollama.chat(**kwargs)
     return response["message"]["content"]
 
 
