@@ -84,6 +84,7 @@ _FAILURE_SIGNALS = (
     "does not provide", "doesn't provide", "no information about",
     "the context does not", "excerpts do not", "not found in the",
     "no mention of", "does not mention",
+    "does not include", "doesn't include",
 )
 
 
