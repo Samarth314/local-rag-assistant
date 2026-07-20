@@ -95,6 +95,17 @@ def looks_incomplete(answer: str) -> bool:
     return any(sig in low for sig in _FAILURE_SIGNALS)
 
 
+def retrieval_supports_escalation(matches: list[dict]) -> bool:
+    """True if at least one retrieved chunk is a strong semantic match (low
+    cosine distance). Chunks found only via keyword search, or whose vector
+    distance is borderline, don't carry this signal -- so a refusal next to
+    those is trusted as-is rather than retried on a bigger model."""
+    return any(
+        m.get("_distance") is not None and m["_distance"] <= config.ESCALATE_DISTANCE_THRESHOLD
+        for m in matches
+    )
+
+
 def route_query(question: str) -> str:
     """Classify a question as 'fast' (simple lookup/summary) or 'good' (needs
     synthesis/reasoning), via one cheap call on the small model. Biases toward

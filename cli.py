@@ -48,7 +48,7 @@ def main():
         from pathlib import Path
 
         from llm import (chat, cloud_chat, embed, expand_query, looks_incomplete,
-                         route_query)
+                         retrieval_supports_escalation, route_query)
         import store
         import config
 
@@ -134,13 +134,18 @@ def main():
         # excerpts (so the info is probably there) -- retry once on the good
         # tier. Bounded to a single local retry; never touches the cloud.
         if escalatable and matches and looks_incomplete(answer):
-            t = time.perf_counter()
-            print(f"\n[escalate] fast answer looked incomplete -- retrying on "
-                  f"{config.GOOD_MODEL}\n")
-            gen_model = config.GOOD_MODEL
-            answer = chat(system_prompt, context_chunks, question, stream=True,
-                          model=gen_model, think=config.GOOD_MODEL_THINK)
-            stages.append((f"escalate ({gen_model})", time.perf_counter() - t))
+            if retrieval_supports_escalation(matches):
+                t = time.perf_counter()
+                print(f"\n[escalate] fast answer looked incomplete -- retrying on "
+                      f"{config.GOOD_MODEL}\n")
+                gen_model = config.GOOD_MODEL
+                answer = chat(system_prompt, context_chunks, question, stream=True,
+                              model=gen_model, think=config.GOOD_MODEL_THINK)
+                stages.append((f"escalate ({gen_model})", time.perf_counter() - t))
+            else:
+                print(f"\n[escalate] fast answer looked incomplete, but no "
+                      f"strong-relevance match was retrieved -- trusting the "
+                      f"refusal instead of retrying\n")
 
         print("\nSources:")
         for m in matches:

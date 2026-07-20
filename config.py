@@ -49,6 +49,14 @@ AUTOROUTE = os.environ.get("RAG_AUTOROUTE", "1") == "1"
 # the good tier. Only fires under auto-routing (an explicit --fast is honored
 # as-is) and never escalates to the cloud -- that stays explicit (--deep).
 ESCALATE_ON_FAILURE = os.environ.get("RAG_ESCALATE", "1") == "1"
+
+# Escalate-on-failure only retries if at least one retrieved chunk is a
+# strong semantic match (cosine distance at or below this). A refusal next to
+# only weak/keyword-only matches is very likely a genuine "not in the docs"
+# case -- retrying there just burns 10-15s for the same answer (validated:
+# every escalate case on the sample corpus agreed with the fast-tier refusal).
+# A refusal next to a *strong* match is the suspicious case worth retrying.
+ESCALATE_DISTANCE_THRESHOLD = float(os.environ.get("RAG_ESCALATE_DISTANCE", "0.4"))
 # Context window per chat call. A hybrid RAG query is ~3-4k tokens (TOP_K
 # chunks + prompt + answer), so 8k gives 2x headroom while keeping the 14B's
 # KV cache to ~1.5GB. 32k ballooned the cache to ~6GB and starved the machine
