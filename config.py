@@ -45,6 +45,17 @@ CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
 # only via --deep"; set RAG_AUTO_CLOUD=0 to keep that boundary absolute.
 AUTO_CLOUD = os.environ.get("RAG_AUTO_CLOUD", "1") == "1"
 
+# Heuristic pre-router: unambiguous questions are routed instantly by regex
+# (router.py) and skip the 1.5-6s LLM preprocess call; only ambiguous ones
+# pay for it. RAG_HEURISTIC=0 restores LLM-classification for every query.
+HEURISTIC_ROUTE = os.environ.get("RAG_HEURISTIC", "1") == "1"
+
+# Local query-trace log: one JSON line per query (question, tier, latency,
+# escalation outcome) under DATA_DIR. Strictly local -- the raw material for
+# routing-accuracy stats and an eventual learned router. RAG_LOG=0 disables.
+LOG_ENABLED = os.environ.get("RAG_LOG", "1") == "1"
+LOG_FILE = DATA_DIR / "query_log.jsonl"
+
 # Auto-routing (no flag): a cheap classification call on the small model decides
 # fast tier (CHAT_MODEL) vs thorough tier (GOOD_MODEL). Never auto-routes to the
 # cloud -- that stays explicit (--deep). Set RAG_AUTOROUTE=0 to always use the

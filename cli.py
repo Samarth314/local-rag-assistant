@@ -50,8 +50,10 @@ def main():
         from llm import (chat, cloud_chat, cloud_world, embed, expand_query,
                          looks_incomplete, preprocess_query,
                          retrieval_supports_escalation)
+        from router import heuristic_route
         import store
         import config
+        import traces
 
         flags = {"--deep", "--good", "--fast", "--timing"}
         args = [a for a in sys.argv[2:] if a not in flags]
@@ -69,20 +71,45 @@ def main():
 
         stages: list[tuple[str, float]] = []
         t = time.perf_counter()
+        t_start = t
 
-        # Decide the tier. Explicit flags win; otherwise one merged call on the
-        # small model both routes (fast/good/meta) and expands the query --
-        # merged because two separate calls serialize on a single GPU anyway,
-        # so one prompt costs one prefill instead of two.
+        # Trace record, filled in as the query flows through and written on
+        # every exit path. Strictly local (lives next to the index).
+        trace = {"question": question, "route": "auto", "heuristic": False,
+                 "escalated": False, "escalate_skipped": False}
+
+        def _finish_trace(tier_final, gen_model=None, n_matches=0, answer=""):
+            trace.update(
+                tier=tier_final, model=gen_model,
+                stages={name: round(d, 2) for name, d in stages},
+                total_s=round(time.perf_counter() - t_start, 2),
+                n_matches=n_matches, answer_words=len(answer.split()),
+            )
+            traces.log(trace)
+
+        # Decide the tier. Explicit flags win. Otherwise try the instant
+        # heuristic pre-router first (regex, ~0ms); only ambiguous questions
+        # pay for the LLM preprocess call (which also does query expansion --
+        # heuristic-routed queries search on the raw question and expand
+        # on demand only if retrieval comes back weak).
         if deep:
             tier = "deep"
+            trace["route"] = "flag"
         elif good:
             tier = "good"
+            trace["route"] = "flag"
         elif fast:
             tier = "fast"
+            trace["route"] = "flag"
         elif config.AUTOROUTE:
-            tier, variants = preprocess_query(question)
-            stages.append(("preprocess", time.perf_counter() - t)); t = time.perf_counter()
+            tier = heuristic_route(question) if config.HEURISTIC_ROUTE else None
+            if tier is not None:
+                trace["heuristic"] = True
+                variants = [question]
+                stages.append(("route (heuristic)", time.perf_counter() - t)); t = time.perf_counter()
+            else:
+                tier, variants = preprocess_query(question)
+                stages.append(("preprocess", time.perf_counter() - t)); t = time.perf_counter()
 
             # Out-of-scope world questions (current time/weather/news): the
             # user's files can't answer these, so retrieval is skipped and
@@ -103,6 +130,7 @@ def main():
                         total = sum(d for _, d in stages)
                         parts = " | ".join(f"{name}: {d:.1f}s" for name, d in stages)
                         print(f"\n[timing] {parts} | total: {total:.1f}s")
+                    _finish_trace("world", config.CLOUD_MODEL, 0, answer)
                     return
                 # No cloud available -- answer locally; the model will say the
                 # docs don't cover it, which is at least honest.
@@ -124,10 +152,13 @@ def main():
                     total = sum(d for _, d in stages)
                     parts = " | ".join(f"{name}: {d:.1f}s" for name, d in stages)
                     print(f"\n[timing] {parts} | total: {total:.1f}s")
+                _finish_trace("meta", None, len(paths))
                 return
 
+            via = " via heuristic" if trace["heuristic"] else ""
             print(f"[auto] {tier} tier "
-                  f"({config.GOOD_MODEL if tier == 'good' else config.CHAT_MODEL})\n")
+                  f"({config.GOOD_MODEL if tier == 'good' else config.CHAT_MODEL})"
+                  f"{via}\n")
         else:
             tier = "fast"
 
@@ -148,6 +179,25 @@ def main():
 
         matches = store.search(query_variants, config.TOP_K, rerank_query=question)
         stages.append(("search", time.perf_counter() - t)); t = time.perf_counter()
+
+        # Heuristic-routed queries searched on the raw question alone (no
+        # LLM expansion). If that came back with no strong semantic match,
+        # buy the expansion after all and search once more -- expansion on
+        # demand instead of on every query.
+        if trace["heuristic"] and tier in ("fast", "good"):
+            has_strong = any(
+                m.get("_distance") is not None and m["_distance"] <= config.MAX_DISTANCE
+                for m in matches
+            )
+            if not has_strong:
+                variants = expand_query(question)
+                query_variants = [(embed(q), q) for q in variants]
+                retried = store.search(query_variants, config.TOP_K,
+                                       rerank_query=question)
+                if retried:
+                    matches = retried
+                stages.append(("expand (weak retrieval)", time.perf_counter() - t))
+                t = time.perf_counter()
 
         context_chunks = [f"[{m['path']}]\n{m['text']}" for m in matches]
         system_prompt = (
@@ -189,14 +239,18 @@ def main():
                 answer = chat(system_prompt, context_chunks, question, stream=True,
                               model=gen_model, think=config.GOOD_MODEL_THINK)
                 stages.append((f"escalate ({gen_model})", time.perf_counter() - t))
+                trace["escalated"] = True
             else:
                 print(f"\n[escalate] fast answer looked incomplete, but no "
                       f"strong-relevance match was retrieved -- trusting the "
                       f"refusal instead of retrying\n")
+                trace["escalate_skipped"] = True
 
         print("\nSources:")
         for m in matches:
             print(f"  - {m['path']} (chunk {m['chunk_index']})")
+
+        _finish_trace(tier, gen_model, len(matches), answer)
 
         if timing:
             total = sum(d for _, d in stages)

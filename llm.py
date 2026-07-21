@@ -1,11 +1,36 @@
 """Model wrappers: local Ollama for embeddings + chat, and an explicit cloud
 escalation path (Claude) for questions the local model can't handle well."""
 
+import re
 import time
 
 import ollama
 
 import config
+
+# Credential-shaped strings that must never leave the machine, even inside
+# an excerpt the user explicitly escalated with --deep. Patterns adapted from
+# OpenJarvis's credential stripper; deliberately high-precision (match token
+# formats, not words like "password") so redaction never mangles prose.
+_CREDENTIAL_PATTERNS = (
+    ("api_key", re.compile(r"sk-[A-Za-z0-9_-]{16,}")),
+    ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("github_token", re.compile(r"gh[pos]_[A-Za-z0-9]{20,}")),
+    ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}")),
+    ("bearer_token", re.compile(r"(?i)bearer\s+[A-Za-z0-9_\-.=]{20,}")),
+    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+)
+
+
+def redact_credentials(text: str) -> tuple[str, int]:
+    """Replace credential-shaped substrings with [REDACTED:<type>] markers.
+    Returns (clean_text, count). Applied to every string bound for the
+    cloud -- the first increment of the sanitize-before-cloud gate."""
+    total = 0
+    for label, pattern in _CREDENTIAL_PATTERNS:
+        text, n = pattern.subn(f"[REDACTED:{label}]", text)
+        total += n
+    return text, total
 
 
 def expand_query(question: str) -> list[str]:
@@ -254,6 +279,11 @@ def cloud_world(question: str, stream: bool = True) -> str:
     stale guess instead of an answer."""
     import anthropic
 
+    question, n_redacted = redact_credentials(question)
+    if n_redacted:
+        print(f"[redact] {n_redacted} credential-like string(s) removed "
+              f"before sending to cloud")
+
     client = anthropic.Anthropic()
 
     parts = []
@@ -286,10 +316,15 @@ def cloud_chat(
 ) -> str:
     """Escalate one question to Claude in the cloud (--deep). Retrieval has
     already happened locally -- only the retrieved excerpts and the question
-    leave the machine, and only because the user explicitly asked."""
+    leave the machine, and only because the user explicitly asked. Anything
+    credential-shaped in those excerpts is redacted first."""
     import anthropic
 
     prompt = _build_prompt(context_chunks, user_query)
+    prompt, n_redacted = redact_credentials(prompt)
+    if n_redacted:
+        print(f"[redact] {n_redacted} credential-like string(s) removed "
+              f"before sending to cloud")
     client = anthropic.Anthropic()
 
     parts = []
