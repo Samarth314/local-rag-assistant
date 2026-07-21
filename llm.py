@@ -34,6 +34,11 @@ def expand_query(question: str) -> list[str]:
         return [question]
 
     variants = [line.strip("-*0123456789. \t") for line in text.splitlines()]
+    return _dedupe_queries(question, variants)
+
+
+def _dedupe_queries(question: str, variants: list[str]) -> list[str]:
+    """Original question first, then non-duplicate variants, capped at 4."""
     queries = [question] + [v for v in variants if v]
     seen, out = set(), []
     for q in queries:
@@ -117,44 +122,75 @@ def retrieval_supports_escalation(matches: list[dict]) -> bool:
     )
 
 
-def route_query(question: str) -> str:
-    """Classify a question as 'fast' (simple lookup/summary) or 'good' (needs
-    synthesis/reasoning), via one cheap call on the small model. Biases toward
-    'fast' on any failure or ambiguity -- misrouting an easy question to the big
-    model just wastes a few seconds, so err cheap."""
+def preprocess_query(question: str) -> tuple[str, list[str]]:
+    """One call on the small model does both pre-generation jobs at once:
+    classify the question (tier routing) AND rewrite it into alternative
+    search queries. Routing and expansion used to be two separate calls, but
+    on a single GPU they serialize anyway -- one merged prompt costs one
+    prefill instead of two (~half the fixed overhead per query).
+
+    Returns (tier, variants) where tier is:
+      'fast' - simple lookup, small model answers
+      'good' - synthesis/reasoning, stronger local model answers
+      'meta' - a question about the indexed collection itself (file counts,
+               inventory); the caller should answer from the index directly,
+               since generation over a partial retrieval sample can only
+               guess at collection-level facts
+    Biases toward ('fast', [question]) on any failure or malformed output --
+    misrouting locally just costs seconds, so err cheap and safe."""
     prompt = (
-        "Classify this question for a document assistant as SIMPLE or COMPLEX.\n"
-        "Judge by what the assistant actually has to DO, not by sentence length "
-        "or whether it contains words like 'why' or 'if'.\n"
+        "You do two jobs for a document assistant. Reply in EXACTLY this "
+        "format -- a one-word label on the first line, then one search query "
+        "per line:\n"
+        "LABEL\n"
+        "search query 1\n"
+        "search query 2\n\n"
+        "LABEL is one of:\n"
+        "META = the question asks about the indexed collection itself: how "
+        "many files/documents exist, which files are indexed, an inventory "
+        "of the collection. (Asking to summarize or analyze document CONTENT "
+        "is NOT META.)\n"
         "SIMPLE = a single fact lookup, a short summary, or checking whether "
-        "something is mentioned at all (including checks that will likely come "
-        "back 'not mentioned') -- even if the question is phrased as a full "
-        "sentence, a policy question, or includes 'why'/'if' as filler.\n"
+        "something is mentioned at all -- even if phrased as a full sentence, "
+        "a policy question, or with 'why'/'if' as filler.\n"
         "COMPLEX = requires combining multiple facts, multi-step instructions, "
-        "comparing values across sources, or reasoning through a hypothetical "
-        "scenario using several pieces of context together.\n"
+        "comparing values across sources, or reasoning through a scenario.\n"
         "Examples:\n"
-        "  'does the document mention X' -> SIMPLE (it's just a lookup, even "
-        "though it's phrased as a yes/no question)\n"
-        "  'what is the refund policy if a student drops out' -> SIMPLE (single "
-        "fact lookup, the 'if' is just how the fact is phrased)\n"
-        "  'what setting does X need and why' -> SIMPLE (still one lookup)\n"
-        "  'walk me through every step of the recipe' -> COMPLEX (multi-step)\n"
-        "  'compare A and B across documents' -> COMPLEX (synthesis)\n"
-        "  'what would break if I used Y instead of Z' -> COMPLEX (reasoning "
-        "over several facts together)\n"
-        "Answer with exactly one word: SIMPLE or COMPLEX.\n\n"
+        "  'how many files are indexed' -> META\n"
+        "  'list every document I have' -> META\n"
+        "  'does the document mention X' -> SIMPLE\n"
+        "  'what is the refund policy if a student drops out' -> SIMPLE\n"
+        "  'what setting does X need and why' -> SIMPLE\n"
+        "  'walk me through every step of the recipe' -> COMPLEX\n"
+        "  'compare A and B across documents' -> COMPLEX\n"
+        "  'what would break if I used Y instead of Z' -> COMPLEX\n\n"
+        "The search queries (2-3 lines; use different wording, synonyms, and "
+        "any abbreviations or codes the source documents might use -- e.g. a "
+        "university subject like 'philosophy' often appears only as a course "
+        "code like 'PHIL338'):\n\n"
         f"Question: {question}"
     )
     try:
         response = ollama.chat(
-            model=config.EXPAND_MODEL,  # reuse the small model already loaded
+            model=config.EXPAND_MODEL,  # small model, kept warm
             messages=[{"role": "user", "content": prompt}],
-            options={"num_ctx": 2048, "num_predict": 8},
+            options={"num_ctx": 4096, "num_predict": 128},
         )
-        return "good" if "COMPLEX" in response["message"]["content"].upper() else "fast"
+        lines = [ln.strip("-*0123456789. \t")
+                 for ln in response["message"]["content"].splitlines()]
+        lines = [ln for ln in lines if ln]
+        label = lines[0].upper() if lines else ""
+        if "META" in label:
+            tier = "meta"
+        elif "COMPLEX" in label:
+            tier = "good"
+        elif "SIMPLE" in label:
+            tier = "fast"
+        else:
+            return "fast", [question]  # didn't follow the format -- play safe
+        return tier, _dedupe_queries(question, lines[1:])
     except Exception:
-        return "fast"
+        return "fast", [question]
 
 
 def chat(

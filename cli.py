@@ -48,7 +48,7 @@ def main():
         from pathlib import Path
 
         from llm import (chat, cloud_chat, embed, expand_query, looks_incomplete,
-                         retrieval_supports_escalation, route_query)
+                         preprocess_query, retrieval_supports_escalation)
         import store
         import config
 
@@ -69,12 +69,10 @@ def main():
         stages: list[tuple[str, float]] = []
         t = time.perf_counter()
 
-        # Decide the tier. Explicit flags win; otherwise auto-route between the
-        # fast and thorough local models (never the cloud -- that's --deep only).
-        # Routing and query expansion are independent calls on the same small
-        # model, so under auto-routing they run concurrently -- the wall time
-        # is max(route, expand) instead of their sum (needs OLLAMA_NUM_PARALLEL
-        # >= 2 on the server to truly overlap; harmless without it).
+        # Decide the tier. Explicit flags win; otherwise one merged call on the
+        # small model both routes (fast/good/meta) and expands the query --
+        # merged because two separate calls serialize on a single GPU anyway,
+        # so one prompt costs one prefill instead of two.
         if deep:
             tier = "deep"
         elif good:
@@ -82,14 +80,27 @@ def main():
         elif fast:
             tier = "fast"
         elif config.AUTOROUTE:
-            from concurrent.futures import ThreadPoolExecutor
+            tier, variants = preprocess_query(question)
+            stages.append(("preprocess", time.perf_counter() - t)); t = time.perf_counter()
 
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                route_future = pool.submit(route_query, question)
-                expand_future = pool.submit(expand_query, question)
-                tier = route_future.result()  # "fast" or "good"
-                variants = expand_future.result()
-            stages.append(("route+expand", time.perf_counter() - t)); t = time.perf_counter()
+            # Collection-level questions (file counts, inventory) are answered
+            # from the index itself -- generation over a partial retrieval
+            # sample can only guess at these, and small models guess badly.
+            if tier == "meta":
+                from indexer import list_indexed_paths
+
+                print("[auto] collection question -- answering from the index "
+                      "directly (no model call)\n")
+                paths = list_indexed_paths()
+                for p in paths:
+                    print(f"  - {p}")
+                print(f"\n{len(paths)} files indexed.")
+                if timing:
+                    total = sum(d for _, d in stages)
+                    parts = " | ".join(f"{name}: {d:.1f}s" for name, d in stages)
+                    print(f"\n[timing] {parts} | total: {total:.1f}s")
+                return
+
             print(f"[auto] {tier} tier "
                   f"({config.GOOD_MODEL if tier == 'good' else config.CHAT_MODEL})\n")
         else:
