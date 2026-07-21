@@ -70,7 +70,17 @@ def _build_prompt(context_chunks: list[str], user_query: str) -> str:
         "with its own source file in brackets -- treat each excerpt as belonging "
         "only to that file, never combine or attribute a detail from one file's "
         "excerpt to a different file. Cite the specific source file path(s) you "
-        "used for each claim."
+        "used for each claim.\n\n"
+        "Two additional rules:\n"
+        "1. The excerpts are a small retrieval sample matched to this question, "
+        "NOT the user's whole collection. Never answer questions about the "
+        "collection as a whole (how many files exist, what all the documents "
+        "are, totals across everything) from these excerpts -- say that the "
+        "excerpts can't establish that.\n"
+        "2. Answer the exact question asked. If the context contains related "
+        "information but not the specific fact requested, say the specific "
+        "fact isn't in the excerpts -- do not substitute a nearby fact as if "
+        "it answered the question."
     )
 
 

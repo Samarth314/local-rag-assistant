@@ -20,6 +20,14 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    environment:
+      # Keep models resident instead of unloading after ~5 min idle -- the
+      # 64GB Orin fits the whole lineup (7B + 20B + embed, ~17GB) with room
+      # to spare, and cold reloads were costing 20-40s on first queries.
+      OLLAMA_KEEP_ALIVE: "-1"
+      # Let the concurrent route+expand calls actually overlap instead of
+      # queueing behind each other.
+      OLLAMA_NUM_PARALLEL: "2"
     volumes:
       - ollama-models:/root/.ollama
     # --- Jetson GPU access: uncomment on the Orin (JetPack includes the

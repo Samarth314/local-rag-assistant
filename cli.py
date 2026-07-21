@@ -71,6 +71,10 @@ def main():
 
         # Decide the tier. Explicit flags win; otherwise auto-route between the
         # fast and thorough local models (never the cloud -- that's --deep only).
+        # Routing and query expansion are independent calls on the same small
+        # model, so under auto-routing they run concurrently -- the wall time
+        # is max(route, expand) instead of their sum (needs OLLAMA_NUM_PARALLEL
+        # >= 2 on the server to truly overlap; harmless without it).
         if deep:
             tier = "deep"
         elif good:
@@ -78,8 +82,14 @@ def main():
         elif fast:
             tier = "fast"
         elif config.AUTOROUTE:
-            tier = route_query(question)  # "fast" or "good"
-            stages.append(("route", time.perf_counter() - t)); t = time.perf_counter()
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                route_future = pool.submit(route_query, question)
+                expand_future = pool.submit(expand_query, question)
+                tier = route_future.result()  # "fast" or "good"
+                variants = expand_future.result()
+            stages.append(("route+expand", time.perf_counter() - t)); t = time.perf_counter()
             print(f"[auto] {tier} tier "
                   f"({config.GOOD_MODEL if tier == 'good' else config.CHAT_MODEL})\n")
         else:
@@ -93,8 +103,9 @@ def main():
             and not (deep or good or fast) and tier == "fast"
         )
 
-        variants = expand_query(question)
-        stages.append(("expand", time.perf_counter() - t)); t = time.perf_counter()
+        if not config.AUTOROUTE or deep or good or fast:
+            variants = expand_query(question)
+            stages.append(("expand", time.perf_counter() - t)); t = time.perf_counter()
 
         query_variants = [(embed(q), q) for q in variants]
         stages.append(("embed", time.perf_counter() - t)); t = time.perf_counter()
