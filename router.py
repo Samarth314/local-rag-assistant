@@ -80,6 +80,14 @@ def heuristic_route(question: str) -> str | None:
         return "good"
 
     if _SIMPLE_OPENER.match(q) and len(q.split()) <= _SIMPLE_MAX_WORDS:
+        # A world-topic word (weather/time/price/...) with no personal
+        # pronoun is ambiguous here: it could be a live question the WORLD
+        # branch just missed for lack of a "now"/"today" marker, or a local
+        # one. Don't guess fast -- defer to the LLM classifier. (With a
+        # personal pronoun it's treated as the user's own data and correctly
+        # stays local/fast.)
+        if _WORLD_TOPIC.search(q) and not _PERSONAL.search(q):
+            return None
         return "fast"
 
     return None

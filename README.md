@@ -94,6 +94,18 @@ GPU inference. `docker compose down -v` removes every trace.
 - `app.py` — FastAPI `/query` endpoint
 - `cli.py` — `index` / `query` / `list` / `serve` commands
 
+## Tests
+
+Offline unit tests for the routing and logic helpers (no Ollama or network
+needed — pure functions only):
+
+```
+python -m unittest
+```
+
+Covers the heuristic pre-router (including the world-tier privacy guards),
+refusal detection, the escalate distance gate, query dedup, and trace logging.
+
 ## Configuration
 
 Tunables live in `config.py`: chunk size, retrieval depth (`TOP_K`), relevance
