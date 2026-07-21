@@ -47,8 +47,9 @@ def main():
         import time
         from pathlib import Path
 
-        from llm import (chat, cloud_chat, embed, expand_query, looks_incomplete,
-                         preprocess_query, retrieval_supports_escalation)
+        from llm import (chat, cloud_chat, cloud_world, embed, expand_query,
+                         looks_incomplete, preprocess_query,
+                         retrieval_supports_escalation)
         import store
         import config
 
@@ -82,6 +83,30 @@ def main():
         elif config.AUTOROUTE:
             tier, variants = preprocess_query(question)
             stages.append(("preprocess", time.perf_counter() - t)); t = time.perf_counter()
+
+            # Out-of-scope world questions (current time/weather/news): the
+            # user's files can't answer these, so retrieval is skipped and
+            # ONLY the question text goes to the cloud -- no document content
+            # ever attaches to this path. Falls back to the local fast tier
+            # if auto-cloud is disabled or no API key is configured.
+            if tier == "world":
+                import os
+
+                if config.AUTO_CLOUD and os.environ.get("ANTHROPIC_API_KEY"):
+                    print(f"[auto] out-of-scope question -- asking "
+                          f"{config.CLOUD_MODEL} with web search (question "
+                          f"text only; no documents sent)\n")
+                    answer = cloud_world(question)
+                    stages.append((f"cloud ({config.CLOUD_MODEL})",
+                                   time.perf_counter() - t))
+                    if timing:
+                        total = sum(d for _, d in stages)
+                        parts = " | ".join(f"{name}: {d:.1f}s" for name, d in stages)
+                        print(f"\n[timing] {parts} | total: {total:.1f}s")
+                    return
+                # No cloud available -- answer locally; the model will say the
+                # docs don't cover it, which is at least honest.
+                tier = "fast"
 
             # Collection-level questions (file counts, inventory) are answered
             # from the index itself -- generation over a partial retrieval

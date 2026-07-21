@@ -130,12 +130,17 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
     prefill instead of two (~half the fixed overhead per query).
 
     Returns (tier, variants) where tier is:
-      'fast' - simple lookup, small model answers
-      'good' - synthesis/reasoning, stronger local model answers
-      'meta' - a question about the indexed collection itself (file counts,
-               inventory); the caller should answer from the index directly,
-               since generation over a partial retrieval sample can only
-               guess at collection-level facts
+      'fast'  - simple lookup, small model answers
+      'good'  - synthesis/reasoning, stronger local model answers
+      'meta'  - a question about the indexed collection itself (file counts,
+                inventory); the caller should answer from the index directly,
+                since generation over a partial retrieval sample can only
+                guess at collection-level facts
+      'world' - a question the user's files could never answer (current
+                time/weather/news/live facts); the caller may send JUST the
+                question to the cloud. Deliberately biased against: when in
+                doubt, stay local -- a misroute here leaks the question text
+                off the machine, unlike every other tier.
     Biases toward ('fast', [question]) on any failure or malformed output --
     misrouting locally just costs seconds, so err cheap and safe."""
     prompt = (
@@ -146,6 +151,12 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
         "search query 1\n"
         "search query 2\n\n"
         "LABEL is one of:\n"
+        "WORLD = the question is about the live outside world or general "
+        "public facts that a person's own files could never contain: the "
+        "current time or date, weather, news, live prices, sports scores. "
+        "STRICT RULE: if the question could plausibly be answered by the "
+        "user's own files (their recipes, notes, records, plans, purchases, "
+        "projects), it is NOT WORLD. When unsure, never pick WORLD.\n"
         "META = the question asks about the indexed collection itself: how "
         "many files/documents exist, which files are indexed, an inventory "
         "of the collection. (Asking to summarize or analyze document CONTENT "
@@ -156,6 +167,9 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
         "COMPLEX = requires combining multiple facts, multi-step instructions, "
         "comparing values across sources, or reasoning through a scenario.\n"
         "Examples:\n"
+        "  'what time is it in chennai right now' -> WORLD\n"
+        "  'what is the weather in toronto today' -> WORLD\n"
+        "  'how do I make dosa batter' -> SIMPLE (their own recipes may cover it)\n"
         "  'how many files are indexed' -> META\n"
         "  'list every document I have' -> META\n"
         "  'does the document mention X' -> SIMPLE\n"
@@ -164,10 +178,10 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
         "  'walk me through every step of the recipe' -> COMPLEX\n"
         "  'compare A and B across documents' -> COMPLEX\n"
         "  'what would break if I used Y instead of Z' -> COMPLEX\n\n"
-        "The search queries (2-3 lines; use different wording, synonyms, and "
-        "any abbreviations or codes the source documents might use -- e.g. a "
-        "university subject like 'philosophy' often appears only as a course "
-        "code like 'PHIL338'):\n\n"
+        "The search queries (2-3 lines; skip for WORLD and META; use "
+        "different wording, synonyms, and any abbreviations or codes the "
+        "source documents might use -- e.g. a university subject like "
+        "'philosophy' often appears only as a course code like 'PHIL338'):\n\n"
         f"Question: {question}"
     )
     try:
@@ -180,7 +194,9 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
                  for ln in response["message"]["content"].splitlines()]
         lines = [ln for ln in lines if ln]
         label = lines[0].upper() if lines else ""
-        if "META" in label:
+        if "WORLD" in label:
+            tier = "world"
+        elif "META" in label:
             tier = "meta"
         elif "COMPLEX" in label:
             tier = "good"
@@ -227,6 +243,39 @@ def chat(
 
     response = ollama.chat(**kwargs)
     return response["message"]["content"]
+
+
+def cloud_world(question: str, stream: bool = True) -> str:
+    """Answer an out-of-scope world-knowledge question (current time, weather,
+    news, live facts) directly with the cloud model. No retrieval happens and
+    no document content is sent -- ONLY the question text leaves the machine.
+    Web search is enabled because a plain model call has neither a clock nor
+    the internet: without it, 'what time is it in Chennai' gets a confident
+    stale guess instead of an answer."""
+    import anthropic
+
+    client = anthropic.Anthropic()
+
+    parts = []
+    with client.messages.stream(
+        model=config.CLOUD_MODEL,
+        max_tokens=4000,
+        thinking={"type": "adaptive"},
+        system=(
+            "Answer the user's question directly and concisely. Use web "
+            "search whenever the answer depends on current information "
+            "(time, weather, news, prices)."
+        ),
+        messages=[{"role": "user", "content": question}],
+        tools=[{"type": "web_search_20260209", "name": "web_search", "max_uses": 3}],
+    ) as response_stream:
+        for text in response_stream.text_stream:
+            parts.append(text)
+            if stream:
+                print(text, end="", flush=True)
+    if stream:
+        print()
+    return "".join(parts)
 
 
 def cloud_chat(

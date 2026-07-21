@@ -38,6 +38,13 @@ GOOD_MODEL_THINK = os.environ.get("RAG_GOOD_THINK") or None
 # excerpts + question are sent, and only when the user explicitly asks.
 CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
 
+# Auto-cloud for out-of-scope questions: when the router labels a question
+# WORLD (current time/weather/news/live facts -- nothing the user's files
+# could answer), send JUST the question text -- never any document content --
+# to the cloud model with web search. This is the one exception to "cloud
+# only via --deep"; set RAG_AUTO_CLOUD=0 to keep that boundary absolute.
+AUTO_CLOUD = os.environ.get("RAG_AUTO_CLOUD", "1") == "1"
+
 # Auto-routing (no flag): a cheap classification call on the small model decides
 # fast tier (CHAT_MODEL) vs thorough tier (GOOD_MODEL). Never auto-routes to the
 # cloud -- that stays explicit (--deep). Set RAG_AUTOROUTE=0 to always use the
