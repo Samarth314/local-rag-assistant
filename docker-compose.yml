@@ -37,9 +37,11 @@ services:
       #   fast tier = 7B, thorough tier (--good / auto-routed) = gpt-oss:20b
       RAG_CHAT_MODEL: qwen2.5:7b-instruct
       RAG_GOOD_MODEL: gpt-oss:20b
-      # Cloud escalation (--deep) is inert without a key; pass one through
-      # from the host environment only if you want --deep inside the container:
-      # ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Cloud escalation (--deep) is inert without a key. Put the key in a
+      # local .env file next to this compose file (gitignored, never
+      # committed) -- Compose loads it automatically and fills this in:
+      #   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       - rag-data:/data
       - ${DOCS_DIR:-./sample-docs}:/docs:ro

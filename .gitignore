@@ -6,3 +6,6 @@ data/
 __pycache__/
 *.pyc
 .DS_Store
+
+# Secrets -- ANTHROPIC_API_KEY and anything else local-only. Never commit.
+.env
