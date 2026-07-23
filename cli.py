@@ -119,11 +119,24 @@ def main():
             if tier == "world":
                 import os
 
+                cloud_ok = False
                 if config.AUTO_CLOUD and os.environ.get("ANTHROPIC_API_KEY"):
                     print(f"[auto] out-of-scope question -- asking "
                           f"{config.CLOUD_MODEL} with web search (question "
                           f"text only; no documents sent)\n")
-                    answer = cloud_world(question)
+                    try:
+                        answer = cloud_world(question)
+                        cloud_ok = True
+                    except Exception as e:
+                        msg = str(e).lower()
+                        if "authentication" in msg or "api_key" in msg or "x-api-key" in msg:
+                            print("\n[cloud unavailable] the Anthropic API key was "
+                                  "rejected (invalid or expired). Update it in .env; "
+                                  "answering locally for now.\n")
+                            tier = "fast"  # graceful fall-through, no crash
+                        else:
+                            raise
+                if cloud_ok:
                     stages.append((f"cloud ({config.CLOUD_MODEL})",
                                    time.perf_counter() - t))
                     if timing:
@@ -132,9 +145,11 @@ def main():
                         print(f"\n[timing] {parts} | total: {total:.1f}s")
                     _finish_trace("world", config.CLOUD_MODEL, 0, answer)
                     return
-                # No cloud available -- answer locally; the model will say the
-                # docs don't cover it, which is at least honest.
-                tier = "fast"
+                # No cloud (disabled, no key, or key rejected) -- answer locally.
+                # The local model will honestly say the docs don't cover it.
+                if tier == "world":
+                    tier = "fast"
+                t = time.perf_counter()  # reset so the local stages time cleanly
 
             # Collection-level questions (file counts, inventory) are answered
             # from the index itself -- generation over a partial retrieval
