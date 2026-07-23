@@ -1,36 +1,21 @@
 """Model wrappers: local Ollama for embeddings + chat, and an explicit cloud
 escalation path (Claude) for questions the local model can't handle well."""
 
-import re
 import time
 
 import ollama
 
 import config
-
-# Credential-shaped strings that must never leave the machine, even inside
-# an excerpt the user explicitly escalated with --deep. Patterns adapted from
-# OpenJarvis's credential stripper; deliberately high-precision (match token
-# formats, not words like "password") so redaction never mangles prose.
-_CREDENTIAL_PATTERNS = (
-    ("api_key", re.compile(r"sk-[A-Za-z0-9_-]{16,}")),
-    ("aws_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("github_token", re.compile(r"gh[pos]_[A-Za-z0-9]{20,}")),
-    ("slack_token", re.compile(r"xox[baprs]-[0-9A-Za-z-]{10,}")),
-    ("bearer_token", re.compile(r"(?i)bearer\s+[A-Za-z0-9_\-.=]{20,}")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-)
+# Pure, dependency-free logic now lives in the graduation modules; re-exported
+# here so existing callers (cli.py, tests) keep importing from `llm`.
+from privacy import redact_credentials, sanitize_for_cloud, summarize  # noqa: F401
+from routing import looks_incomplete  # noqa: F401
+from routing import retrieval_supports_escalation as _rse
 
 
-def redact_credentials(text: str) -> tuple[str, int]:
-    """Replace credential-shaped substrings with [REDACTED:<type>] markers.
-    Returns (clean_text, count). Applied to every string bound for the
-    cloud -- the first increment of the sanitize-before-cloud gate."""
-    total = 0
-    for label, pattern in _CREDENTIAL_PATTERNS:
-        text, n = pattern.subn(f"[REDACTED:{label}]", text)
-        total += n
-    return text, total
+def retrieval_supports_escalation(matches: list[dict]) -> bool:
+    """Harness wrapper: applies the config-tuned distance threshold."""
+    return _rse(matches, config.ESCALATE_DISTANCE_THRESHOLD)
 
 
 def expand_query(question: str) -> list[str]:
@@ -111,39 +96,6 @@ def _build_prompt(context_chunks: list[str], user_query: str) -> str:
         "information but not the specific fact requested, say the specific "
         "fact isn't in the excerpts -- do not substitute a nearby fact as if "
         "it answered the question."
-    )
-
-
-# Strong signals that the model couldn't answer from the retrieved context.
-# Deliberately narrow -- refusal-style phrasing, not soft qualifiers -- so a
-# genuine answer that happens to say "not specified" in passing doesn't trip it.
-_FAILURE_SIGNALS = (
-    "does not contain", "doesn't contain", "do not contain",
-    "cannot answer", "can't answer", "unable to answer", "cannot determine",
-    "no relevant information", "not enough information", "insufficient information",
-    "does not provide", "doesn't provide", "no information about",
-    "the context does not", "excerpts do not", "not found in the",
-    "no mention of", "does not mention",
-    "does not include", "doesn't include",
-)
-
-
-def looks_incomplete(answer: str) -> bool:
-    """True if the answer reads like the model couldn't answer from the context
-    (refusal / hedging). Used by the escalate-on-failure backstop to decide
-    whether to retry one tier up."""
-    low = answer.lower()
-    return any(sig in low for sig in _FAILURE_SIGNALS)
-
-
-def retrieval_supports_escalation(matches: list[dict]) -> bool:
-    """True if at least one retrieved chunk is a strong semantic match (low
-    cosine distance). Chunks found only via keyword search, or whose vector
-    distance is borderline, don't carry this signal -- so a refusal next to
-    those is trusted as-is rather than retried on a bigger model."""
-    return any(
-        m.get("_distance") is not None and m["_distance"] <= config.ESCALATE_DISTANCE_THRESHOLD
-        for m in matches
     )
 
 
@@ -279,10 +231,9 @@ def cloud_world(question: str, stream: bool = True) -> str:
     stale guess instead of an answer."""
     import anthropic
 
-    question, n_redacted = redact_credentials(question)
-    if n_redacted:
-        print(f"[redact] {n_redacted} credential-like string(s) removed "
-              f"before sending to cloud")
+    question, counts = sanitize_for_cloud(question)
+    if counts:
+        print(f"[redact] removed before sending to cloud: {summarize(counts)}")
 
     client = anthropic.Anthropic()
 
@@ -316,15 +267,15 @@ def cloud_chat(
 ) -> str:
     """Escalate one question to Claude in the cloud (--deep). Retrieval has
     already happened locally -- only the retrieved excerpts and the question
-    leave the machine, and only because the user explicitly asked. Anything
-    credential-shaped in those excerpts is redacted first."""
+    leave the machine, and only because the user explicitly asked. Credentials
+    AND structured PII in those excerpts are stripped by the privacy gate
+    first (see privacy.sanitize_for_cloud)."""
     import anthropic
 
     prompt = _build_prompt(context_chunks, user_query)
-    prompt, n_redacted = redact_credentials(prompt)
-    if n_redacted:
-        print(f"[redact] {n_redacted} credential-like string(s) removed "
-              f"before sending to cloud")
+    prompt, counts = sanitize_for_cloud(prompt)
+    if counts:
+        print(f"[redact] removed before sending to cloud: {summarize(counts)}")
     client = anthropic.Anthropic()
 
     parts = []
@@ -342,3 +293,92 @@ def cloud_chat(
     if stream:
         print()
     return "".join(parts)
+
+
+def _cloud_plain(system_prompt: str, user_content: str, max_tokens: int = 4000) -> str:
+    """One non-streaming, tool-less cloud call. Used by the delegation path."""
+    import anthropic
+
+    client = anthropic.Anthropic()
+    with client.messages.stream(
+        model=config.CLOUD_MODEL,
+        max_tokens=max_tokens,
+        thinking={"type": "adaptive"},
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_content}],
+    ) as s:
+        return "".join(s.text_stream)
+
+
+def delegate_deep(
+    system_prompt: str,
+    context_chunks: list[str],
+    user_query: str,
+    stream: bool = True,
+) -> str:
+    """PAPILLON-style privacy-conscious delegation for --deep (Task B/c).
+
+    Instead of shipping raw excerpts to the cloud (what cloud_chat does), the
+    LOCAL model turns the private evidence into a sanitized, self-contained
+    sub-task; only that sub-task goes to the cloud; the LOCAL model then
+    recombines the cloud's reasoning with the private evidence that never left.
+
+    Flow:
+      1. LOCAL: (question + excerpts) -> a generalized sub-task with no names,
+         numbers, or verbatim spans from the documents.
+      2. GATE:  sanitize_for_cloud() on the sub-task, belt-and-suspenders.
+      3. CLOUD: solve only the abstract sub-task.
+      4. LOCAL: recombine the cloud answer with the ORIGINAL excerpts.
+      5. GATE:  scan_output() before returning.
+
+    Gated behind config.DELEGATE_DEEP (default off) until validated end-to-end
+    on the Orin -- quality preservation is a behavioral property that needs a
+    live local model to measure, not a code property. When off, callers use
+    cloud_chat (raw-excerpt path) as before.
+    """
+    from privacy import scan_output
+
+    context = "\n\n---\n\n".join(context_chunks) or "(no documents)"
+
+    # 1. LOCAL: write a sanitized sub-task from the private evidence.
+    rewrite_system = (
+        "You turn a user's private question + their private document excerpts "
+        "into a SINGLE self-contained sub-task for an external assistant that "
+        "must NOT see any private data. Strip every name, email, account "
+        "number, date, dollar amount, address, and any verbatim phrase from "
+        "the documents. Keep only the abstract reasoning or general-knowledge "
+        "question that, once answered, lets a local model finish using the "
+        "private data it already has. Output only the sub-task."
+    )
+    subtask = chat(
+        rewrite_system,
+        [],
+        f"Question:\n{user_query}\n\nPrivate excerpts:\n{context}",
+        stream=False,
+    )
+
+    # 2. GATE: never trust the rewrite blindly.
+    subtask, counts = sanitize_for_cloud(subtask)
+    print(f"[delegate] local model wrote a sanitized sub-task; "
+          f"{'redacted ' + summarize(counts) if counts else 'no residual PII'}\n"
+          f"[delegate] sending to cloud (no document content):\n  {subtask}\n")
+
+    # 3. CLOUD: solve only the abstraction.
+    cloud_answer = _cloud_plain(
+        "Answer the sub-task directly and concisely.", subtask
+    )
+
+    # 4. LOCAL: recombine with the private evidence that never left.
+    answer = chat(
+        system_prompt,
+        context_chunks,
+        f"{user_query}\n\n[Reference reasoning from an external assistant, which "
+        f"never saw your files:]\n{cloud_answer}",
+        stream=stream,
+    )
+
+    # 5. GATE: output scan before display.
+    scanned, out_counts = scan_output(answer)
+    if out_counts:
+        print(f"\n[output-scan] flagged in the answer: {summarize(out_counts)}")
+    return answer

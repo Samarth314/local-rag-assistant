@@ -45,6 +45,13 @@ CLOUD_MODEL = os.environ.get("RAG_CLOUD_MODEL", "claude-opus-4-8")
 # only via --deep"; set RAG_AUTO_CLOUD=0 to keep that boundary absolute.
 AUTO_CLOUD = os.environ.get("RAG_AUTO_CLOUD", "1") == "1"
 
+# PAPILLON-style delegation for --deep: local model writes a sanitized sub-task
+# -> cloud solves only that -> local recombines with the evidence that never
+# left. OFF by default until validated end-to-end on the Orin (quality
+# preservation needs a live local model to measure). RAG_DELEGATE=1 enables it;
+# when off, --deep uses the raw-excerpt path (still credential+PII redacted).
+DELEGATE_DEEP = os.environ.get("RAG_DELEGATE", "0") == "1"
+
 # Heuristic pre-router: unambiguous questions are routed instantly by regex
 # (router.py) and skip the 1.5-6s LLM preprocess call; only ambiguous ones
 # pay for it. RAG_HEURISTIC=0 restores LLM-classification for every query.

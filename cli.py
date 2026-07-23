@@ -47,10 +47,10 @@ def main():
         import time
         from pathlib import Path
 
-        from llm import (chat, cloud_chat, cloud_world, embed, expand_query,
-                         looks_incomplete, preprocess_query,
+        from llm import (chat, cloud_chat, cloud_world, delegate_deep, embed,
+                         expand_query, looks_incomplete, preprocess_query,
                          retrieval_supports_escalation)
-        from router import heuristic_route
+        from routing import heuristic_route
         import store
         import config
         import traces
@@ -206,10 +206,18 @@ def main():
         )
         if tier == "deep":
             files = sorted({Path(m["path"]).name for m in matches})
-            print(f"[deep] Escalating to {config.CLOUD_MODEL} -- sending excerpts "
-                  f"from {len(files)} file(s): {', '.join(files)}\n")
+            if config.DELEGATE_DEEP:
+                print(f"[deep] Delegated mode: a sanitized sub-task (no document "
+                      f"content) goes to {config.CLOUD_MODEL}; excerpts from "
+                      f"{len(files)} file(s) stay local.\n")
+            else:
+                print(f"[deep] Escalating to {config.CLOUD_MODEL} -- sending excerpts "
+                      f"from {len(files)} file(s): {', '.join(files)}\n")
             try:
-                answer = cloud_chat(system_prompt, context_chunks, question)
+                if config.DELEGATE_DEEP:
+                    answer = delegate_deep(system_prompt, context_chunks, question)
+                else:
+                    answer = cloud_chat(system_prompt, context_chunks, question)
             except Exception as e:
                 if "authentication" in str(e).lower() or "api_key" in str(e).lower():
                     print("Cloud escalation needs an Anthropic API key.\n"
