@@ -70,9 +70,34 @@ class _FakeAgentSpec:
 _WORD = re.compile(r"[a-z0-9']+")
 _FALLBACK_AGENT = "records"  # invariant #1: general vault lookup when unsure
 
+# Noise tokens that must never contribute to a routing score -- otherwise a
+# query like "when was I admitted to Stanford" scores on "when/was/i/to"
+# overlapping an agent's examples and mis-routes with false confidence.
+_STOPWORDS = frozenset("""
+a an and any are as at be been but by can could did do does for from get give
+had has have how i if in into is it its me my mine of on or our ours out show
+tell that the their them then there these they this to up upon was we were
+what whats when where which who whom why will with would you your yours about
+i'm it's that's there's we're you're what's don't didn't doesn't
+""".split())
+
+# Routing guards (Item 1). A route is only trusted when the winner has a real
+# absolute signal AND clearly beats the runner-up; otherwise fall back to
+# records. Tuned so a single keyword hit (2.0) or two content-token example
+# overlaps (1.0) clears the floor, but pure stopword/noise overlap cannot.
+_MIN_SCORE = 1.0     # absolute floor on the winning raw score
+_MIN_MARGIN = 0.5    # winner must beat runner-up by at least this much
+_FALLBACK_CONFIDENCE = 0.25
+
 
 def _tokens(text: str) -> set[str]:
     return set(_WORD.findall(text.lower()))
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Tokens that carry routing signal: stopwords and single chars removed."""
+    return {t for t in _WORD.findall(text.lower())
+            if t not in _STOPWORDS and len(t) > 1}
 
 
 class SamarthRouter(RouterPolicy):
@@ -88,8 +113,8 @@ class SamarthRouter(RouterPolicy):
     """
 
     def route(self, query: str) -> RouteDecision:
-        q_tokens = _tokens(query)
         low = query.lower()
+        q_tokens = _content_tokens(query)  # stopword-filtered signal tokens
         scores: dict[str, float] = {}
 
         for name, spec in self.agents.items():
@@ -102,36 +127,42 @@ class SamarthRouter(RouterPolicy):
                 if kw in low:
                     score += 2.0
             for ex in examples:                        # medium: example overlap
-                overlap = len(q_tokens & _tokens(ex))
-                if overlap:
-                    score += 0.5 * overlap
-            score += 0.25 * len(q_tokens & _tokens(description))  # weak: desc
+                score += 0.5 * len(q_tokens & _content_tokens(ex))
+            score += 0.25 * len(q_tokens & _content_tokens(description))  # weak
+            scores[name] = round(score, 3)  # keep all (incl. 0) for the margin
 
-            if score > 0:
-                scores[name] = round(score, 3)
+        # Deterministic ranking: score desc, then agent name asc -- a FIXED
+        # precedence, never dict-insertion order (so ties resolve the same way
+        # every run and across Python versions).
+        ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+        top_name, top_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0.0
 
-        if not scores:
+        # Confidence-floor + thin-margin guard: a weak absolute signal or an
+        # ambiguous top-two means "don't guess" -> records. This is what makes
+        # noise ("the a to of") and out-of-domain ("when was I admitted to
+        # Stanford") fall back instead of mis-routing with false confidence.
+        if top_score < _MIN_SCORE or (top_score - second_score) < _MIN_MARGIN:
+            reason = ("weak signal" if top_score < _MIN_SCORE else "thin margin")
             return RouteDecision(
                 agent=self._fallback(),
-                confidence=0.30,
-                reason="samarth/routing: no agent signal -> records fallback",
-                scores={},
+                confidence=_FALLBACK_CONFIDENCE,
+                reason=f"samarth/routing: {reason} (top={top_score}) -> records fallback",
+                scores=scores,
             )
 
-        best = max(scores, key=scores.get)
-        total = sum(scores.values())
-        confidence = round(scores[best] / total, 3) if total else 0.5
+        total = sum(scores.values()) or 1.0
         return RouteDecision(
-            agent=best,
-            confidence=confidence,
-            reason=f"samarth/routing: keyword+example match (score={scores[best]})",
+            agent=top_name,
+            confidence=round(top_score / total, 3),
+            reason=f"samarth/routing: keyword+example match (score={top_score})",
             scores=scores,
         )
 
     def _fallback(self) -> str:
         if _FALLBACK_AGENT in self.agents:
             return _FALLBACK_AGENT
-        return next(iter(self.agents))
+        return min(self.agents)  # deterministic (alphabetical), never dict order
 
 
 # =========================================================================== #

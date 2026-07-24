@@ -82,5 +82,63 @@ class TestInvariants(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class TestTuning(unittest.TestCase):
+    """Item-1 tunings: stopword filtering, confidence-floor / thin-margin
+    fallback, and a deterministic tie-break."""
+
+    def setUp(self):
+        self.router = SamarthRouter(_registry())
+
+    def test_labeled_examples_route_to_their_agent(self):
+        # Labeled set built straight from the manifest route_examples: every
+        # example must route to the agent that declared it.
+        for name, spec in _registry().items():
+            for ex in spec.route_examples:
+                self.assertEqual(self.router.route(ex).agent, name, msg=repr(ex))
+
+    def test_out_of_domain_falls_back_not_misroutes(self):
+        # Arya's case: no content overlap -> records, NOT a false comms pick.
+        d = self.router.route("when was I admitted to Stanford")
+        self.assertEqual(d.agent, "records")
+        self.assertLess(d.confidence, 0.5)
+
+    def test_pure_stopword_noise_falls_back(self):
+        for noise in ("the a to of my", "when is it", "how do i", "what is that"):
+            self.assertEqual(self.router.route(noise).agent, "records", msg=noise)
+
+    def test_gibberish_falls_back(self):
+        self.assertEqual(self.router.route("asdf qwerty zzz").agent, "records")
+
+    def test_single_weak_overlap_cannot_clear_floor(self):
+        # "draft" overlaps one comms example (0.5) but isn't a comms keyword;
+        # below the 1.0 floor -> records, not a confident comms pick.
+        self.assertEqual(self.router.route("draft").agent, "records")
+
+    def test_tie_resolves_deterministically_never_dict_order(self):
+        # An exact tie is a thin margin -> deterministic fallback. With no
+        # `records` agent, fallback is the alphabetically-first agent (never
+        # dict-insertion order), the same on every call and regardless of how
+        # the registry dict was built.
+        reg_a = {
+            "zeta": _FakeAgentSpec("zeta", "widgets", route_keywords=["widget"]),
+            "alpha": _FakeAgentSpec("alpha", "widgets", route_keywords=["widget"]),
+        }
+        reg_b = {  # same agents, opposite insertion order
+            "alpha": _FakeAgentSpec("alpha", "widgets", route_keywords=["widget"]),
+            "zeta": _FakeAgentSpec("zeta", "widgets", route_keywords=["widget"]),
+        }
+        self.assertEqual(SamarthRouter(reg_a).route("widget order").agent, "alpha")
+        self.assertEqual(SamarthRouter(reg_b).route("widget order").agent, "alpha")
+
+    def test_tie_prefers_records_when_present(self):
+        # With a records agent, any ambiguous tie routes there (the safe default).
+        reg = {
+            "comms": _FakeAgentSpec("comms", "", route_keywords=["widget"]),
+            "finance": _FakeAgentSpec("finance", "", route_keywords=["widget"]),
+            "records": _FakeAgentSpec("records", "general lookup"),
+        }
+        self.assertEqual(SamarthRouter(reg).route("widget order").agent, "records")
+
+
 if __name__ == "__main__":
     unittest.main()
