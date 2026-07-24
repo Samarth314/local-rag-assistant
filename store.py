@@ -61,24 +61,11 @@ def rebuild_fts_index() -> None:
         table.create_fts_index("search_text", replace=True)
 
 
-def _rrf_fuse(result_lists: list[list[dict]], k: int = 60) -> list[dict]:
-    """Merge ranked result lists: each hit scores 1/(k + rank) per list it
-    appears in, so chunks ranked well by both signals rise to the top."""
-    scores: dict = {}
-    hits: dict = {}
-    for results in result_lists:
-        for rank, row in enumerate(results):
-            key = (row["path"], row["chunk_index"])
-            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
-            hits.setdefault(key, row)
-    ordered = sorted(scores, key=scores.get, reverse=True)
-    return [hits[key] for key in ordered]
-
-
 def search(
     query_variants: list[tuple[list[float], str]],
     top_k: int,
     rerank_query: str | None = None,
+    whole_collection: bool = False,
 ) -> list[dict]:
     """Hybrid search over one or more query variants (each an embedded-vector +
     text pair, e.g. from query expansion). Every variant contributes a vector
@@ -109,28 +96,16 @@ def search(
             # No FTS index yet (e.g. mid-migration) -- vector ranking still counts.
             pass
 
-    fused = _dedupe_by_text(_rrf_fuse(result_lists))
+    import retrieval
+    fused = retrieval.dedupe_by_text(retrieval.rrf_fuse(result_lists))
+
+    # Breadth queries ("summarize every document") need one chunk per document,
+    # not top-k clustered in one file. Skip the reranker (which optimizes for a
+    # single best answer) and guarantee whole-collection coverage instead.
+    if whole_collection:
+        return retrieval.select_whole_collection(fused, per_doc=1)
 
     import rerank
     if rerank_query is None and query_variants:
         rerank_query = query_variants[0][1]
     return rerank.rerank(rerank_query, fused[:candidates], top_k)
-
-
-def _dedupe_by_text(rows: list[dict]) -> list[dict]:
-    """Drop chunks whose text duplicates a higher-ranked one. Near-identical
-    files (e.g. the same transcript exported under three names) survive
-    content-hash dedup at index time because their bytes differ, but their
-    chunk text is identical -- without this they'd fill several result slots
-    with the same content and crowd out distinct documents."""
-    seen: set[str] = set()
-    unique = []
-    for row in rows:
-        # Normalize whitespace/case; first 400 chars is enough to identify a
-        # chunk while tolerating trailing formatting differences.
-        key = " ".join(row["text"].split()).lower()[:400]
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(row)
-    return unique

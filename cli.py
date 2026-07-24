@@ -51,6 +51,7 @@ def main():
                          expand_query, looks_incomplete, preprocess_query,
                          retrieval_supports_escalation)
         from routing import heuristic_route
+        from retrieval import is_breadth_query
         import store
         import config
         import traces
@@ -192,8 +193,13 @@ def main():
         query_variants = [(embed(q), q) for q in variants]
         stages.append(("embed", time.perf_counter() - t)); t = time.perf_counter()
 
-        matches = store.search(query_variants, config.TOP_K, rerank_query=question)
+        whole = is_breadth_query(question)  # "summarize every doc" -> per-document coverage
+        matches = store.search(query_variants, config.TOP_K, rerank_query=question,
+                               whole_collection=whole)
         stages.append(("search", time.perf_counter() - t)); t = time.perf_counter()
+        if whole:
+            print("[retrieval] breadth query -- one chunk per document "
+                  f"({len(matches)} docs) instead of top-k\n")
 
         # Heuristic-routed queries searched on the raw question alone (no
         # LLM expansion). If that came back with no strong semantic match,
