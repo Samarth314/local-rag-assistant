@@ -18,3 +18,5 @@ sentence-transformers
 # Cloud escalation (--deep): sends retrieved excerpts to Claude on explicit
 # request. Needs ANTHROPIC_API_KEY.
 anthropic
+# OpenAI-compatible client -- only used when RAG_ENGINE=vllm (lazy-imported).
+openai

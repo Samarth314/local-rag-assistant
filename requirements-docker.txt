@@ -14,3 +14,5 @@ pydantic
 rapidocr-onnxruntime
 # Cloud escalation (--deep)
 anthropic
+# OpenAI-compatible client -- only used when RAG_ENGINE=vllm (lazy-imported).
+openai

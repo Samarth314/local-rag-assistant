@@ -45,6 +45,13 @@ services:
       #   fast tier = 7B, thorough tier (--good / auto-routed) = gpt-oss:20b
       RAG_CHAT_MODEL: qwen2.5:7b-instruct
       RAG_GOOD_MODEL: gpt-oss:20b
+      # --- Alternative local engine: vLLM (OpenAI-compatible). To use it,
+      # --- run vLLM (see docker-compose.vllm.yml) and uncomment these,
+      # --- setting the model names to what your vLLM server serves:
+      # RAG_ENGINE: vllm
+      # RAG_VLLM_URL: http://vllm:8000/v1
+      # RAG_CHAT_MODEL: Qwen/Qwen2.5-7B-Instruct
+      # RAG_EMBED_MODEL: nomic-ai/nomic-embed-text-v1.5
       # Cloud escalation (--deep) is inert without a key. Put the key in a
       # local .env file next to this compose file (gitignored, never
       # committed) -- Compose loads it automatically and fills this in:

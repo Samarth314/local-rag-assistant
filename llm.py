@@ -3,9 +3,8 @@ escalation path (Claude) for questions the local model can't handle well."""
 
 import time
 
-import ollama
-
 import config
+import engine  # pluggable local backend (ollama | vllm)
 # Pure, dependency-free logic now lives in the graduation modules; re-exported
 # here so existing callers (cli.py, tests) keep importing from `llm`.
 from privacy import redact_credentials, sanitize_for_cloud, summarize  # noqa: F401
@@ -34,12 +33,11 @@ def expand_query(question: str) -> list[str]:
         f"Question: {question}"
     )
     try:
-        response = ollama.chat(
-            model=config.EXPAND_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"num_ctx": 4096, "num_predict": 128},
+        text = engine.chat_once(
+            config.EXPAND_MODEL,
+            [{"role": "user", "content": prompt}],
+            num_ctx=4096, num_predict=128,
         )
-        text = response["message"]["content"]
     except Exception:
         return [question]
 
@@ -63,8 +61,7 @@ def embed(text: str, retries: int = 2) -> list[float]:
     last_error = None
     for attempt in range(retries + 1):
         try:
-            response = ollama.embeddings(model=config.EMBED_MODEL, prompt=text)
-            return response["embedding"]
+            return engine.embed_one(config.EMBED_MODEL, text)
         except Exception as e:
             last_error = e
             if attempt < retries:
@@ -162,13 +159,13 @@ def preprocess_query(question: str) -> tuple[str, list[str]]:
         f"Question: {question}"
     )
     try:
-        response = ollama.chat(
-            model=config.EXPAND_MODEL,  # small model, kept warm
-            messages=[{"role": "user", "content": prompt}],
-            options={"num_ctx": 4096, "num_predict": 128},
+        content = engine.chat_once(
+            config.EXPAND_MODEL,  # small model, kept warm
+            [{"role": "user", "content": prompt}],
+            num_ctx=4096, num_predict=128,
         )
         lines = [ln.strip("-*0123456789. \t")
-                 for ln in response["message"]["content"].splitlines()]
+                 for ln in content.splitlines()]
         lines = [ln for ln in lines if ln]
         label = lines[0].upper() if lines else ""
         if "WORLD" in label:
@@ -201,25 +198,20 @@ def chat(
         {"role": "user", "content": prompt},
     ]
 
-    options = {"num_ctx": config.NUM_CTX}
     model = model or config.CHAT_MODEL
-    kwargs = {"model": model, "messages": messages, "options": options}
-    if think:
-        kwargs["think"] = think
 
     if stream:
         # Print tokens as they arrive, but still return the full text so
         # callers can use the answer the same way as the non-streaming path.
         parts = []
-        for chunk in ollama.chat(**kwargs, stream=True):
-            piece = chunk["message"]["content"]
+        for piece in engine.chat_stream(model, messages,
+                                        num_ctx=config.NUM_CTX, think=think):
             parts.append(piece)
             print(piece, end="", flush=True)
         print()
         return "".join(parts)
 
-    response = ollama.chat(**kwargs)
-    return response["message"]["content"]
+    return engine.chat_once(model, messages, num_ctx=config.NUM_CTX, think=think)
 
 
 def cloud_world(question: str, stream: bool = True) -> str:

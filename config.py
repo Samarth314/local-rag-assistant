@@ -8,8 +8,17 @@ DB_PATH = str(DATA_DIR / "lancedb")
 STATE_FILE = DATA_DIR / "index_state.json"
 CHUNKS_TABLE = "chunks"
 
+# Local inference engine: "ollama" (default) or "vllm" (any OpenAI-compatible
+# server). Only affects LOCAL inference; the cloud path (Anthropic) is separate.
+# When switching to vllm, also point the model names below at whatever your
+# vLLM server serves (HF-style ids, not Ollama tags).
+ENGINE = os.environ.get("RAG_ENGINE", "ollama")
+VLLM_URL = os.environ.get("RAG_VLLM_URL", "http://localhost:8000/v1")
+VLLM_API_KEY = os.environ.get("RAG_VLLM_API_KEY", "EMPTY")  # vLLM ignores it; client requires a value
+VLLM_MAX_TOKENS = int(os.environ.get("RAG_VLLM_MAX_TOKENS", "2048"))
+
 # Ollama models (pull with: ollama pull <model>)
-EMBED_MODEL = "nomic-embed-text"   # 768-dim embeddings
+EMBED_MODEL = os.environ.get("RAG_EMBED_MODEL", "nomic-embed-text")   # 768-dim embeddings
 EMBED_DIM = 768
 # 14B is the deployment target (the Jetson AGX runs it comfortably); it's the
 # default so we tune against production quality, not this dev machine. For fast

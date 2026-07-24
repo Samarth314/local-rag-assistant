@@ -94,6 +94,23 @@ GPU inference. `docker compose down -v` removes every trace.
 - `app.py` — FastAPI `/query` endpoint
 - `cli.py` — `index` / `query` / `list` / `serve` commands
 
+## Inference engine: Ollama or vLLM
+
+Local inference goes through a pluggable backend (`engine.py`), selected with
+`RAG_ENGINE`:
+
+- `RAG_ENGINE=ollama` (default) — the Ollama server, unchanged.
+- `RAG_ENGINE=vllm` — any OpenAI-compatible server (vLLM, etc.), via
+  `RAG_VLLM_URL` (default `http://localhost:8000/v1`).
+
+Only *local* inference (chat / embeddings / routing) switches; the cloud
+escalation path (Anthropic) is unaffected. Model **names** differ between
+engines — Ollama uses tags (`qwen2.5:7b-instruct`), vLLM uses HF ids
+(`Qwen/Qwen2.5-7B-Instruct`) — so when using vLLM, set `RAG_CHAT_MODEL`,
+`RAG_GOOD_MODEL`, `RAG_EXPAND_MODEL`, and `RAG_EMBED_MODEL` to what your server
+serves. A starting Compose template is in `docker-compose.vllm.yml` (read its
+header — the stock image is x86-only; the Jetson needs an ARM/Jetson build).
+
 ## Tests
 
 Offline unit tests for the routing and logic helpers (no Ollama or network

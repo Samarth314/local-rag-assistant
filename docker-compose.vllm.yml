@@ -1,0 +1,31 @@
+# Optional vLLM backend, as a Compose OVERRIDE. Bring it up alongside the base
+# stack, then point the rag service at it (uncomment the RAG_ENGINE/RAG_VLLM_URL
+# block in docker-compose.yml):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml up -d vllm
+#   docker compose -f docker-compose.yml -f docker-compose.vllm.yml \
+#       run --rm rag python cli.py query "..." --timing
+#
+# ⚠️ HARDWARE CAVEAT: the image below (vllm/vllm-openai) targets x86_64 + a
+# datacenter NVIDIA GPU. On the Jetson AGX Orin (aarch64 / Tegra) it will NOT
+# run as-is -- use an ARM/Jetson build instead (e.g. dustynv's jetson-containers
+# vLLM image), keeping the same command/ports. vLLM also shines under
+# concurrency; for a single-user assistant Ollama is usually the simpler fit.
+# This file is a starting template, not a turnkey Jetson deployment.
+
+services:
+  vllm:
+    image: vllm/vllm-openai:latest        # replace with a Jetson image on the Orin
+    command:
+      - --model=Qwen/Qwen2.5-7B-Instruct  # must match RAG_CHAT_MODEL
+      - --max-model-len=8192
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm-cache:/root/.cache/huggingface
+    # GPU passthrough (uncomment per environment):
+    # runtime: nvidia
+    ipc: host
+
+volumes:
+  vllm-cache:
