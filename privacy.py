@@ -52,6 +52,10 @@ _IPV4 = re.compile(
 )
 # 13-16 digit runs, possibly space/dash grouped -> candidate card numbers.
 _CARD_CANDIDATE = re.compile(r"(?<!\d)(?:\d[ -]?){13,16}(?!\d)")
+# 8-17 digit runs -> candidate account / long-id numbers (anything not a valid
+# card). High-precision (a contiguous or space/dash-grouped digit run), so it
+# fires on account numbers but not on ordinary prose.
+_LONG_DIGITS = re.compile(r"(?<!\d)(?:\d[ -]?){7,16}\d(?!\d)")
 
 
 def _luhn_ok(number: str) -> bool:
@@ -87,6 +91,10 @@ def detect_pii(
     for m in _CARD_CANDIDATE.finditer(text):
         if _luhn_ok(m.group()):
             findings.append(("credit_card", m.group()))
+    for m in _LONG_DIGITS.finditer(text):
+        # A long digit run that isn't a valid card -> treat as account/id.
+        if not _luhn_ok(m.group()):
+            findings.append(("account", m.group()))
     if ner is not None:
         try:
             findings.extend(ner(text))

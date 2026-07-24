@@ -302,75 +302,87 @@ def _cloud_plain(system_prompt: str, user_content: str, max_tokens: int = 4000) 
         return "".join(s.text_stream)
 
 
-def delegate_deep(
-    system_prompt: str,
-    context_chunks: list[str],
-    user_query: str,
-    stream: bool = True,
-) -> str:
-    """PAPILLON-style privacy-conscious delegation for --deep (Task B/c).
+_DELEGATE_REWRITE_SYSTEM = (
+    "You turn a user's private question + their private document excerpts into "
+    "a SINGLE self-contained sub-task for an external assistant that must NOT "
+    "see any private data. Strip every name, email, account number, date, "
+    "dollar amount, address, and any verbatim phrase from the documents. Keep "
+    "only the abstract reasoning or general-knowledge question that, once "
+    "answered, lets a local model finish using the private data it already "
+    "has. Output only the sub-task."
+)
+_DELEGATE_ANSWER_SYSTEM = (
+    "You are a personal assistant with access to the user's own files. Answer "
+    "using the excerpts plus the reference reasoning provided."
+)
 
-    Instead of shipping raw excerpts to the cloud (what cloud_chat does), the
-    LOCAL model turns the private evidence into a sanitized, self-contained
-    sub-task; only that sub-task goes to the cloud; the LOCAL model then
-    recombines the cloud's reasoning with the private evidence that never left.
+
+def delegate_deep(
+    query: str,
+    context_chunks: list[str],
+    *,
+    system_prompt: str | None = None,
+    local_chat=None,
+    cloud_solve=None,
+) -> tuple[str, dict]:
+    """PAPILLON-style privacy-conscious delegation (Task B/c).
+
+    Interface (agreed seam with Arya): in (query, local context) -> out
+    (answer, record) where `record` is the EXACT account of what left the
+    machine -- so a diff can prove no private specifics reached the cloud.
 
     Flow:
-      1. LOCAL: (question + excerpts) -> a generalized sub-task with no names,
-         numbers, or verbatim spans from the documents.
-      2. GATE:  sanitize_for_cloud() on the sub-task, belt-and-suspenders.
-      3. CLOUD: solve only the abstract sub-task.
-      4. LOCAL: recombine the cloud answer with the ORIGINAL excerpts.
-      5. GATE:  scan_output() before returning.
+      1. LOCAL model rewrites (query + private excerpts) into an abstract
+         sub-task with no specifics.
+      2. GATE: sanitize_for_cloud() strips any credential/PII the rewrite
+         leaked -- this is the deterministic backstop, not trust in the model.
+      3. CLOUD solves ONLY the sanitized sub-task (no document content).
+      4. LOCAL model recombines the cloud answer with the ORIGINAL excerpts,
+         which never left the machine.
+      5. GATE: scan_output() on the final answer before it is returned.
 
-    Gated behind config.DELEGATE_DEEP (default off) until validated end-to-end
-    on the Orin -- quality preservation is a behavioral property that needs a
-    live local model to measure, not a code property. When off, callers use
-    cloud_chat (raw-excerpt path) as before.
+    `local_chat(system, context_chunks, user) -> str` and
+    `cloud_solve(system, content) -> str` are injectable so the flow is
+    testable without live models; they default to the real local/cloud calls.
     """
-    from privacy import scan_output
+    from privacy import sanitize_for_cloud, scan_output
+
+    system_prompt = system_prompt or _DELEGATE_ANSWER_SYSTEM
+    local_chat = local_chat or (lambda s, ctx, u: chat(s, ctx, u, stream=False))
+    cloud_solve = cloud_solve or _cloud_plain
 
     context = "\n\n---\n\n".join(context_chunks) or "(no documents)"
 
-    # 1. LOCAL: write a sanitized sub-task from the private evidence.
-    rewrite_system = (
-        "You turn a user's private question + their private document excerpts "
-        "into a SINGLE self-contained sub-task for an external assistant that "
-        "must NOT see any private data. Strip every name, email, account "
-        "number, date, dollar amount, address, and any verbatim phrase from "
-        "the documents. Keep only the abstract reasoning or general-knowledge "
-        "question that, once answered, lets a local model finish using the "
-        "private data it already has. Output only the sub-task."
-    )
-    subtask = chat(
-        rewrite_system,
-        [],
-        f"Question:\n{user_query}\n\nPrivate excerpts:\n{context}",
-        stream=False,
+    # 1. LOCAL: abstract the private evidence into a sub-task.
+    subtask_raw = local_chat(
+        _DELEGATE_REWRITE_SYSTEM, [],
+        f"Question:\n{query}\n\nPrivate excerpts:\n{context}",
     )
 
-    # 2. GATE: never trust the rewrite blindly.
-    subtask, counts = sanitize_for_cloud(subtask)
-    print(f"[delegate] local model wrote a sanitized sub-task; "
-          f"{'redacted ' + summarize(counts) if counts else 'no residual PII'}\n"
-          f"[delegate] sending to cloud (no document content):\n  {subtask}\n")
+    # 2. GATE: the deterministic backstop -- sanitize before ANYTHING leaves.
+    subtask_sent, redactions = sanitize_for_cloud(subtask_raw)
 
-    # 3. CLOUD: solve only the abstraction.
-    cloud_answer = _cloud_plain(
-        "Answer the sub-task directly and concisely.", subtask
+    # 3. CLOUD: solve only the sanitized abstraction.
+    cloud_answer = cloud_solve(
+        "Answer the sub-task directly and concisely.", subtask_sent
     )
 
-    # 4. LOCAL: recombine with the private evidence that never left.
-    answer = chat(
-        system_prompt,
-        context_chunks,
-        f"{user_query}\n\n[Reference reasoning from an external assistant, which "
-        f"never saw your files:]\n{cloud_answer}",
-        stream=stream,
+    # 4. LOCAL: recombine with the evidence that never left the machine.
+    answer = local_chat(
+        system_prompt, context_chunks,
+        f"{query}\n\n[Reference reasoning from an external assistant that never "
+        f"saw your files:]\n{cloud_answer}",
     )
 
-    # 5. GATE: output scan before display.
-    scanned, out_counts = scan_output(answer)
-    if out_counts:
-        print(f"\n[output-scan] flagged in the answer: {summarize(out_counts)}")
-    return answer
+    # 5. GATE: output scan.
+    _, output_flags = scan_output(answer)
+
+    record = {
+        "cloud_model": config.CLOUD_MODEL,
+        "sent_to_cloud": subtask_sent,   # the EXACT payload that left the machine
+        "redactions": redactions,        # what the gate stripped from the rewrite
+        "documents_sent": [],            # invariant: document content never leaves
+        "cloud_answer": cloud_answer,
+        "output_flags": output_flags,    # anything the output scan caught
+    }
+    return answer, record

@@ -230,7 +230,15 @@ def main():
                       f"from {len(files)} file(s): {', '.join(files)}\n")
             try:
                 if config.DELEGATE_DEEP:
-                    answer = delegate_deep(system_prompt, context_chunks, question)
+                    answer, record = delegate_deep(question, context_chunks,
+                                                   system_prompt=system_prompt)
+                    from llm import summarize
+                    print(answer)
+                    print(f"\n[delegate] sent to cloud (no documents): "
+                          f"{record['sent_to_cloud']!r}")
+                    if record["redactions"]:
+                        print(f"[delegate] gate stripped: "
+                              f"{summarize(record['redactions'])}")
                 else:
                     answer = cloud_chat(system_prompt, context_chunks, question)
             except Exception as e:
