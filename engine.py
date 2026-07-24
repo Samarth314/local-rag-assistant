@@ -100,8 +100,9 @@ def chat_stream(model, messages, *, num_ctx=None, num_predict=None, think=None) 
 
 
 def embed_one(model, text) -> list[float]:
-    """Embed a single string."""
-    if config.ENGINE == "vllm":
+    """Embed a single string. Uses EMBED_ENGINE (not ENGINE) so embeddings can
+    stay on Ollama while generation runs on vLLM."""
+    if config.EMBED_ENGINE == "vllm":
         resp = _vllm_client().embeddings.create(model=model, input=text)
         return list(resp.data[0].embedding)
     import ollama

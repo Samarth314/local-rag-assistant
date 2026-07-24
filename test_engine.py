@@ -11,6 +11,9 @@ class TestEngineConfig(unittest.TestCase):
     def test_default_engine_is_ollama(self):
         self.assertEqual(config.ENGINE, "ollama")
 
+    def test_embed_engine_defaults_to_engine(self):
+        self.assertEqual(config.EMBED_ENGINE, config.ENGINE)
+
     def test_ollama_options_only_includes_present_keys(self):
         self.assertEqual(engine._ollama_options(None, None), {})
         self.assertEqual(engine._ollama_options(8192, None), {"num_ctx": 8192})

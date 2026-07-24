@@ -13,6 +13,10 @@ CHUNKS_TABLE = "chunks"
 # When switching to vllm, also point the model names below at whatever your
 # vLLM server serves (HF-style ids, not Ollama tags).
 ENGINE = os.environ.get("RAG_ENGINE", "ollama")
+# Embeddings may run on a DIFFERENT backend than generation: a vLLM instance
+# serving a chat model doesn't serve embeddings, so the natural split is
+# generate on vLLM, embed on Ollama. Defaults to whatever ENGINE is.
+EMBED_ENGINE = os.environ.get("RAG_EMBED_ENGINE", ENGINE)
 VLLM_URL = os.environ.get("RAG_VLLM_URL", "http://localhost:8000/v1")
 VLLM_API_KEY = os.environ.get("RAG_VLLM_API_KEY", "EMPTY")  # vLLM ignores it; client requires a value
 VLLM_MAX_TOKENS = int(os.environ.get("RAG_VLLM_MAX_TOKENS", "2048"))
