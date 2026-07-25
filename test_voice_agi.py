@@ -161,6 +161,34 @@ class TestCallRunner(unittest.TestCase):
                                     transcripts=["goodbye"])
         self.assertNotIn("RECORD", " ".join(channel.commands))
 
+    def test_barge_in_during_pin_prompt_collects_the_whole_code(self):
+        # Callers start keying the code over the greeting. STREAM FILE reports
+        # only the interrupting digit, so the rest must still be collected --
+        # otherwise a barge-in always fails auth on the first attempt.
+        channel = _FakeChannel(dtmf=["821", "#"], barge=["4"])
+        session = CallSession(agents=AGENTS,
+                              answer_fn=lambda q, a: Answer(text="ok"),
+                              pin="4821")
+        media = MediaConfig(sounds_dir=Path("/tmp/ataru-test"))
+        with mock.patch.object(voice_agi, "synthesize",
+                               lambda text, c: Path("/tmp/ataru-test/x.wav")):
+            CallRunner(channel, session, media).run()
+        # Reaching the menu (rather than a rejection) proves the code assembled.
+        self.assertEqual(session.pin_attempts, 0)
+
+    def test_single_digit_barge_in_is_not_extended(self):
+        # At the menu a barge-in IS the whole entry; don't wait for more.
+        channel = _FakeChannel(barge=["2"])
+        session = CallSession(agents=AGENTS,
+                              answer_fn=lambda q, a: Answer(text="ok"), pin="1")
+        session.state = voice_agi.CallSession(agents=AGENTS,
+                                              answer_fn=lambda q, a: Answer(text="ok"),
+                                              pin="1").state
+        media = MediaConfig(sounds_dir=Path("/tmp/ataru-test"))
+        runner = CallRunner(channel, session, media)
+        from voice import Expect as E, VoiceTurn as VT
+        self.assertEqual(runner._entry(VT(speak="x", expect=E.DTMF, digits=1), "2"), "2")
+
     def test_keypad_only_mode_when_no_asr_configured(self):
         # With no ASR endpoint the line must stay usable, not record silence.
         channel, spoken = self._run(dtmf=["4821", "#"], stt=False)

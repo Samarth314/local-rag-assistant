@@ -167,7 +167,7 @@ class CallRunner:
                 break
 
             if turn.expect is Expect.DTMF:
-                turn = self.session.handle_dtmf(digit or self._collect_dtmf(turn))
+                turn = self.session.handle_dtmf(self._entry(turn, digit))
             elif turn.expect is Expect.SPEECH:
                 # A keypress during an answer means the caller wants the menu,
                 # not to talk -- honour it instead of recording silence.
@@ -194,10 +194,24 @@ class CallRunner:
             return ""
         return self.channel.stream(stream_name(audio))
 
-    def _collect_dtmf(self, turn: VoiceTurn) -> str:
+    def _entry(self, turn: VoiceTurn, barge_digit: str) -> str:
+        """Assemble a full DTMF entry, honouring a mid-prompt barge-in.
+
+        Callers key their access code over the greeting. STREAM FILE returns
+        only the digit that interrupted playback, so for a multi-digit entry we
+        must keep collecting the rest instead of treating that first digit as
+        the whole code.
+        """
+        if not barge_digit:
+            return self._collect_dtmf(turn.digits)
+        if turn.digits <= 1:
+            return barge_digit
+        return barge_digit + self._collect_dtmf(turn.digits - 1)
+
+    def _collect_dtmf(self, max_digits: int) -> str:
         """Collect digits after the prompt already played (silent re-prompt)."""
         silence = self.media.sounds_dir / "silence"
-        return self.channel.get_data(str(silence), DTMF_TIMEOUT_MS, turn.digits)
+        return self.channel.get_data(str(silence), DTMF_TIMEOUT_MS, max_digits)
 
     def _collect_speech(self) -> str:
         target = self.workdir / "turn"
