@@ -85,9 +85,25 @@ def query(req: QueryRequest):
     return QueryResponse(response=answer, sources=sources)
 
 
+@app.get("/voice/answer", response_model=VoiceResponse)
+def voice_answer_get(q: str, agent: str | None = None, top_k: int = 4):
+    """GET form of /voice/answer, for clients that can't easily POST JSON.
+
+    Exists specifically for iOS Shortcuts: building a POST with a JSON body
+    there means six separate settings and a variable token in the right box,
+    which is error-prone. With this, the whole action is one URL plus one
+    variable. Identical behaviour to the POST route.
+    """
+    return _voice_answer(VoiceRequest(query=q, agent=agent, top_k=top_k))
+
+
 @app.post("/voice/answer", response_model=VoiceResponse)
 def voice_answer(req: VoiceRequest):
-    """Answer shaped for being read aloud on a phone call.
+    return _voice_answer(req)
+
+
+def _voice_answer(req: VoiceRequest) -> VoiceResponse:
+    """Answer shaped for being read aloud.
 
     Differs from /query in two ways that the medium forces (see voice_backend):
     the fast model is pinned so the caller isn't left in silence, and query
