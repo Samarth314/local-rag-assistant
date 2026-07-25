@@ -9,3 +9,6 @@ __pycache__/
 
 # Secrets -- ANTHROPIC_API_KEY and anything else local-only. Never commit.
 .env
+
+# Telephony secrets (SIP password, DTMF access code). Never commit.
+telephony/.env

@@ -1,0 +1,38 @@
+# ATARU telephony: Asterisk on the tailnet, nothing exposed publicly.
+#
+# Required in telephony/.env:
+#   ATARU_SIP_HOST      tailnet IP/hostname of the machine running this
+#   ATARU_SIP_PASSWORD  softphone password
+#   ATARU_VOICE_PIN     DTMF access code required before any content
+#
+# Bring up:  docker compose --env-file .env up -d --build
+services:
+  asterisk:
+    build:
+      context: ..
+      dockerfile: telephony/Dockerfile
+    restart: unless-stopped
+    # host networking keeps SIP/RTP simple and lets Tailscale on the host carry
+    # the media without NAT gymnastics.
+    network_mode: host
+    environment:
+      ATARU_SIP_HOST: ${ATARU_SIP_HOST:?set to this host's tailnet address}
+      ATARU_SIP_PASSWORD: ${ATARU_SIP_PASSWORD:?set a softphone password}
+      # Required: the container refuses to start without it.
+      ATARU_VOICE_PIN: ${ATARU_VOICE_PIN:?set a DTMF access code}
+      # Keypad is generated from these, in alphabetical order.
+      RAG_VOICE_AGENTS: ${RAG_VOICE_AGENTS:-comms,finance,health,life,records}
+      # Where the RAG service is listening (cli.py serve / app.py).
+      RAG_API_URL: ${RAG_API_URL:-http://127.0.0.1:8000}
+      # Speech input is optional. With no ASR endpoint the line is keypad-only.
+      RAG_STT_URL: ${RAG_STT_URL:-}
+      RAG_TTS_URL: ${RAG_TTS_URL:-}
+    volumes:
+      - ./pjsip.conf.template:/etc/asterisk/pjsip.conf.template:ro
+      - ./extensions.conf:/etc/asterisk/extensions.conf:ro
+      - ./asterisk.conf:/etc/asterisk/asterisk.conf:ro
+      # Synthesised prompts are cached so fixed phrases render once.
+      - tts-cache:/var/lib/asterisk/sounds/ataru
+
+volumes:
+  tts-cache:

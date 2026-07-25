@@ -1,0 +1,47 @@
+;
+; SIP transport and endpoints for ATARU.
+;
+; Bound to the container network only. Reachability is provided by Tailscale on
+; the host -- there is no port forward from the public internet, and no SIP
+; registration to any external provider.
+;
+[transport-udp]
+type = transport
+protocol = udp
+bind = 0.0.0.0:5060
+; Advertise the host's tailnet address so RTP returns to the right place.
+external_media_address = ${ATARU_SIP_HOST}
+external_signaling_address = ${ATARU_SIP_HOST}
+local_net = 100.64.0.0/10
+local_net = 10.0.0.0/8
+local_net = 192.168.0.0/16
+local_net = 172.16.0.0/12
+
+;
+; One endpoint per softphone. Add a second block for a second device.
+; The password is supplied from the environment, never committed.
+;
+[phone]
+type = endpoint
+context = ataru
+disallow = all
+; ulaw first: no transcoding cost, and the line is already 8 kHz.
+allow = ulaw
+allow = alaw
+auth = phone-auth
+aors = phone
+direct_media = no
+; Asterisk must terminate DTMF itself so the AGI can read digits.
+dtmf_mode = rfc4733
+
+[phone-auth]
+type = auth
+auth_type = userpass
+username = phone
+password = ${ATARU_SIP_PASSWORD}
+
+[phone]
+type = aor
+max_contacts = 2
+remove_existing = yes
+qualify_frequency = 60
