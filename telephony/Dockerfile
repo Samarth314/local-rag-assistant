@@ -5,9 +5,12 @@
 # telephony container and the index stay independent and a wedged call can
 # never take the vault down with it.
 #
-# Debian ships asterisk for arm64, so this builds on the Jetson or the Mac mini
-# with no source build.
-FROM debian:bookworm-slim
+# Base is Ubuntu, NOT Debian: asterisk was dropped from Debian 12 (bookworm)
+# and has no installation candidate there (Debian bug #1031046). Ubuntu keeps
+# it in `universe`, which is enabled by default in the official images, and
+# ships arm64 -- so this builds on the Jetson with no source build.
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
