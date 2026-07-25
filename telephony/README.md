@@ -142,11 +142,15 @@ builders, speech reshaping, PIN enforcement and fail-closed behaviour — 56
 offline tests covering them, no telephony stack required. Also verified: the
 entrypoint renders the SIP template correctly and aborts when the PIN is missing.
 
-**Not yet verified:** the Docker image build and a real SIP call. Docker was not
-available on the machine where this was written, so the image has never been
-built and no call has been placed. Expect to iterate on the first run —
-most likely spots are Debian's Asterisk module defaults and RTP port handling
-under `network_mode: host`.
+**Not yet verified:** a real SIP call. Docker was not available on the machine
+where this was written, so no call has been placed. Expect to iterate — the
+likeliest remaining spot is RTP handling under `network_mode: host`.
+
+The base image is **Ubuntu, not Debian**: asterisk was dropped before Debian 12
+released and has no installation candidate there
+([Debian #1031046](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1031046)).
+Ubuntu keeps it in `universe` with arm64 builds. Override with
+`--build-arg BASE_IMAGE=` if you need something else.
 
 ## Troubleshooting
 
