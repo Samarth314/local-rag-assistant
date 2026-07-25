@@ -21,7 +21,33 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gettext-base \
         python3 \
         ca-certificates \
+        curl \
     && rm -rf /var/lib/apt/lists/*
+
+# Piper: a neural TTS that runs offline on CPU and sounds vastly better than
+# espeak over a phone line. espeak-ng above stays installed as the fallback,
+# so a failed download here degrades the voice rather than breaking the line.
+ARG PIPER_VERSION=2023.11.14-2
+ARG PIPER_VOICE=en_US-lessac-medium
+ARG TARGETARCH
+RUN set -eux; \
+    case "${TARGETARCH:-arm64}" in \
+      arm64) PIPER_ARCH=aarch64 ;; \
+      amd64) PIPER_ARCH=x86_64 ;; \
+      *)     PIPER_ARCH=aarch64 ;; \
+    esac; \
+    mkdir -p /opt/piper /opt/piper/voices; \
+    ( curl -fsSL -o /tmp/piper.tar.gz \
+        "https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_${PIPER_ARCH}.tar.gz" \
+      && tar -xzf /tmp/piper.tar.gz -C /opt \
+      && ln -sf /opt/piper/piper /usr/local/bin/piper \
+      && curl -fsSL -o /opt/piper/voices/${PIPER_VOICE}.onnx \
+        "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/${PIPER_VOICE}.onnx?download=true" \
+      && curl -fsSL -o /opt/piper/voices/${PIPER_VOICE}.onnx.json \
+        "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/${PIPER_VOICE}.onnx.json?download=true" \
+      && echo "piper installed" ) \
+    || echo "WARNING: Piper install failed; falling back to espeak-ng at runtime"; \
+    rm -f /tmp/piper.tar.gz
 
 # The AGI runs under the system python3 (stdlib only -- see the note above).
 WORKDIR /opt/ataru
@@ -45,6 +71,7 @@ RUN sox -n -r 8000 -c 1 -b 16 /var/lib/asterisk/sounds/ataru/silence.wav trim 0.
 
 ENV PYTHONPATH=/opt/ataru
 ENV RAG_VOICE_SOUNDS=/var/lib/asterisk/sounds/ataru
+ENV RAG_PIPER_MODEL=/opt/piper/voices/en_US-lessac-medium.onnx
 
 EXPOSE 5060/udp 5060/tcp 10000-10099/udp
 

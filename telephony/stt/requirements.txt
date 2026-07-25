@@ -1,0 +1,5 @@
+# Parakeet ASR service. nemo_toolkit[asr] pulls torch -- this image is large
+# (several GB) and that is expected; it is isolated from the telephony image.
+fastapi
+uvicorn[standard]
+nemo_toolkit[asr]>=2.0.0

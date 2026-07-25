@@ -25,7 +25,8 @@ services:
       # Where the RAG service is listening (cli.py serve / app.py).
       RAG_API_URL: ${RAG_API_URL:-http://127.0.0.1:8000}
       # Speech input is optional. With no ASR endpoint the line is keypad-only.
-      RAG_STT_URL: ${RAG_STT_URL:-}
+      # Defaults to the Parakeet sidecar below. Blank it for keypad-only.
+      RAG_STT_URL: ${RAG_STT_URL:-http://127.0.0.1:8081/asr}
       RAG_TTS_URL: ${RAG_TTS_URL:-}
     volumes:
       - ./pjsip.conf.template:/etc/asterisk/pjsip.conf.template:ro
@@ -34,5 +35,23 @@ services:
       # Synthesised prompts are cached so fixed phrases render once.
       - tts-cache:/var/lib/asterisk/sounds/ataru
 
+  # NVIDIA Parakeet ASR. Large image (NeMo + torch) and slow to build; the
+  # telephony container works without it, just keypad-only.
+  # Start only this:  docker compose --env-file .env up -d stt
+  stt:
+    build:
+      context: ..
+      dockerfile: telephony/stt/Dockerfile
+      args:
+        # On Jetson, override with an L4T/NeMo base for CUDA-enabled torch.
+        BASE_IMAGE: ${STT_BASE_IMAGE:-python:3.11-slim}
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      PARAKEET_MODEL: ${PARAKEET_MODEL:-nvidia/parakeet-tdt-0.6b-v2}
+    volumes:
+      - stt-models:/models
+
 volumes:
   tts-cache:
+  stt-models:

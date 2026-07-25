@@ -224,6 +224,45 @@ class TestMediaHelpers(unittest.TestCase):
         self.assertFalse(self.config.speech_enabled)
         self.assertTrue(MediaConfig(sounds_dir=Path("/tmp"), stt_url="http://x").speech_enabled)
 
+    def test_engine_precedence_remote_then_piper_then_espeak(self):
+        import tempfile
+        from voice_media import piper_command
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "voice.onnx"
+            model.write_bytes(b"stub")
+            # Remote wins when configured.
+            self.assertEqual(
+                MediaConfig(sounds_dir=Path(tmp), tts_url="http://x",
+                            piper_model=model).engine, "remote")
+            # Piper when its model is actually on disk.
+            self.assertEqual(
+                MediaConfig(sounds_dir=Path(tmp), piper_model=model).engine, "piper")
+            # espeak when the model path is set but missing -- a failed Piper
+            # download must degrade the voice, not break the line.
+            self.assertEqual(
+                MediaConfig(sounds_dir=Path(tmp),
+                            piper_model=Path(tmp) / "absent.onnx").engine, "espeak")
+            self.assertEqual(MediaConfig(sounds_dir=Path(tmp)).engine, "espeak")
+
+    def test_piper_command_shape(self):
+        from voice_media import piper_command
+        command = piper_command(Path("/v/voice.onnx"), Path("/tmp/o.wav"))
+        self.assertEqual(command[0], "piper")
+        self.assertIn("/v/voice.onnx", command)
+        self.assertIn("/tmp/o.wav", command)
+
+    def test_cache_key_changes_with_engine(self):
+        # Switching engines must invalidate cached prompts, or the caller hears
+        # old espeak audio after upgrading to Piper.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "voice.onnx"
+            model.write_bytes(b"stub")
+            espeak_cfg = MediaConfig(sounds_dir=Path(tmp))
+            piper_cfg = MediaConfig(sounds_dir=Path(tmp), piper_model=model)
+            self.assertNotEqual(cache_key("hello", espeak_cfg),
+                                cache_key("hello", piper_cfg))
+
     def test_parse_transcript_handles_known_shapes(self):
         self.assertEqual(parse_transcript('{"text":" hello "}'), "hello")
         self.assertEqual(parse_transcript('{"results":[{"transcript":"hi"}]}'), "hi")

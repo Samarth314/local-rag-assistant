@@ -42,20 +42,29 @@ BIT_DEPTH = 16
 
 @dataclass(frozen=True)
 class MediaConfig:
-    """Where generated audio lives and which engines to use."""
+    """Where generated audio lives and which engines to use.
+
+    TTS engine precedence: a remote endpoint if configured, else Piper if its
+    model is present, else espeak-ng. Piper is the preferred local engine --
+    it is a neural voice and sounds enormously better than espeak over a phone
+    line, while still running offline on CPU.
+    """
     sounds_dir: Path
-    tts_url: Optional[str] = None      # e.g. http://orin:8080/tts (Kokoro-style)
-    stt_url: Optional[str] = None      # e.g. http://orin:8081/asr (Parakeet/whisper)
-    voice: str = "en-us"
+    tts_url: Optional[str] = None      # remote TTS (Kokoro-style), optional
+    stt_url: Optional[str] = None      # ASR endpoint (Parakeet), optional
+    piper_model: Optional[Path] = None  # path to a Piper .onnx voice
+    voice: str = "en-us"               # espeak voice, fallback engine only
     words_per_minute: int = 165
     timeout: float = 20.0
 
     @staticmethod
     def from_env() -> "MediaConfig":
+        model = os.environ.get("RAG_PIPER_MODEL") or None
         return MediaConfig(
             sounds_dir=Path(os.environ.get("RAG_VOICE_SOUNDS", "/var/lib/asterisk/sounds/ataru")),
             tts_url=os.environ.get("RAG_TTS_URL") or None,
             stt_url=os.environ.get("RAG_STT_URL") or None,
+            piper_model=Path(model) if model else None,
             voice=os.environ.get("RAG_TTS_VOICE", "en-us"),
             words_per_minute=int(os.environ.get("RAG_TTS_WPM", "165")),
         )
@@ -64,6 +73,15 @@ class MediaConfig:
     def speech_enabled(self) -> bool:
         """Speech input needs a transcriber; without one the line is keypad-only."""
         return bool(self.stt_url)
+
+    @property
+    def engine(self) -> str:
+        """Which TTS engine will actually be used: 'remote', 'piper' or 'espeak'."""
+        if self.tts_url:
+            return "remote"
+        if self.piper_model and self.piper_model.exists():
+            return "piper"
+        return "espeak"
 
 
 # --------------------------------------------------------------------------- #
@@ -82,6 +100,19 @@ def espeak_command(text: str, out_path: Path, config: MediaConfig) -> list[str]:
     ]
 
 
+def piper_command(model: Path, out_path: Path) -> list[str]:
+    """Piper reads the text on stdin and writes a WAV.
+
+    Piper emits at its model's native rate (usually 22.05 kHz), so the output
+    still goes through `resample_command` before Asterisk sees it.
+    """
+    return [
+        "piper",
+        "--model", str(model),
+        "--output_file", str(out_path),
+    ]
+
+
 def resample_command(src: Path, dst: Path) -> list[str]:
     """Normalise any WAV to the 8 kHz mono 16-bit form Asterisk expects."""
     return [
@@ -96,9 +127,12 @@ def resample_command(src: Path, dst: Path) -> list[str]:
 def cache_key(text: str, config: MediaConfig) -> str:
     """Stable filename for a phrase, so fixed prompts are synthesised once.
 
-    Includes the voice settings so changing the voice invalidates the cache.
+    Keyed on the engine and voice settings too, so switching from espeak to
+    Piper (or changing voice) invalidates the cache rather than replaying old
+    audio in the wrong voice.
     """
-    seed = f"{config.voice}|{config.words_per_minute}|{text}"
+    model = config.piper_model.name if config.piper_model else ""
+    seed = f"{config.engine}|{model}|{config.voice}|{config.words_per_minute}|{text}"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
 
@@ -126,12 +160,18 @@ def synthesize(text: str, config: MediaConfig) -> Path:
 
     with tempfile.TemporaryDirectory() as tmp:
         raw = Path(tmp) / "raw.wav"
-        if config.tts_url:
+        engine = config.engine
+        if engine == "remote":
             _http_tts(text, raw, config)
+        elif engine == "piper":
+            # Piper takes the text on stdin, not as an argument.
+            _run(piper_command(config.piper_model, raw),
+                 timeout=config.timeout, stdin_text=text)
         else:
             _run(espeak_command(text, raw, config), timeout=config.timeout)
 
-        # espeak emits 22 kHz; a remote engine may emit 24 kHz. Normalise both.
+        # Piper emits ~22 kHz and remote engines often 24 kHz; the line is
+        # 8 kHz. Without this the voice plays at the wrong pitch and speed.
         if shutil.which("sox"):
             _run(resample_command(raw, final), timeout=config.timeout)
         else:
@@ -219,9 +259,15 @@ def parse_transcript(payload: str) -> str:
 
 # --------------------------------------------------------------------------- #
 
-def _run(command: list[str], timeout: float) -> None:
+def _run(command: list[str], timeout: float, stdin_text: Optional[str] = None) -> None:
     try:
-        subprocess.run(command, check=True, capture_output=True, timeout=timeout)
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            timeout=timeout,
+            input=stdin_text.encode("utf-8") if stdin_text is not None else None,
+        )
     except FileNotFoundError as exc:
         raise SynthesisError(f"{command[0]} is not installed in this image") from exc
     except subprocess.CalledProcessError as exc:

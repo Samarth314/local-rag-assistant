@@ -28,7 +28,8 @@ If you later want to call from any phone, see **Adding a real phone number**.
 - Docker on the host that will answer calls (the Mac mini or the Orin).
 - Tailscale on that host **and** on the phone.
 - The RAG service reachable over HTTP (`python cli.py serve`, default `:8000`).
-- A softphone. [Linphone](https://linphone.org) is free and open source.
+- A SIP softphone. Asterisk answers calls; something has to place them.
+  [Linphone](https://linphone.org) and Zoiper are both free; any SIP client works.
 
 ## Setup
 
@@ -55,14 +56,21 @@ docker compose --env-file .env up -d --build
 docker compose logs -f asterisk
 ```
 
-**3. Point Linphone at it.** Add an account with:
+**3. Point your softphone at it.** Add a SIP account (not a hosted account
+with the app vendor):
 
 - Username `phone`
 - Password — your `ATARU_SIP_PASSWORD`
 - Domain — your `ATARU_SIP_HOST`
-- Transport UDP
+- Transport **UDP** (only UDP is offered; TLS is not configured)
 
 Both devices must be on the tailnet. **Then dial `100`.**
+
+Confirm registration server-side rather than trusting the app:
+
+```bash
+docker compose exec asterisk asterisk -rx "pjsip show contacts"
+```
 
 ## Using the line
 
@@ -84,14 +92,37 @@ changes the menu with no code change here.
 
 ## Speech is optional
 
-With no `RAG_STT_URL`, the line is **keypad-only** and still fully usable — it
-degrades rather than breaking. To enable spoken questions, point `RAG_STT_URL`
-at a local ASR endpoint (Parakeet, `whisper.cpp` server, anything that accepts
-`POST` of a WAV and returns `{"text": ...}`).
+Spoken questions are transcribed by **NVIDIA Parakeet**, running as a separate
+container (`telephony/stt/`). It is deliberately isolated: NeMo pulls in torch
+and the image is several GB, so a model reload can never wedge the call path.
 
-Output speech uses **espeak-ng inside the container** — offline, free, robotic.
-For a better voice, point `RAG_TTS_URL` at a local Kokoro-style endpoint that
-accepts `{"text": ...}` and returns WAV; it is resampled to 8 kHz automatically.
+```bash
+docker compose --env-file .env up -d --build stt   # first build is slow
+curl -s --data-binary @clip.wav -H 'Content-Type: audio/wav' \
+     http://127.0.0.1:8081/asr
+```
+
+On the Jetson, override the base with a CUDA-enabled NeMo image:
+`STT_BASE_IMAGE=dustynv/nemo:r36.4.0` in `.env`.
+
+With `RAG_STT_URL` blank the line is **keypad-only** and still fully usable — it
+degrades rather than breaking. Any endpoint accepting a POSTed WAV and returning
+`{"text": ...}` works, so an existing ASR service can be pointed at instead.
+
+Output speech uses **Piper** — a neural TTS that runs offline on CPU and sounds
+far better than a formant synthesiser over a phone line. The voice model is
+baked into the image at build time.
+
+espeak-ng stays installed as a fallback: if the Piper download fails during the
+build, the line still works, just robotic. Check which engine is live:
+
+```bash
+docker compose exec asterisk python3 -c \
+  "import sys; sys.path.insert(0,'/opt/ataru'); from voice_media import MediaConfig; print(MediaConfig.from_env().engine)"
+```
+
+`piper` is what you want; `espeak` means the download failed. A remote engine
+can still be used instead via `RAG_TTS_URL` (takes precedence over both).
 
 ## Two constraints the medium imposes
 
