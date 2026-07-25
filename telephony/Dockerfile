@@ -29,9 +29,15 @@ COPY voice.py voice_media.py voice_backend.py voice_agi.py /opt/ataru/
 COPY telephony/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY telephony/pjsip.conf.template /etc/asterisk/pjsip.conf.template
 
+# The dialplan calls the AGI by absolute path, so astagidir is irrelevant.
+# Symlinks are still placed in BOTH conventional agi-bin locations, because
+# which one Asterisk searches depends on astdatadir/astagidir and differs
+# between builds -- /usr/share/asterisk/agi-bin is the default on Ubuntu.
 RUN chmod +x /opt/ataru/voice_agi.py /usr/local/bin/entrypoint.sh \
-    && mkdir -p /var/lib/asterisk/agi-bin /var/lib/asterisk/sounds/ataru \
-    && ln -sf /opt/ataru/voice_agi.py /var/lib/asterisk/agi-bin/ataru
+    && mkdir -p /var/lib/asterisk/agi-bin /usr/share/asterisk/agi-bin \
+                /var/lib/asterisk/sounds/ataru \
+    && ln -sf /opt/ataru/voice_agi.py /var/lib/asterisk/agi-bin/ataru \
+    && ln -sf /opt/ataru/voice_agi.py /usr/share/asterisk/agi-bin/ataru
 
 # One second of silence: GET DATA needs a file to play when collecting digits
 # after a prompt has already been spoken.
