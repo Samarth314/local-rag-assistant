@@ -1,9 +1,13 @@
-from fastapi import FastAPI
+import dataclasses
+
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 
 import config
 import store
+import voice_media
 from llm import chat, embed
+from voice import to_speech
 from voice_backend import VOICE_SYSTEM_PROMPT, top_source
 
 app = FastAPI(title="Local RAG Assistant")
@@ -100,6 +104,55 @@ def voice_answer_get(q: str, agent: str | None = None, top_k: int = 4):
 @app.post("/voice/answer", response_model=VoiceResponse)
 def voice_answer(req: VoiceRequest):
     return _voice_answer(req)
+
+
+# Spoken output is cached under the data volume, NOT the Asterisk sounds
+# directory: this process runs as a non-root user in a different container and
+# has no business writing there.
+SPEECH_CACHE = config.DATA_DIR / "speech"
+
+
+def _speech_config() -> voice_media.MediaConfig:
+    """TTS settings for the HTTP path.
+
+    Differs from the telephony config in one way that matters: the audio is
+    served at the voice model's native rate rather than downsampled to 8 kHz.
+    That downsample exists because a phone line cannot carry more; a phone
+    *speaker* can, and 8 kHz through it sounds like a bad call for no reason.
+    """
+    return dataclasses.replace(
+        voice_media.MediaConfig.from_env(),
+        sounds_dir=SPEECH_CACHE,
+        sample_rate=voice_media.WIDEBAND_RATE,
+    )
+
+
+@app.get("/voice/speak")
+def voice_speak(q: str, agent: str | None = None, top_k: int = 4):
+    """Answer `q` and return the answer as spoken WAV audio.
+
+    For the iOS Shortcut: one action fetches this URL and one plays the result,
+    so the voice matches the phone line exactly instead of being an iOS voice
+    that merely resembles it. The text answer is also returned, in the
+    `X-Ataru-Text` header, for clients that want to show it.
+    """
+    answer = _voice_answer(VoiceRequest(query=q, agent=agent, top_k=top_k))
+    spoken = to_speech(answer.text)
+    try:
+        wav = voice_media.synthesize(spoken, _speech_config())
+    except voice_media.SynthesisError as exc:
+        # 503, not 500: the answer is fine, only the voice is unavailable
+        # (no piper/espeak in this image). Callers can fall back to /voice/answer.
+        raise HTTPException(status_code=503, detail=f"speech unavailable: {exc}")
+    return Response(
+        content=wav.read_bytes(),
+        media_type="audio/wav",
+        headers={
+            # Header values must be latin-1 encodable and single-line.
+            "X-Ataru-Text": spoken.encode("ascii", "replace").decode("ascii"),
+            "X-Ataru-Source": (answer.source or "").encode("ascii", "replace").decode("ascii"),
+        },
+    )
 
 
 def _voice_answer(req: VoiceRequest) -> VoiceResponse:

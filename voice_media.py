@@ -35,6 +35,11 @@ SAMPLE_RATE = 8000
 CHANNELS = 1
 BIT_DEPTH = 16
 
+# What Piper's medium voices emit natively. Resampling to this is a no-op for
+# Piper and an upsample for nothing else, so it is the right rate to serve to
+# a phone speaker over the tailnet.
+WIDEBAND_RATE = 22050
+
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -56,6 +61,11 @@ class MediaConfig:
     voice: str = "en-us"               # espeak voice, fallback engine only
     words_per_minute: int = 165
     timeout: float = 20.0
+    # Output rate. 8 kHz is the *telephony* constraint, not a property of the
+    # voice: over a phone line nothing above 4 kHz survives anyway. Clients
+    # that play the audio directly (the iOS Shortcut) should ask for the
+    # model's native rate instead -- see WIDEBAND_RATE.
+    sample_rate: int = SAMPLE_RATE
 
     @staticmethod
     def from_env() -> "MediaConfig":
@@ -67,6 +77,7 @@ class MediaConfig:
             piper_model=Path(model) if model else None,
             voice=os.environ.get("RAG_TTS_VOICE", "en-us"),
             words_per_minute=int(os.environ.get("RAG_TTS_WPM", "165")),
+            sample_rate=int(os.environ.get("RAG_TTS_SAMPLE_RATE", str(SAMPLE_RATE))),
         )
 
     @property
@@ -113,11 +124,15 @@ def piper_command(model: Path, out_path: Path) -> list[str]:
     ]
 
 
-def resample_command(src: Path, dst: Path) -> list[str]:
-    """Normalise any WAV to the 8 kHz mono 16-bit form Asterisk expects."""
+def resample_command(src: Path, dst: Path, rate: int = SAMPLE_RATE) -> list[str]:
+    """Normalise any WAV to mono 16-bit at `rate`.
+
+    Defaults to the 8 kHz Asterisk expects; the HTTP `/voice/speak` path passes
+    WIDEBAND_RATE so a phone speaker isn't fed telephone-grade audio.
+    """
     return [
         "sox", str(src),
-        "-r", str(SAMPLE_RATE),
+        "-r", str(rate),
         "-c", str(CHANNELS),
         "-b", str(BIT_DEPTH),
         str(dst),
@@ -132,7 +147,8 @@ def cache_key(text: str, config: MediaConfig) -> str:
     audio in the wrong voice.
     """
     model = config.piper_model.name if config.piper_model else ""
-    seed = f"{config.engine}|{model}|{config.voice}|{config.words_per_minute}|{text}"
+    seed = (f"{config.engine}|{model}|{config.voice}|{config.words_per_minute}"
+            f"|{config.sample_rate}|{text}")
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
 
 
@@ -145,7 +161,7 @@ class SynthesisError(RuntimeError):
 
 
 def synthesize(text: str, config: MediaConfig) -> Path:
-    """Render `text` to an 8 kHz mono WAV and return its path.
+    """Render `text` to a mono WAV at `config.sample_rate` and return its path.
 
     Returns a path WITH the .wav extension. Asterisk's STREAM FILE wants the
     path WITHOUT it -- use `stream_name()`.
@@ -173,7 +189,8 @@ def synthesize(text: str, config: MediaConfig) -> Path:
         # Piper emits ~22 kHz and remote engines often 24 kHz; the line is
         # 8 kHz. Without this the voice plays at the wrong pitch and speed.
         if shutil.which("sox"):
-            _run(resample_command(raw, final), timeout=config.timeout)
+            _run(resample_command(raw, final, config.sample_rate),
+                 timeout=config.timeout)
         else:
             shutil.copyfile(raw, final)
     return final

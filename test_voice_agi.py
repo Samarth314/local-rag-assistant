@@ -212,6 +212,20 @@ class TestMediaHelpers(unittest.TestCase):
         self.assertIn("8000", command)   # phone lines are 8 kHz
         self.assertIn("1", command)      # mono
 
+    def test_resample_rate_is_overridable_for_non_telephony_clients(self):
+        from voice_media import WIDEBAND_RATE
+        command = resample_command(Path("/a.wav"), Path("/b.wav"), WIDEBAND_RATE)
+        self.assertIn(str(WIDEBAND_RATE), command)
+        self.assertNotIn("8000", command)
+
+    def test_cache_key_changes_with_sample_rate(self):
+        # /voice/speak and the phone line share a cache directory shape; if the
+        # rate were not in the key, the Shortcut could be served 8 kHz audio
+        # that Asterisk had cached earlier for the same sentence.
+        from voice_media import WIDEBAND_RATE
+        wideband = MediaConfig(sounds_dir=Path("/tmp/x"), sample_rate=WIDEBAND_RATE)
+        self.assertNotEqual(cache_key("hi", self.config), cache_key("hi", wideband))
+
     def test_cache_key_is_stable_and_voice_sensitive(self):
         other = MediaConfig(sounds_dir=Path("/tmp/x"), voice="en-gb")
         self.assertEqual(cache_key("hi", self.config), cache_key("hi", self.config))

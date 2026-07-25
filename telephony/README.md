@@ -124,6 +124,35 @@ docker compose exec asterisk python3 -c \
 `piper` is what you want; `espeak` means the download failed. A remote engine
 can still be used instead via `RAG_TTS_URL` (takes precedence over both).
 
+## Calling without a softphone: the iOS Shortcut
+
+A Shortcut over Tailscale gives you the same assistant with no SIP app at all —
+"Hey Siri, Ask ATARU", speak a question, hear the answer. Three actions:
+
+| Action | Setting |
+|---|---|
+| Dictate Text | — |
+| Get Contents of URL | `http://<tailnet-ip>:8000/voice/speak?q=` + the *Dictated Text* variable |
+| Play Sound | *Contents of URL* |
+
+`/voice/speak` returns the answer as WAV audio rendered by the **same Piper
+voice the phone line uses**, so the two front doors sound identical. The text
+is also returned in the `X-Ataru-Text` header if you want to display it.
+
+The audio is served at Piper's native 22.05 kHz, not the line's 8 kHz — that
+downsample is a constraint of the *phone network*, not of the voice, and a
+phone speaker has no reason to suffer it.
+
+If you would rather use an iOS voice (lower latency: text is a few hundred
+bytes, audio is a few hundred KB), use `/voice/answer?q=` with *Get Dictionary
+Value* → key `text` → *Speak Text* instead. Both routes exist; neither leaves
+the tailnet.
+
+Requires `RAG_PIPER_MODEL` to point at a voice inside the **rag** container —
+the root `Dockerfile` bakes in the same `en_US-lessac-medium` as telephony. If
+the download failed at build time the endpoint falls back to espeak-ng; if
+neither is present it returns **503** and `/voice/answer` still works.
+
 ## Two constraints the medium imposes
 
 **The fast model is pinned.** Escalation to the thorough model is disabled on
