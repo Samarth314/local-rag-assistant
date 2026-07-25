@@ -27,6 +27,6 @@ COPY telephony/stt/server.py /app/server.py
 
 # Model weights land here; mount a volume so they survive rebuilds.
 VOLUME ["/models"]
-EXPOSE 8081
+EXPOSE 8091
 
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8081"]
