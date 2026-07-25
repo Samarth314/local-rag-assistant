@@ -8,6 +8,7 @@ Removed files have their chunks deleted from the vector store.
 import hashlib
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -147,7 +148,8 @@ def index_directory(root: str, limit: int | None = None) -> dict:
                 continue
 
             if not text.strip():
-                state[path_str] = {"fp": current_paths[path_str], "hash": None}
+                state[path_str] = {"fp": current_paths[path_str], "hash": None,
+                                   "indexed_at": time.time()}
                 _save_state(state)
                 continue
 
@@ -161,6 +163,7 @@ def index_directory(root: str, limit: int | None = None) -> dict:
                     "fp": current_paths[path_str],
                     "hash": content_hash,
                     "dup_of": canonical,
+                    "indexed_at": time.time(),
                 }
                 _save_state(state)
                 duplicate_count += 1
@@ -193,7 +196,10 @@ def index_directory(root: str, limit: int | None = None) -> dict:
                 )
 
             store.add_chunks(rows)
-            state[path_str] = {"fp": current_paths[path_str], "hash": content_hash}
+            # indexed_at drives the document library's "ingested" column. State
+            # entries written before this existed simply report null.
+            state[path_str] = {"fp": current_paths[path_str], "hash": content_hash,
+                               "indexed_at": time.time()}
             _save_state(state)
             indexed_count += 1
             print(f"  indexed: {path} ({len(rows)} chunks)")

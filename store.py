@@ -45,6 +45,13 @@ def count_rows() -> int:
     return get_table().count_rows()
 
 
+def count_chunks(path: str) -> int:
+    """How many chunks one document occupies in the index."""
+    escaped = path.replace("'", "''")
+    return len(get_table().search().where(f"path = '{escaped}'")
+               .select(["chunk_index"]).limit(100000).to_list())
+
+
 def get_document_text(path: str) -> str:
     """Reconstruct a document's full text from its stored chunks, in order.
     No re-embedding or disk read -- just concatenates what's already indexed."""

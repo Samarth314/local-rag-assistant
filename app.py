@@ -1,9 +1,12 @@
 import dataclasses
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import config
+import documents
 import store
 import voice_media
 from llm import chat, embed
@@ -51,9 +54,124 @@ class VoiceResponse(BaseModel):
     model: str
 
 
+class DocumentSummary(BaseModel):
+    id: str
+    title: str
+    path: str
+    category: str
+    file_type: str
+    size_bytes: int | None = None
+    modified_at: float | None = None
+    indexed_at: float | None = None
+    excerpt: str = ""
+    chunk_count: int | None = None
+    tags: list[str] = []
+    previewable: bool = False
+
+
+class DocumentList(BaseModel):
+    documents: list[DocumentSummary]
+    total: int                       # matching the filter
+    indexed_total: int               # in the whole vault, before filtering
+    categories: dict[str, int]
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# Document library
+#
+# The read side of the vault: what is indexed, rather than what is relevant to
+# a question. Documents are addressed by an opaque id (see documents.doc_id),
+# never by path -- the client cannot name a file the index doesn't already
+# know about, which is what keeps /content from being a file-read primitive.
+# --------------------------------------------------------------------------- #
+
+def _summary(doc: documents.Document) -> DocumentSummary:
+    return DocumentSummary(
+        **doc.as_dict(),
+        previewable=documents.is_previewable(doc.file_type),
+    )
+
+
+@app.get("/documents", response_model=DocumentList)
+def list_documents(q: str = "", category: str = "", limit: int = 200,
+                   offset: int = 0):
+    """The document library, newest first.
+
+    `q` matches titles and paths, not contents -- this is "find the file I know
+    I have", which is a different job from /query.
+    """
+    everything = documents.list_documents()
+    matched = documents.filter_documents(everything, query=q, category=category)
+    page = matched[max(offset, 0): max(offset, 0) + max(limit, 0)]
+    return DocumentList(
+        documents=[_summary(d) for d in page],
+        total=len(matched),
+        indexed_total=len(everything),
+        categories=documents.category_counts(everything),
+    )
+
+
+@app.get("/documents/{document_id}", response_model=DocumentSummary)
+def get_document(document_id: str):
+    """One document, with the excerpt and chunk count the list omits.
+
+    Both extras need the document's text, which is why they aren't in the list
+    response: paying that cost per row would make the library slow to open.
+    """
+    doc = _require_document(document_id)
+    return _summary(dataclasses.replace(
+        doc,
+        excerpt=documents.excerpt_of(store.get_document_text(doc.path)),
+        chunk_count=store.count_chunks(doc.path),
+    ))
+
+
+@app.get("/documents/{document_id}/content")
+def get_document_content(document_id: str):
+    """The document's bytes, for previewing and sharing.
+
+    Serves the original file when it is still readable. When it isn't -- the
+    file moved, or this container has no /docs mount -- it falls back to the
+    text reconstructed from the index rather than 404ing, so a preview still
+    shows something true. The fallback is always text/plain, because what we
+    hold is extracted text and not the original PDF.
+    """
+    doc = _require_document(document_id)
+
+    on_disk = documents.resolve_on_disk(doc)
+    if on_disk is not None:
+        return FileResponse(
+            on_disk,
+            media_type=documents.content_type_for(doc.file_type),
+            filename=doc.title,
+        )
+
+    text = store.get_document_text(doc.path)
+    if not text:
+        raise HTTPException(status_code=404,
+                            detail="document has no readable content")
+    return Response(
+        content=text.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="{Path(doc.title).stem}.txt"',
+            # Tells the client this is the extracted text, not the real file,
+            # so it can say so rather than implying it downloaded the PDF.
+            "X-Ataru-Reconstructed": "1",
+        },
+    )
+
+
+def _require_document(document_id: str) -> documents.Document:
+    doc = documents.find(document_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="no such document")
+    return doc
 
 
 def _retrieve(query: str, top_k: int) -> list[dict]:
