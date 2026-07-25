@@ -31,7 +31,10 @@ services:
     volumes:
       - ./pjsip.conf.template:/etc/asterisk/pjsip.conf.template:ro
       - ./extensions.conf:/etc/asterisk/extensions.conf:ro
-      - ./asterisk.conf:/etc/asterisk/asterisk.conf:ro
+      # NOTE: asterisk.conf is deliberately NOT overridden. Its
+      # [directories] paths are distro-specific and getting them wrong
+      # stops Asterisk finding its modules at all. The dialplan calls the
+      # AGI by absolute path, so we never need to touch astagidir.
       # Synthesised prompts are cached so fixed phrases render once.
       - tts-cache:/var/lib/asterisk/sounds/ataru
 
