@@ -12,3 +12,9 @@ __pycache__/
 
 # Telephony secrets (SIP password, DTMF access code). Never commit.
 telephony/.env
+
+# Per-machine compose settings (GPU runtime, ports, extra mounts). Compose
+# loads this automatically and merges it over docker-compose.yml. Editing the
+# tracked file for one host's quirks makes every `git pull` conflict; this does
+# not. See docker-compose.override.example.yml.
+docker-compose.override.yml

@@ -1,0 +1,22 @@
+# Per-machine compose settings.
+#
+# Copy to `docker-compose.override.yml` (gitignored). Compose loads that file
+# automatically and merges it over docker-compose.yml -- no -f flag needed.
+#
+#     cp docker-compose.override.example.yml docker-compose.override.yml
+#
+# Why this exists: the Jetson needs `runtime: nvidia` and a laptop does not.
+# Editing the tracked docker-compose.yml for one host means every `git pull`
+# on that host aborts with "local changes would be overwritten". Overrides
+# keep host-specific settings out of the way of updates.
+
+services:
+  # --- Jetson Orin only. JetPack ships the NVIDIA container runtime; without
+  # --- this Ollama runs CPU-only and every answer takes minutes.
+  ollama:
+    runtime: nvidia
+
+  # --- Uncomment to expose the API on a different host port.
+  # api:
+  #   ports:
+  #     - "8080:8000"
