@@ -61,6 +61,34 @@ services:
       - rag-data:/data
       - ${DOCS_DIR:-./sample-docs}:/docs:ro
 
+  # The HTTP API, as a long-lived service.
+  #
+  # `docker compose run --rm rag python cli.py serve` works but dies with the
+  # terminal that started it, which means the phone client silently loses its
+  # backend every time an SSH session ends. This is the same image and the same
+  # command, run detached and restarted on boot.
+  #
+  # Bound to 0.0.0.0 so the tailnet can reach it. That is not a public exposure
+  # -- the host has no port forward, and reachability comes from Tailscale --
+  # but it does mean anything already on the tailnet can query the vault.
+  api:
+    build: .
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    command: python cli.py serve
+    ports:
+      - "8000:8000"
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      RAG_DATA_DIR: /data
+      RAG_CHAT_MODEL: qwen2.5:7b-instruct
+      RAG_GOOD_MODEL: gpt-oss:20b
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - rag-data:/data
+      - ${DOCS_DIR:-./sample-docs}:/docs:ro
+
 volumes:
   ollama-models:
   rag-data:
