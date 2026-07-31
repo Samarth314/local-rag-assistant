@@ -18,3 +18,8 @@ telephony/.env
 # tracked file for one host's quirks makes every `git pull` conflict; this does
 # not. See docker-compose.override.example.yml.
 docker-compose.override.yml
+
+# APNs signing keys -- anyone holding one can ring the registered phones.
+*.p8
+secrets/*
+!secrets/README.txt

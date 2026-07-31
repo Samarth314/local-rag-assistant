@@ -85,9 +85,21 @@ services:
       RAG_CHAT_MODEL: qwen2.5:7b-instruct
       RAG_GOOD_MODEL: gpt-oss:20b
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # VoIP push, so the iPhone can ring with ATARU closed. Unset means the
+      # /voip endpoints refuse with an explanation rather than half-working.
+      # Put these in .env next to this file (gitignored).
+      RAG_APNS_KEY_PATH: ${RAG_APNS_KEY_PATH:-}
+      RAG_APNS_KEY_ID: ${RAG_APNS_KEY_ID:-}
+      RAG_APNS_TEAM_ID: ${RAG_APNS_TEAM_ID:-}
+      RAG_APNS_BUNDLE_ID: ${RAG_APNS_BUNDLE_ID:-}
     volumes:
       - rag-data:/data
       - ${DOCS_DIR:-./sample-docs}:/docs:ro
+      # The APNs signing key, read-only and mounted at run time. It is a
+      # secret and deliberately never copied into the image: anyone holding it
+      # can ring this phone until the key is revoked. Defaults to an empty
+      # local directory so the service still starts without one.
+      - ${APNS_KEY_DIR:-./secrets}:/keys:ro
 
 volumes:
   ollama-models:
