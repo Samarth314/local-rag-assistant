@@ -9,6 +9,7 @@ import config
 import documents
 import store
 import voice_media
+import voip
 from llm import chat, embed
 from voice import to_speech
 from voice_backend import VOICE_SYSTEM_PROMPT, top_source
@@ -79,6 +80,72 @@ class DocumentList(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --------------------------------------------------------------------------- #
+# VoIP push
+#
+# Lets the Orin ring the iPhone when ATARU is closed. The phone registers a
+# token on launch; /voip/ring wakes the app in the background, and the app is
+# then obliged to report an incoming call to CallKit.
+#
+# Note the direction of travel: this host makes an outbound HTTPS connection to
+# Apple and never accepts one from the internet, so nothing here needs a port
+# forward or a Funnel.
+# --------------------------------------------------------------------------- #
+
+
+class DeviceRegistration(BaseModel):
+    token: str
+    # Xcode builds are "sandbox"; TestFlight and the App Store are
+    # "production". Getting this wrong is the usual reason a push silently
+    # never arrives, so the client states it rather than the server guessing.
+    environment: str = "sandbox"
+    name: str = ""
+
+
+class RingRequest(BaseModel):
+    reason: str = ""
+
+
+@app.post("/voip/register")
+def voip_register(req: DeviceRegistration):
+    if not req.token.strip():
+        raise HTTPException(status_code=400, detail="Empty device token.")
+    device = voip.save_device(req.token.strip(), req.environment, req.name)
+    return {"registered": True, "environment": device.environment}
+
+
+@app.get("/voip/devices")
+def voip_devices():
+    # Tokens are truncated: they are device identifiers, and a full one in a
+    # log or a screenshot is enough to ring somebody's phone.
+    return {
+        "devices": [
+            {"token": d.token[:12] + "…", "environment": d.environment,
+             "name": d.name, "registered_at": d.registered_at}
+            for d in voip.load_devices()
+        ]
+    }
+
+
+@app.post("/voip/ring")
+def voip_ring(req: RingRequest):
+    """Rings every registered phone."""
+    try:
+        results = voip.ring(req.reason)
+    except voip.PushError as exc:
+        # 503 rather than 500: this is nearly always missing configuration, and
+        # the message says which part.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"delivered": sum(1 for r in results if r["ok"]), "results": results}
+
+
+@app.delete("/voip/devices/{token}")
+def voip_forget(token: str):
+    if not voip.forget_device(token):
+        raise HTTPException(status_code=404, detail="No such device token.")
+    return {"forgotten": True}
 
 
 # --------------------------------------------------------------------------- #

@@ -160,3 +160,22 @@ MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024  # 20 MB
 # (e.g. a 1MB Shakespeare input.txt), not a document. PDFs are exempt.
 MAX_TEXT_FILE_BYTES = 256 * 1024  # 256 KB
 PLAINTEXT_EXTENSIONS = {".txt", ".md", ".rst"}
+
+# --- VoIP push (ringing the iPhone without the app being open) ---------------
+#
+# A VoIP push wakes the iOS app in the background so it can report an incoming
+# call to CallKit. Everything below comes from the Apple developer account.
+# Unset means the /voip endpoints refuse politely rather than half-working.
+#
+# The .p8 is a SECRET. Mount it at run time; never bake it into the image or
+# commit it. Generate at: developer.apple.com -> Certificates, Identifiers &
+# Profiles -> Keys -> new key with "Apple Push Notifications service (APNs)".
+APNS_KEY_PATH = os.environ.get("RAG_APNS_KEY_PATH", "")
+# The 10-character key id, shown when the key is created and in the filename
+# (AuthKey_XXXXXXXXXX.p8).
+APNS_KEY_ID = os.environ.get("RAG_APNS_KEY_ID", "")
+# The 10-character Apple team id.
+APNS_TEAM_ID = os.environ.get("RAG_APNS_TEAM_ID", "")
+# The app's bundle identifier. The push topic is this with ".voip" appended,
+# which voip.py does -- do not include the suffix here.
+APNS_BUNDLE_ID = os.environ.get("RAG_APNS_BUNDLE_ID", "com.samarthshah.ataru.ATARU")

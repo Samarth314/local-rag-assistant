@@ -20,3 +20,8 @@ sentence-transformers
 anthropic
 # OpenAI-compatible client -- only used when RAG_ENGINE=vllm (lazy-imported).
 openai
+
+# HTTP/2 for APNs (voip.py) -- Apple speaks nothing else.
+h2
+# JWT signing for the APNs token (ES256 needs cryptography).
+PyJWT[crypto]
