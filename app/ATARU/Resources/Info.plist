@@ -4,6 +4,11 @@
 <dict>
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleDisplayName</key><string>ATARU</string>
+  <!-- Pre-filled base URL, substituted from ATARU_DEFAULT_BASE_URL in
+       Config.xcconfig at build time. Without this entry the xcconfig value
+       never reaches the app: AppConfiguration reads this exact key, so the
+       "default" silently resolved to an empty string. -->
+  <key>ATARUDefaultBaseURL</key><string>$(ATARU_DEFAULT_BASE_URL)</string>
   <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>

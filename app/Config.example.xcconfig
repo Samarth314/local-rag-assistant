@@ -28,4 +28,4 @@ ATARU_BUNDLE_ID_PREFIX = com.yourname.ataru
 // Base URL pre-filled in Settings. Always changeable in the app.
 // Plain http:// is accepted only in Debug builds and only for private hosts
 // (RFC1918, 100.64/10 Tailscale, .local, .ts.net).
-ATARU_DEFAULT_BASE_URL = http:/$()/100.106.109.31:8000
+ATARU_DEFAULT_BASE_URL = https:/$()/dev.ataru.aryasasikumar.com/chat
