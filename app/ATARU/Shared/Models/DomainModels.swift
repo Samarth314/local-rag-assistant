@@ -200,7 +200,9 @@ enum VoicePhase: Equatable {
         switch self {
         case .idle: return "Hold to ask"
         case .listening: return "Listening"
-        case .thinking: return "Searching your files"
+        // Not necessarily a file search - the answer may come from mail, the
+        // calendar or the web, so name the state after the work, not a source.
+        case .thinking: return "Thinking"
         case .speaking: return "Answering"
         case .failed: return "Something went wrong"
         }

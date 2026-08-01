@@ -90,7 +90,10 @@ struct VoiceView: View {
     private var hint: String {
         state.configuration.mode == .demo
             ? "Demo mode answers from sample files."
-            : "Ask about anything in your indexed documents."
+            // Live ATARU is not a document search box. The same question can
+            // reach mail, the calendar, records or the live web, so the hint
+            // must not promise only files.
+            : "Ask about your schedule, mail, records, or anything else."
     }
 
     private var talkButton: some View {
