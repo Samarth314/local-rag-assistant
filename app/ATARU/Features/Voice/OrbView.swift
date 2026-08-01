@@ -1,119 +1,226 @@
 import SwiftUI
 
-/// The ATARU orb.
+/// The ATARU orb — the reactor from the web dashboard's call mode.
 ///
 /// One control that is also the entire status display: its motion says what
 /// the assistant is doing, so the screen needs no spinner and no status text
-/// competing for attention. It breathes when idle, tracks the microphone while
-/// listening, rotates while thinking, and pulses while speaking.
+/// competing for attention. A breathing core with a glow halo, expanding
+/// ripples, orbiting arcs and particles, and a waveform ring that wobbles
+/// only while ATARU talks. Ported 1:1 from `reactor-orb.js` (`ORB_CFG` +
+/// `createReactor`), the same engine the web call overlay and the kiosk
+/// dashboard run — per-state speeds, colours, and the eased `wave`
+/// transition into and out of speaking are the original tuning.
 ///
-/// Every animation is suppressed under Reduce Motion, where the phase is
-/// carried by colour and the label instead.
+/// Under Reduce Motion the timeline pauses: the orb renders one static frame
+/// and the phase is carried by colour and the label instead.
 struct OrbView: View {
     let phase: VoicePhase
     /// Live microphone level, 0...1. Only meaningful while listening.
     var level: Double = 0
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var breathe = false
-    @State private var spin = false
+    @State private var engine = ReactorEngine()
 
-    /// Per-state orb tint, taken from the kit's `orb.states[*].col`.
-    ///
-    /// Every state is a variant of the accent — the kit shifts hue by a few
-    /// degrees per state rather than changing colour. Speaking used to be green
-    /// and thinking amber, which made the orb the app's second and third accent
-    /// and read as status ("green = fine, amber = warning") when it only ever
-    /// meant "the assistant is talking".
-    private var tone: Color {
-        switch phase {
-        case .idle:      return Color(hex: 0x8FD3E6)   // 143, 211, 230
-        case .listening: return Color(hex: 0x96DCF0)   // 150, 220, 240
-        case .thinking:  return Color(hex: 0xAFC8EB)   // 175, 200, 235
-        case .speaking:  return Color(hex: 0xA0DCEE)   // 160, 220, 238
-        // Not in the kit's orb table: a failure is the one case where the
-        // palette's error colour is more use than staying on-accent.
-        case .failed:    return Theme.red
-        }
-    }
-
-    /// Listening scales with the user's voice; the other phases have a fixed
-    /// resting size so the orb never looks like it is reacting to nothing.
-    private var scale: CGFloat {
-        switch phase {
-        case .listening: return 1.0 + CGFloat(level) * 0.22
-        case .speaking: return breathe ? 1.06 : 1.0
-        case .idle: return breathe ? 1.03 : 1.0
-        default: return 1.0
-        }
-    }
+    /// The web engine's natural canvas; call sites scale from here.
+    private static let side: CGFloat = 260
 
     var body: some View {
-        ZStack {
-            // Bloom. Kept faint: this is illumination, not neon.
-            Circle()
-                .fill(
-                    RadialGradient(colors: [tone.opacity(0.34), .clear],
-                                   center: .center, startRadius: 4, endRadius: 130)
-                )
-                .frame(width: 260, height: 260)
-                .blur(radius: 12)
-
-            Circle()
-                .strokeBorder(tone.opacity(0.28), lineWidth: 1)
-                .frame(width: 176, height: 176)
-
-            // Thinking: a single arc rotating around the rim.
-            Circle()
-                .trim(from: 0, to: 0.16)
-                .stroke(tone, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                .frame(width: 176, height: 176)
-                .rotationEffect(.degrees(spin ? 360 : 0))
-                .opacity(phase == .thinking ? 1 : 0)
-
-            Circle()
-                .fill(
-                    RadialGradient(colors: [tone.opacity(0.30), tone.opacity(0.06)],
-                                   center: .center, startRadius: 2, endRadius: 84)
-                )
-                .frame(width: 148, height: 148)
-                .overlay { Circle().strokeBorder(tone.opacity(0.5), lineWidth: 1) }
-
-            Image(systemName: symbol)
-                .font(.system(size: 30, weight: .ultraLight))
-                .foregroundStyle(tone)
+        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { timeline in
+            Canvas { context, size in
+                engine.render(into: context, size: size,
+                              now: timeline.date,
+                              config: OrbConfig.for(phase),
+                              level: phase == .listening ? level : 0,
+                              frozen: reduceMotion)
+            }
         }
-        .scaleEffect(reduceMotion ? 1.0 : scale)
-        .animation(.easeOut(duration: 0.12), value: level)
-        .animation(.easeInOut(duration: 0.35), value: phase)
-        .onAppear { startAnimations() }
-        .onChange(of: phase) { _, _ in startAnimations() }
+        .frame(width: Self.side, height: Self.side)
         .accessibilityElement()
         .accessibilityLabel("ATARU")
         .accessibilityValue(phase.label)
     }
+}
 
-    private var symbol: String {
+/// Per-state tuning — `ORB_CFG` verbatim. `speed` and `ripEvery` are in the
+/// web engine's frame units (one frame = 1/60 s); `ReactorEngine` converts
+/// wall-clock time into frames so the motion matches the demo exactly.
+private struct OrbConfig {
+    let speed: Double     // t advance per frame
+    let glow: Double      // master alpha for halo, arcs, rim
+    let pulse: Double     // core breathing amplitude
+    let ripEvery: Double  // frames between ripple spawns
+    let ripSpeed: Double  // ripple growth per frame (pt)
+    let arc: Double       // orbit arc coverage, fraction of pi
+    let wave: Double      // waveform ring amplitude target
+    let color: (r: Double, g: Double, b: Double)
+    var isThinking = false
+
+    static let idle = OrbConfig(speed: 0.006, glow: 0.55, pulse: 0.045,
+                                ripEvery: 170, ripSpeed: 0.55, arc: 0.25,
+                                wave: 0, color: (143, 211, 230))
+    static let listening = OrbConfig(speed: 0.009, glow: 0.8, pulse: 0.08,
+                                     ripEvery: 55, ripSpeed: 1.0, arc: 0.45,
+                                     wave: 0.10, color: (150, 220, 240))
+    static let thinking = OrbConfig(speed: 0.024, glow: 0.72, pulse: 0.05,
+                                    ripEvery: 100, ripSpeed: 0.75, arc: 0.9,
+                                    wave: 0, color: (175, 200, 235),
+                                    isThinking: true)
+    static let speaking = OrbConfig(speed: 0.011, glow: 0.92, pulse: 0.10,
+                                    ripEvery: 34, ripSpeed: 1.05, arc: 0.5,
+                                    wave: 0.16, color: (160, 220, 238))
+    // Not in the web table: a failure keeps idle's quiet motion but takes
+    // the palette's error colour — the one case where staying on-accent
+    // would hide the thing the user needs to see.
+    static let failed = OrbConfig(speed: 0.006, glow: 0.6, pulse: 0.045,
+                                  ripEvery: 170, ripSpeed: 0.55, arc: 0.25,
+                                  wave: 0, color: (235, 96, 96))
+
+    static func `for`(_ phase: VoicePhase) -> OrbConfig {
         switch phase {
-        case .idle: return "waveform"
-        case .listening: return "mic"
-        case .thinking: return "ellipsis"
-        case .speaking: return "speaker.wave.2"
-        case .failed: return "exclamationmark"
+        case .idle: return .idle
+        case .listening: return .listening
+        case .thinking: return .thinking
+        case .speaking: return .speaking
+        case .failed: return .failed
         }
     }
+}
 
-    private func startAnimations() {
-        guard !reduceMotion else { return }
-        breathe = false
-        spin = false
-        withAnimation(.easeInOut(duration: 2.6).repeatForever(autoreverses: true)) {
-            breathe = true
+/// The mutable animation state `createReactor` kept in its closure: the time
+/// accumulator, the live ripples, and the eased wave amplitude. A reference
+/// type so the Canvas draw closure can advance it without touching SwiftUI
+/// state mid-render.
+private final class ReactorEngine {
+    private var t: Double = 0
+    private var ripT: Double = 0
+    private var wave: Double = 0
+    private var ripples: [(r: Double, a: Double)] = []
+    private var last: Date?
+
+    func render(into context: GraphicsContext, size: CGSize, now: Date,
+                config cfg: OrbConfig, level: Double, frozen: Bool) {
+        let W = size.width, H = size.height
+        let cx = W / 2, cy = H / 2
+        let base = min(W, H) * 0.17
+
+        // -- advance (web engine ran per-frame at 60fps; convert dt) -------- #
+        var frames: Double = 0
+        if !frozen {
+            let dt = last.map { now.timeIntervalSince($0) } ?? 1.0 / 60.0
+            last = now
+            frames = min(max(dt * 60.0, 0), 4)   // clamp across hitches
+            t += cfg.speed * frames
+            wave += (cfg.wave - wave) * min(0.06 * frames, 1)
+            ripT += frames
         }
-        if phase == .thinking {
-            withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) {
-                spin = true
+
+        // The mic drives the breath while listening — the web orb reacts to
+        // ripples alone; on the phone the level is right there, so a loud
+        // moment deepens the pulse instead of animating a separate ring.
+        let pulseAmp = cfg.pulse + level * 0.10
+        let pulse = 1 + sin(t * 5) * pulseAmp
+        let R = base * pulse
+        let col = cfg.color
+        func A(_ alpha: Double) -> Color {
+            Color(red: col.r / 255, green: col.g / 255, blue: col.b / 255,
+                  opacity: alpha)
+        }
+
+        if !frozen {
+            if ripT >= cfg.ripEvery {
+                ripT = 0
+                ripples.append((r: R, a: 0.42))
             }
+            for i in ripples.indices {
+                ripples[i].r += cfg.ripSpeed * 2.0 * frames
+                ripples[i].a *= pow(0.986, frames)
+            }
+            ripples.removeAll { $0.a <= 0.02 || $0.r >= Double(max(W, H)) }
+        }
+
+        // -- glow halo ------------------------------------------------------ #
+        let halo = Gradient(stops: [
+            .init(color: A(0.15 * cfg.glow), location: 0),
+            .init(color: A(0.045 * cfg.glow), location: 0.4),
+            .init(color: .clear, location: 1),
+        ])
+        context.fill(
+            Path(CGRect(origin: .zero, size: size)),
+            with: .radialGradient(halo, center: CGPoint(x: cx, y: cy),
+                                  startRadius: R * 0.2, endRadius: R * 3.4))
+
+        // -- ripples -------------------------------------------------------- #
+        for p in ripples {
+            context.stroke(
+                Path(ellipseIn: CGRect(x: cx - p.r, y: cy - p.r,
+                                       width: p.r * 2, height: p.r * 2)),
+                with: .color(A(p.a * 0.5 * cfg.glow)), lineWidth: 1.1)
+        }
+
+        // -- static rings --------------------------------------------------- #
+        for i in 1...3 {
+            let rr = R * (1 + Double(i) * 0.55)
+            context.stroke(
+                Path(ellipseIn: CGRect(x: cx - rr, y: cy - rr,
+                                       width: rr * 2, height: rr * 2)),
+                with: .color(A(0.055 + 0.018 * Double(i))), lineWidth: 1)
+        }
+
+        // -- orbit arcs (fast while thinking — the "working" tell) ---------- #
+        let cover = Angle(radians: .pi * cfg.arc)
+        for i in 0..<3 {
+            let a0 = Angle(radians: t * 1.6 + Double(i) * (2 * .pi / 3))
+            var arc = Path()
+            arc.addArc(center: CGPoint(x: cx, y: cy), radius: R * 1.85,
+                       startAngle: a0, endAngle: a0 + cover, clockwise: false)
+            context.stroke(arc, with: .color(A(0.45 * cfg.glow)),
+                           style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        }
+
+        // -- waveform ring (the "voice" look, only while speaking) ---------- #
+        if wave > 0.005 {
+            var wavePath = Path()
+            let rr = R * 1.42, amp = R * wave
+            var first = true
+            for step in stride(from: 0.0, through: 6.2832, by: 0.025) {
+                let w = sin(step * 8 + t * 18) * sin(step * 3 - t * 7)
+                let rad = rr + w * amp
+                let pt = CGPoint(x: cx + cos(step) * rad,
+                                 y: cy + sin(step) * rad)
+                if first { wavePath.move(to: pt); first = false }
+                else { wavePath.addLine(to: pt) }
+            }
+            wavePath.closeSubpath()
+            context.stroke(wavePath, with: .color(A(0.5 * cfg.glow)),
+                           lineWidth: 1.3)
+        }
+
+        // -- core ----------------------------------------------------------- #
+        let coreGradient = Gradient(stops: [
+            .init(color: A(0.85 * cfg.glow), location: 0),
+            .init(color: A(0.3 * cfg.glow), location: 0.5),
+            .init(color: A(0.04), location: 1),
+        ])
+        let core = Path(ellipseIn: CGRect(x: cx - R, y: cy - R,
+                                          width: R * 2, height: R * 2))
+        context.fill(
+            core,
+            with: .radialGradient(coreGradient,
+                                  center: CGPoint(x: cx - R * 0.3,
+                                                  y: cy - R * 0.3),
+                                  startRadius: R * 0.1, endRadius: R * 1.3))
+        context.stroke(core, with: .color(A(0.65 * cfg.glow)), lineWidth: 1.3)
+
+        // -- particles on the orbit paths ----------------------------------- #
+        let pn = cfg.isThinking ? 10 : 6
+        for i in 0..<pn {
+            let a = t * (cfg.isThinking ? 4 : 2) + Double(i) * (2 * .pi / Double(pn))
+            let rad = R * 2.5 + sin(t * 3.5 + Double(i)) * R * 0.22
+            let pt = CGPoint(x: cx + cos(a) * rad, y: cy + sin(a) * rad)
+            context.fill(
+                Path(ellipseIn: CGRect(x: pt.x - 1.5, y: pt.y - 1.5,
+                                       width: 3, height: 3)),
+                with: .color(A(0.65)))
         }
     }
 }
