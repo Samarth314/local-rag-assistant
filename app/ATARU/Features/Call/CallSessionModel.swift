@@ -181,9 +181,12 @@ final class CallSessionModel: ObservableObject {
                     // What streamed so far was agent scaffolding, not answer.
                     text = ""
                     answer = ""
-                case .audioBegin(let sampleRate, let channels, _):
+                case .audioBegin(let sampleRate, let channels, _, let isFiller):
                     try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
-                    audioStarted = true
+                    // A thinking cue is not the answer: if the turn fails
+                    // after only the cue played, the fallback must still run,
+                    // or the caller gets "Let me check." and then nothing.
+                    if !isFiller { audioStarted = true }
                     phase = .speaking
                 case .audioChunk(let chunk):
                     streamPlayer.enqueue(chunk)

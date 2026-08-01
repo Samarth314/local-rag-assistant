@@ -7,7 +7,7 @@ enum VoiceStreamEvent: Sendable {
     case delta(String)
     /// Streamed text so far belonged to an agent tool turn; discard it.
     case reset
-    case audioBegin(sampleRate: Double, channels: Int, sentence: String)
+    case audioBegin(sampleRate: Double, channels: Int, sentence: String, isFiller: Bool)
     case audioChunk(Data)
     case audioEnd
     case ttsUnavailable
@@ -18,6 +18,9 @@ enum VoiceStreamError: Error {
     case notConnected
     case protocolViolation(String)
     case server(String)
+    /// The socket went quiet past any plausible processing time. Treated like
+    /// any other stream failure: fall back, reconnect next turn.
+    case timedOut
 }
 
 /// A live WebSocket to `/voice/session`.
@@ -76,8 +79,17 @@ final class VoiceStreamSession: @unchecked Sendable {
                         withJSONObject: ["type": "ask", "q": question])
                     try await socket.send(.string(String(decoding: payload, as: UTF8.self)))
 
+                    var sawFirstEvent = false
                     while true {
-                        let message = try await socket.receive()
+                        // A healthy session is never silent for long: `accepted`
+                        // lands immediately and long agent runs stream status
+                        // heartbeats every couple of seconds. Silence beyond
+                        // these windows means the stream is dead, not slow -
+                        // without this, a lost ask leaves the call hanging in
+                        // "thinking" forever.
+                        let window: Duration = sawFirstEvent ? .seconds(60) : .seconds(15)
+                        let message = try await Self.receive(from: socket, within: window)
+                        sawFirstEvent = true
                         guard let event = try Self.parse(message) else { continue }
                         continuation.yield(event)
                         if case .done = event {
@@ -124,6 +136,22 @@ final class VoiceStreamSession: @unchecked Sendable {
         task = nil
     }
 
+    private static func receive(from socket: URLSessionWebSocketTask,
+                                within window: Duration) async throws -> URLSessionWebSocketTask.Message {
+        try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message?.self) { group in
+            group.addTask { try await socket.receive() }
+            group.addTask {
+                try await Task.sleep(for: window)
+                return nil
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next(), let message = first else {
+                throw VoiceStreamError.timedOut
+            }
+            return message
+        }
+    }
+
     private static func parse(_ message: URLSessionWebSocketTask.Message) throws -> VoiceStreamEvent? {
         switch message {
         case .data(let data):
@@ -145,7 +173,8 @@ final class VoiceStreamSession: @unchecked Sendable {
                 return .audioBegin(
                     sampleRate: (dict["sampleRate"] as? NSNumber)?.doubleValue ?? 22_050,
                     channels: (dict["channels"] as? NSNumber)?.intValue ?? 1,
-                    sentence: dict["text"] as? String ?? "")
+                    sentence: dict["text"] as? String ?? "",
+                    isFiller: dict["filler"] as? Bool ?? false)
             case "audio_end":
                 return .audioEnd
             case "tts_unavailable":
