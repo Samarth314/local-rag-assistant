@@ -102,6 +102,18 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         VoiceStreamSession(baseURL: baseURL, token: tokenProvider())
     }
 
+    func greeting() async throws -> SpokenAnswer {
+        guard let url = endpoints.greeting else { throw APIError.invalidURL }
+        let (data, response) = try await perform(request(for: url))
+        let audio = try await downloads.store(data, preferredName: "greeting.wav")
+        return SpokenAnswer(
+            text: response.value(forHTTPHeaderField: "X-Ataru-Text")
+                ?? "ATARU here. What would you like to know?",
+            source: nil,
+            audioURL: audio
+        )
+    }
+
     private func askForText(_ question: String) async throws -> SpokenAnswer {
         guard let url = endpoints.answer(question) else { throw APIError.invalidURL }
         let (data, _) = try await perform(request(for: url))

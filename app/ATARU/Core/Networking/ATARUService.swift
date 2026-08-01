@@ -40,6 +40,14 @@ protocol ATARUService: AnyObject, Sendable {
     /// nil and a broken stream identically — degrade, never fail the question.
     func voiceStream() -> VoiceStreamSession?
 
+    /// The call's opening line, ideally in the server's voice.
+    ///
+    /// A call that greets in an iOS voice and answers in the server's sounds
+    /// like two assistants. Backends render the greeting through their own
+    /// TTS; the default is text-only, which callers speak locally - the same
+    /// graceful degradation as every other voice path.
+    func greeting() async throws -> SpokenAnswer
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -54,6 +62,12 @@ protocol ATARUService: AnyObject, Sendable {
 extension ATARUService {
     /// Backends without streaming (Demo) inherit the blocking path.
     func voiceStream() -> VoiceStreamSession? { nil }
+
+    /// Backends without a voice engine greet in the phone's voice.
+    func greeting() async throws -> SpokenAnswer {
+        SpokenAnswer(text: "ATARU here. What would you like to know?",
+                     source: nil, audioURL: nil)
+    }
 }
 
 /// Client-side filtering and sorting.

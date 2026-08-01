@@ -5,6 +5,8 @@ import Foundation
 enum VoiceStreamEvent: Sendable {
     case accepted
     case delta(String)
+    /// Streamed text so far belonged to an agent tool turn; discard it.
+    case reset
     case audioBegin(sampleRate: Double, channels: Int, sentence: String)
     case audioChunk(Data)
     case audioEnd
@@ -137,6 +139,8 @@ final class VoiceStreamSession: @unchecked Sendable {
                 return .accepted
             case "delta":
                 return .delta(dict["text"] as? String ?? "")
+            case "reset":
+                return .reset
             case "audio_begin":
                 return .audioBegin(
                     sampleRate: (dict["sampleRate"] as? NSNumber)?.doubleValue ?? 22_050,
