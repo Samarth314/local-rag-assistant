@@ -46,7 +46,10 @@ final class SpeechDictation: NSObject, ObservableObject {
     private var task: SFSpeechRecognitionTask?
 
     /// Asks for microphone and speech permission.
-    func requestAuthorization() async -> Bool {
+    ///
+    /// Static so onboarding can ask before any dictation object exists; the
+    /// system remembers the answer, so later per-session calls are no-ops.
+    static func requestAuthorization() async -> Bool {
         let speech = await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { continuation.resume(returning: $0) }
         }
@@ -54,6 +57,11 @@ final class SpeechDictation: NSObject, ObservableObject {
         return await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { continuation.resume(returning: $0) }
         }
+    }
+
+    /// Asks for microphone and speech permission.
+    func requestAuthorization() async -> Bool {
+        await Self.requestAuthorization()
     }
 
     /// Begins capturing. Throws rather than failing quietly, because a
