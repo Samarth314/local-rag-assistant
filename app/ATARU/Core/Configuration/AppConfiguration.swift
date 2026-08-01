@@ -150,6 +150,9 @@ struct EndpointBuilder {
         url("voice/answer", query: [URLQueryItem(name: "q", value: question)])
     }
 
+    /// The call's opening line, rendered in the server's voice.
+    var greeting: URL? { url("voice/greeting") }
+
     static func escape(_ component: String) -> String {
         component.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? component
     }

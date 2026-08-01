@@ -428,3 +428,26 @@ async def voice_session(ws: WebSocket):
         await voice_stream.run_session(ws, deps)
     except WebSocketDisconnect:
         pass
+
+
+GREETING = "ATARU here. What would you like to know?"
+
+
+@app.get("/voice/greeting")
+def voice_greeting():
+    """The call's opening line, in the server's own voice.
+
+    Rendered through the same engine and cache as every answer, so the first
+    thing a caller hears matches everything after it instead of an iOS voice
+    standing in. Cached by voice_media after the first call, so this is
+    effectively free.
+    """
+    try:
+        wav = voice_media.synthesize(GREETING, _speech_config())
+    except voice_media.SynthesisError as exc:
+        raise HTTPException(status_code=503, detail=f"speech unavailable: {exc}")
+    return Response(
+        content=wav.read_bytes(),
+        media_type="audio/wav",
+        headers={"X-Ataru-Text": GREETING, "X-Ataru-Source": ""},
+    )

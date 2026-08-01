@@ -79,7 +79,12 @@ final class CallSessionModel: ObservableObject {
             return
         }
 
-        await speak(SpokenAnswer(text: Self.greeting, source: nil, audioURL: nil))
+        // Greet in the server's voice when it has one, so the call opens
+        // sounding like the assistant that will answer. Any failure falls
+        // back to the phone's voice - the call must greet regardless.
+        let greeting = (try? await service.greeting())
+            ?? SpokenAnswer(text: Self.greeting, source: nil, audioURL: nil)
+        await speak(greeting)
 
         while !Task.isCancelled {
             guard let question = await listenForOneTurn() else { break }
@@ -172,6 +177,10 @@ final class CallSessionModel: ObservableObject {
                 case .delta(let piece):
                     text += piece
                     answer = text
+                case .reset:
+                    // What streamed so far was agent scaffolding, not answer.
+                    text = ""
+                    answer = ""
                 case .audioBegin(let sampleRate, let channels, _):
                     try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
                     audioStarted = true
