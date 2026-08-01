@@ -111,12 +111,17 @@ final class CallService: NSObject, ObservableObject {
         // `.generic` rather than `.phoneNumber`: ATARU has no number, and
         // claiming one would put a tappable non-number in the system UI.
         configuration.supportedHandleTypes = [.generic]
-        // Off deliberately. Recents is not a local-only list — with Call
-        // History sync enabled it goes to iCloud and out to the user's other
-        // devices, which would mean the times they consulted their private
-        // vault leave the device even though nothing they asked does. Set this
-        // to true if you want ATARU in Recents and consider that trade made.
-        configuration.includesCallsInRecents = false
+        // On, so ATARU appears in the Phone app's Recents and tapping an entry
+        // redials it. That tap is the whole point: it is the shortest path from
+        // "I want to ask something" to talking, and it needs no contact card,
+        // no Siri, and no launching the app.
+        //
+        // The cost, stated plainly: Recents is not a local-only list. With Call
+        // History sync on, entries reach iCloud and the user's other devices —
+        // so *when* the vault was consulted leaves the phone, even though
+        // nothing that was asked or answered ever does. Turning off Settings →
+        // Apple ID → iCloud → Call History keeps the redial and drops the sync.
+        configuration.includesCallsInRecents = true
         return configuration
     }
 

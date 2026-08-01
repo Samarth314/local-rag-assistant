@@ -15,12 +15,23 @@ struct RootView: View {
     @StateObject private var push: VoIPPushService
 
     init() {
-        // Replaced in `.task` once the environment's service is known.
-        _session = StateObject(wrappedValue: CallSessionModel(service: DemoATARUService()))
-        // The push registry has to exist before a push can arrive, so it is
-        // built with the view rather than lazily on first use.
+        // Everything is wired here rather than in `.onAppear`, because a call
+        // can arrive before the view appears: tapping ATARU in Recents cold
+        // launches the app straight into an intent, and a VoIP push wakes it
+        // with no view lifecycle at all. Wiring on appear leaves a window where
+        // the call connects and nothing is listening for the audio session.
         let call = CallService()
+        // Service is replaced in `.task` once the environment's is known.
+        let session = CallSessionModel(service: DemoATARUService())
+
+        // The system owns the audio route, so the conversation starts when
+        // CallKit says the session is live — not when the call connects.
+        call.onAudioActivated = { [weak session] in session?.begin() }
+        call.onAudioDeactivated = { [weak session] in session?.end() }
+
         _call = StateObject(wrappedValue: call)
+        _session = StateObject(wrappedValue: session)
+        // The push registry must exist before a push can arrive.
         _push = StateObject(wrappedValue: VoIPPushService(call: call))
     }
 
@@ -50,9 +61,17 @@ struct RootView: View {
         .ataruBackdrop()
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
+        // Warm path: the app was already running when the tap happened.
         .onContinueUserActivity(NSStringFromClass(INStartCallIntent.self)) { activity in
             guard CallIntent.isCallRequest(activity) else { return }
             call.call()
+        }
+        // Cold path: the tap launched the app, and the activity reached the
+        // delegate before this view existed. Draining it here is what makes a
+        // Recents tap dial immediately rather than just opening the app and
+        // waiting to be told what to do.
+        .task {
+            if PendingCallRequest.take() { call.call() }
         }
         .task { await state.refreshConnection() }
         .task(id: ObjectIdentifier(state.service)) {
@@ -60,12 +79,6 @@ struct RootView: View {
             // Re-registers the push token against whichever backend is now
             // selected. A token registered with Demo reaches nothing.
             push.update(service: state.service)
-        }
-        .onAppear {
-            // The system owns the audio route, so the conversation starts when
-            // CallKit says the session is live — not when the call connects.
-            call.onAudioActivated = { session.begin() }
-            call.onAudioDeactivated = { session.end() }
         }
         .environmentObject(call)
     }
