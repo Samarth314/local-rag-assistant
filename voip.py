@@ -136,7 +136,17 @@ def _auth_token() -> str:
     if _token_cache and time.time() - _token_cache[1] < 30 * 60:
         return _token_cache[0]
 
-    import jwt  # local import: only needed when a push is actually sent
+    # Local imports, and the failure is translated rather than allowed to
+    # escape: an ImportError here surfaces as a bare 500 with no body, which is
+    # the least diagnosable failure this service can produce.
+    try:
+        import jwt
+    except ImportError as exc:
+        raise PushError(
+            "PyJWT is not installed in this image. It is in "
+            "requirements-docker.txt — rebuild with "
+            "`docker compose up -d --build api`."
+        ) from exc
 
     key_path = Path(config.APNS_KEY_PATH) if config.APNS_KEY_PATH else None
     if not key_path or not key_path.exists():
@@ -171,7 +181,13 @@ def ring(reason: str = "", devices: list[Device] | None = None) -> list[dict]:
     Failures are collected rather than raised, so one dead token — a phone that
     was wiped, say — does not stop the others from ringing.
     """
-    import httpx
+    try:
+        import httpx
+    except ImportError as exc:
+        raise PushError(
+            "httpx is not installed in this image. Rebuild with "
+            "`docker compose up -d --build api`."
+        ) from exc
 
     targets = devices if devices is not None else load_devices()
     if not targets:
@@ -196,8 +212,17 @@ def ring(reason: str = "", devices: list[Device] | None = None) -> list[dict]:
     }
 
     results = []
-    # http2 is not optional: APNs speaks nothing else.
-    with httpx.Client(http2=True, timeout=10.0) as client:
+    # http2 is not optional: APNs speaks nothing else. httpx raises ImportError
+    # here, not at import time, when the h2 package is absent.
+    try:
+        client_cm = httpx.Client(http2=True, timeout=10.0)
+    except ImportError as exc:
+        raise PushError(
+            "HTTP/2 support is missing (the `h2` package). APNs accepts nothing "
+            "else. Rebuild with `docker compose up -d --build api`."
+        ) from exc
+
+    with client_cm as client:
         for device in targets:
             url = f"{_host(device.environment)}/3/device/{device.token}"
             try:

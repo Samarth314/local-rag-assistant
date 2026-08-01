@@ -16,3 +16,8 @@ rapidocr-onnxruntime
 anthropic
 # OpenAI-compatible client -- only used when RAG_ENGINE=vllm (lazy-imported).
 openai
+# VoIP push to APNs (voip.py): HTTP/2 is the only protocol Apple speaks, and
+# the auth token is an ES256 JWT, which needs cryptography.
+h2
+httpx
+PyJWT[crypto]
