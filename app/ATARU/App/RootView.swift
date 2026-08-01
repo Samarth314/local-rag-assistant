@@ -37,28 +37,35 @@ struct RootView: View {
 
     enum Tab: Hashable { case ask, library }
 
-    /// The app deliberately has no call UI of its own.
+    /// Two tabs, plus the call.
     ///
-    /// CallKit draws the call — lock screen, banner, the green pill in the
-    /// status bar, mute and hang up. Duplicating that in-app was solving a
-    /// problem that does not exist: with ATARU open you would simply use Ask
-    /// rather than phone something on the same device. Calling earns its place
-    /// only when the app is closed, and that is precisely when the system
-    /// already provides the whole interface.
+    /// CallKit still owns the call *outside* the app — lock screen, banner, the
+    /// green pill — and answering there needs nothing from us. But when the app
+    /// is on screen during a call, a tab bar says nothing about the fact that a
+    /// conversation is audibly in progress. `CallSessionView` is what the app
+    /// shows for the duration.
     ///
-    /// So this view stays a plain two-tab app. `CallService` runs the call and
-    /// `CallSessionModel` runs the conversation, both without a screen.
+    /// A layer rather than a `fullScreenCover`: a cover competes with whatever
+    /// sheet or navigation push is already up, and a live call should never
+    /// lose that race.
     var body: some View {
-        TabView(selection: $selection) {
-            VoiceView()
-                .tabItem { Label("Ask", systemImage: "waveform") }
-                .tag(Tab.ask)
+        ZStack {
+            TabView(selection: $selection) {
+                VoiceView()
+                    .tabItem { Label("Ask", systemImage: "waveform") }
+                    .tag(Tab.ask)
 
-            DocumentsView()
-                .tabItem { Label("Library", systemImage: "tray.full") }
-                .tag(Tab.library)
+                DocumentsView()
+                    .tabItem { Label("Library", systemImage: "tray.full") }
+                    .tag(Tab.library)
+            }
+            .ataruBackdrop()
+
+            if call.state.isLive {
+                CallSessionView(call: call, session: session)
+                    .zIndex(1)
+            }
         }
-        .ataruBackdrop()
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
         // Warm path: the app was already running when the tap happened. One

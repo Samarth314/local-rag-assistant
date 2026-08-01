@@ -90,6 +90,15 @@ struct SettingsView: View {
                 Text("Rings in 5 seconds, so you can check the call screen without waiting for the contact entry to appear. Lock the phone after tapping — the system only takes over the screen when ATARU isn't already in front.")
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
+
+                #if DEBUG
+                // Development only. The Simulator declines a reported incoming
+                // call within about a second, so the ring path cannot be seen
+                // there at all — an outgoing call is the only way to exercise
+                // the call UI without a device.
+                Button("Start a call (debug)") { call.call() }
+                    .disabled(call.state.isLive)
+                #endif
             }
 
             Section("Privacy") {
