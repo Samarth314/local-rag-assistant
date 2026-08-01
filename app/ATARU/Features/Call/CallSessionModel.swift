@@ -29,9 +29,14 @@ final class CallSessionModel: ObservableObject {
 
     let dictation = SpeechDictation()
     let player = AnswerPlayer()
+    let streamPlayer = StreamingAnswerPlayer()
 
     private var service: ATARUService
     private var loop: Task<Void, Never>?
+    /// The call's WebSocket to the server, opened on the first question and
+    /// reused for every turn after. Nil until needed, nil again after a
+    /// failure so the next turn reconnects fresh.
+    private var stream: VoiceStreamSession?
 
     init(service: ATARUService) {
         self.service = service
@@ -39,6 +44,8 @@ final class CallSessionModel: ObservableObject {
 
     func update(service: ATARUService) {
         self.service = service
+        stream?.close()
+        stream = nil
     }
 
     // MARK: - Lifecycle
@@ -57,6 +64,9 @@ final class CallSessionModel: ObservableObject {
         loop = nil
         dictation.cancel()
         player.stop()
+        streamPlayer.stop()
+        stream?.close()
+        stream = nil
         phase = .idle
         heard = ""
     }
@@ -117,6 +127,12 @@ final class CallSessionModel: ObservableObject {
         phase = .thinking
         heard = question
 
+        // Streaming first: sentence audio starts while the model is still
+        // writing. Any failure before audio starts falls through to the
+        // blocking path, so a broken socket costs latency, never an answer.
+        if await streamAnswer(question) { return }
+        guard !Task.isCancelled else { return }
+
         do {
             let spoken = try await service.ask(question: question)
             guard !Task.isCancelled else { return }
@@ -130,6 +146,78 @@ final class CallSessionModel: ObservableObject {
             // view, and silence after a question is indistinguishable from the
             // call having dropped.
             await speak(SpokenAnswer(text: Self.failureLine(for: error), source: nil, audioURL: nil))
+        }
+    }
+
+    /// Answers over the streaming session. Returns true when the question was
+    /// handled (fully, or far enough that re-asking would repeat audio the
+    /// caller already heard); false means fall back to the blocking path.
+    private func streamAnswer(_ question: String) async -> Bool {
+        if stream == nil { stream = service.voiceStream() }
+        guard let stream else { return false }
+
+        var text = ""
+        var audioStarted = false
+        var ttsLost = false
+
+        do {
+            for try await event in stream.ask(question) {
+                guard !Task.isCancelled else {
+                    streamPlayer.stop()
+                    return true
+                }
+                switch event {
+                case .accepted:
+                    break
+                case .delta(let piece):
+                    text += piece
+                    answer = text
+                case .audioBegin(let sampleRate, let channels, _):
+                    try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
+                    audioStarted = true
+                    phase = .speaking
+                case .audioChunk(let chunk):
+                    streamPlayer.enqueue(chunk)
+                case .audioEnd:
+                    break
+                case .ttsUnavailable:
+                    ttsLost = true
+                case .done(let spoken, let source):
+                    let final = spoken.isEmpty ? text : spoken
+                    answer = final
+                    exchanges.insert(
+                        VoiceExchange(question: question, answer: final, source: source),
+                        at: 0
+                    )
+                    if streamPlayer.isActive {
+                        await streamPlayer.finish()
+                    } else {
+                        // The server answered but could not speak; the phone
+                        // can. Same voice as every other fallback.
+                        await speak(SpokenAnswer(text: final, source: source, audioURL: nil))
+                    }
+                    _ = ttsLost  // recorded for symmetry; the speak above covers it
+                    return true
+                }
+            }
+            // The stream ended without `done` - a half-answer at best.
+            throw VoiceStreamError.protocolViolation("stream ended early")
+        } catch {
+            streamPlayer.stop()
+            self.stream = nil
+            if audioStarted {
+                // The caller already heard part of this answer. Re-asking
+                // through the fallback would replay it; record what we have
+                // and move on to the next turn instead.
+                if !text.isEmpty {
+                    exchanges.insert(
+                        VoiceExchange(question: question, answer: text, source: nil),
+                        at: 0
+                    )
+                }
+                return true
+            }
+            return false
         }
     }
 

@@ -32,6 +32,14 @@ protocol ATARUService: AnyObject, Sendable {
     /// to on-device speech.
     func ask(question: String) async throws -> SpokenAnswer
 
+    /// Opens a streaming voice session, or nil when the backend has none.
+    ///
+    /// Streaming is how a call answers fast: sentence audio plays while the
+    /// model is still generating the rest. `ask(question:)` stays as the
+    /// fallback for backends (and failures) without it, so callers must treat
+    /// nil and a broken stream identically — degrade, never fail the question.
+    func voiceStream() -> VoiceStreamSession?
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -41,6 +49,11 @@ protocol ATARUService: AnyObject, Sendable {
     /// silently — the phone simply never rings, and nothing surfaces anywhere
     /// the user would think to look.
     func registerVoIPToken(_ token: String, environment: String) async throws
+}
+
+extension ATARUService {
+    /// Backends without streaming (Demo) inherit the blocking path.
+    func voiceStream() -> VoiceStreamSession? { nil }
 }
 
 /// Client-side filtering and sorting.

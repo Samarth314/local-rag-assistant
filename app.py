@@ -1,7 +1,8 @@
 import dataclasses
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import (FastAPI, HTTPException, Response, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -9,8 +10,9 @@ import config
 import documents
 import store
 import voice_media
+import voice_stream
 import voip
-from llm import chat, embed
+from llm import chat, chat_tokens, embed
 from voice import to_speech
 from voice_backend import VOICE_SYSTEM_PROMPT, top_source
 
@@ -376,3 +378,53 @@ def _voice_answer(req: VoiceRequest) -> VoiceResponse:
         model=config.CHAT_MODEL,   # fast tier, pinned; never the thorough model
     )
     return VoiceResponse(text=answer, source=top_source(matches), model=config.CHAT_MODEL)
+
+
+# --------------------------------------------------------------------------- #
+# Streaming voice session (WebSocket)
+# --------------------------------------------------------------------------- #
+
+def _answer_stream(question: str, top_k: int) -> voice_stream.AnswerStream:
+    """The streaming twin of `_voice_answer`: same retrieval, same pinned fast
+    model, but the generation is handed over as a token iterator instead of a
+    finished string."""
+    if store.count_rows() == 0:
+        return voice_stream.AnswerStream(
+            tokens=iter(()), source=None, model=config.CHAT_MODEL,
+            canned="There's nothing indexed yet, so I have nothing to search.",
+        )
+    matches = _retrieve(question, top_k)
+    if not matches:
+        return voice_stream.AnswerStream(
+            tokens=iter(()), source=None, model=config.CHAT_MODEL,
+            canned="I couldn't find anything about that in your files.",
+        )
+    context_chunks = [f"[{m['path']}]\n{m['text']}" for m in matches]
+    return voice_stream.AnswerStream(
+        tokens=chat_tokens(VOICE_SYSTEM_PROMPT, context_chunks, question,
+                           model=config.CHAT_MODEL),
+        source=top_source(matches),
+        model=config.CHAT_MODEL,
+    )
+
+
+@app.websocket("/voice/session")
+async def voice_session(ws: WebSocket):
+    """Streaming voice for the app: see voice_stream.py for the protocol.
+
+    Sentence audio goes out while the model is still writing later sentences,
+    so time-to-first-audio is the cost of the first sentence rather than the
+    whole answer. `/voice/speak` remains as the non-streaming fallback.
+    """
+    await ws.accept()
+    cfg = _speech_config()
+    deps = voice_stream.SessionDeps(
+        answer_stream=_answer_stream,
+        synthesize_stream=(voice_stream.http_tts_stream(cfg.tts_url, cfg.timeout)
+                           if cfg.tts_url else None),
+        synthesize_file=voice_stream.local_tts_file(cfg),
+    )
+    try:
+        await voice_stream.run_session(ws, deps)
+    except WebSocketDisconnect:
+        pass

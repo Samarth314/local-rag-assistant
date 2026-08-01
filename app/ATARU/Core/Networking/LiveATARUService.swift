@@ -8,6 +8,7 @@ import Foundation
 /// PRIVACY.md.
 final class LiveATARUService: ATARUService, @unchecked Sendable {
 
+    private let baseURL: URL
     private let endpoints: EndpointBuilder
     private let session: URLSession
     private let tokenProvider: @Sendable () -> String?
@@ -18,6 +19,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
          downloads: DocumentDownloadStore = .shared,
          session: URLSession? = nil) throws {
         guard let baseURL = configuration.baseURL else { throw APIError.notConfigured }
+        self.baseURL = baseURL
         self.endpoints = EndpointBuilder(baseURL: baseURL, apiVersion: configuration.apiVersion)
         self.tokenProvider = tokenProvider
         self.downloads = downloads
@@ -94,6 +96,10 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
             // speak it locally rather than failing the whole question.
             return try await askForText(question)
         }
+    }
+
+    func voiceStream() -> VoiceStreamSession? {
+        VoiceStreamSession(baseURL: baseURL, token: tokenProvider())
     }
 
     private func askForText(_ question: String) async throws -> SpokenAnswer {

@@ -214,6 +214,23 @@ def chat(
     return engine.chat_once(model, messages, num_ctx=config.NUM_CTX, think=think)
 
 
+def chat_tokens(
+    system_prompt: str,
+    context_chunks: list[str],
+    user_query: str,
+    model: str | None = None,
+):
+    """Like `chat(stream=True)` but yields the pieces instead of printing them,
+    so a request handler can forward tokens to a client as they arrive."""
+    prompt = _build_prompt(context_chunks, user_query)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    return engine.chat_stream(model or config.CHAT_MODEL, messages,
+                              num_ctx=config.NUM_CTX)
+
+
 def cloud_world(question: str, stream: bool = True) -> str:
     """Answer an out-of-scope world-knowledge question (current time, weather,
     news, live facts) directly with the cloud model. No retrieval happens and
