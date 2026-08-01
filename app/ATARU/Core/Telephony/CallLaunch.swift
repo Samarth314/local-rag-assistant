@@ -1,6 +1,19 @@
 import Intents
+import OSLog
 import SwiftUI
 import UIKit
+
+/// Logging for the call-intent path.
+///
+/// This path cannot be observed any other way: it runs at launch, before any
+/// UI, driven entirely by what iOS chooses to hand over. When a Recents tap
+/// "does nothing", the only question that matters is whether an activity
+/// arrived at all — and without this there is no way to tell a rejected
+/// activity from one that was never delivered.
+///
+///     log stream --device --predicate 'subsystem == "com.ataru.client"'
+///
+let callLog = Logger(subsystem: "com.ataru.client", category: "call-intent")
 
 /// Catches a call request that arrives before any view exists.
 ///
@@ -37,8 +50,28 @@ final class CallLaunchDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication,
                      continue userActivity: NSUserActivity,
                      restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void) -> Bool {
-        guard CallIntent.isCallRequest(userActivity) else { return false }
+        // Logged before the check, so a delivered-but-rejected activity is
+        // distinguishable from one that never arrived.
+        callLog.notice("delegate received activity: \(userActivity.activityType, privacy: .public)")
+        guard CallIntent.isCallRequest(userActivity) else {
+            callLog.notice("not a call request — ignored")
+            return false
+        }
         MainActor.assumeIsolated { PendingCallRequest.record() }
+        callLog.notice("recorded pending call request")
+        return true
+    }
+
+    /// Logs whether the app was launched with an activity at all. A Recents tap
+    /// that opens the app and does nothing looks identical whether iOS sent an
+    /// activity we rejected or sent nothing; this separates the two.
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions:
+                        [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        let activityType = (launchOptions?[.userActivityDictionary] as? [String: Any])
+            .flatMap { $0["UIApplicationLaunchOptionsUserActivityKey"] as? NSUserActivity }?
+            .activityType
+        callLog.notice("launched with activity: \(activityType ?? "none", privacy: .public)")
         return true
     }
 }

@@ -68,22 +68,29 @@ enum CallIntent {
         }
     }
 
+    /// Every activity type that can mean "call ATARU".
+    ///
+    /// `INStartCallIntent` is the modern one and what a Recents tap sends on
+    /// iOS 13 and later. `INStartAudioCallIntent` is its deprecated
+    /// predecessor, still emitted on some paths, and accepting it costs
+    /// nothing. Both must also appear in Info.plist's `NSUserActivityTypes` —
+    /// iOS will not deliver an activity type the app has not claimed, and that
+    /// silence looks exactly like a handler that is not working.
+    static let activityTypes: [String] = [
+        NSStringFromClass(INStartCallIntent.self),
+        "INStartAudioCallIntent",
+    ]
+
     /// Whether an activity handed to the app is a request to call ATARU.
     ///
-    /// The contacts are checked rather than assumed: the same activity type
-    /// arrives for any person the system thinks this app can reach, and a
-    /// future version that can call more than one thing should not treat every
-    /// one of them as ATARU.
+    /// No filtering on the intent's contacts, deliberately. There is exactly
+    /// one thing this app can call, so any call request is a request to call
+    /// it. The previous contact check could only ever *reject* a request the
+    /// user had explicitly made — the handle in a redial comes back through
+    /// several layers of the system and does not reliably survive as the string
+    /// that was sent. If ATARU ever gains a second callee, the decision returns
+    /// here.
     static func isCallRequest(_ activity: NSUserActivity) -> Bool {
-        guard activity.activityType == NSStringFromClass(INStartCallIntent.self) else {
-            return false
-        }
-        guard let intent = activity.interaction?.intent as? INStartCallIntent else {
-            // Siri can hand over the activity type without a resolved intent.
-            // Treating that as "call ATARU" is right for a single-callee app.
-            return true
-        }
-        guard let contacts = intent.contacts, !contacts.isEmpty else { return true }
-        return contacts.contains { $0.personHandle?.value == handleValue }
+        activityTypes.contains(activity.activityType)
     }
 }

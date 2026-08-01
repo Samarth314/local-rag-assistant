@@ -48,6 +48,10 @@
   <key>NSUserActivityTypes</key>
   <array>
     <string>INStartCallIntent</string>
+    <!-- Deprecated predecessor, still emitted on some paths. iOS only delivers
+         activity types an app has claimed here, so an unclaimed one arrives
+         nowhere — indistinguishable from a handler that does not work. -->
+    <string>INStartAudioCallIntent</string>
   </array>
   <key>NSContactsUsageDescription</key>
   <string>ATARU can add itself to your contacts so you can call it like a person. It only writes its own entry and never reads or uploads your other contacts.</string>

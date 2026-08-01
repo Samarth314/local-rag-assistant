@@ -61,9 +61,14 @@ struct RootView: View {
         .ataruBackdrop()
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
-        // Warm path: the app was already running when the tap happened.
+        // Warm path: the app was already running when the tap happened. One
+        // modifier per activity type — the modifier matches a single type, so a
+        // request arriving as the legacy one would otherwise reach nothing.
         .onContinueUserActivity(NSStringFromClass(INStartCallIntent.self)) { activity in
             guard CallIntent.isCallRequest(activity) else { return }
+            call.call()
+        }
+        .onContinueUserActivity("INStartAudioCallIntent") { _ in
             call.call()
         }
         // Cold path: the tap launched the app, and the activity reached the
