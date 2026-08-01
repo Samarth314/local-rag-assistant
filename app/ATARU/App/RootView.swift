@@ -37,35 +37,28 @@ struct RootView: View {
 
     enum Tab: Hashable { case ask, library }
 
-    /// Controls belong to CallKit; only the status readout is ours.
+    /// The app deliberately has no call UI of its own.
     ///
-    /// CallKit foregrounds the app when a call is answered. That is not
-    /// configurable and never has been — it is how the framework has worked
-    /// since iOS 10 — so the app appears whether or not it has anything to say.
-    /// The only real choice is what it shows, and a tab bar while a call is
-    /// audibly in progress reads as the app having opened for no reason.
+    /// CallKit draws the call — lock screen, banner, the green pill in the
+    /// status bar, mute and hang up. Duplicating that in-app was solving a
+    /// problem that does not exist: with ATARU open you would simply use Ask
+    /// rather than phone something on the same device. Calling earns its place
+    /// only when the app is closed, and that is precisely when the system
+    /// already provides the whole interface.
     ///
-    /// `CallStatusView` fills that with the call's actual state and no buttons.
-    /// Mute and hang up stay in the system interface, which is the one that
-    /// also works on the lock screen, in CarPlay and on the Watch.
+    /// So this view stays a plain two-tab app. `CallService` runs the call and
+    /// `CallSessionModel` runs the conversation, both without a screen.
     var body: some View {
-        ZStack {
-            TabView(selection: $selection) {
-                VoiceView()
-                    .tabItem { Label("Ask", systemImage: "waveform") }
-                    .tag(Tab.ask)
+        TabView(selection: $selection) {
+            VoiceView()
+                .tabItem { Label("Ask", systemImage: "waveform") }
+                .tag(Tab.ask)
 
-                DocumentsView()
-                    .tabItem { Label("Library", systemImage: "tray.full") }
-                    .tag(Tab.library)
-            }
-            .ataruBackdrop()
-
-            if call.state.isLive {
-                CallStatusView(call: call, session: session)
-                    .zIndex(1)
-            }
+            DocumentsView()
+                .tabItem { Label("Library", systemImage: "tray.full") }
+                .tag(Tab.library)
         }
+        .ataruBackdrop()
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
         .onContinueUserActivity(NSStringFromClass(INStartCallIntent.self)) { activity in
