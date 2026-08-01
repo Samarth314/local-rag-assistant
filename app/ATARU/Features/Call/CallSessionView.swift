@@ -42,10 +42,18 @@ struct CallSessionView: View {
             // sit directly under the orb because that is where the eye already
             // is — the orb is what moves, so anything further away gets missed
             // while someone is mid-sentence.
+            //
+            // Compacted, and not negotiable: the orb's natural size is 260pt,
+            // and at full size this screen's fixed content added up to more
+            // than the display — the transcript's flexible frame was the only
+            // thing that could give, so it silently collapsed to nothing. The
+            // words are the point of this screen; the orb yields.
             OrbView(phase: session.phase, level: session.dictation.level)
+                .scaleEffect(0.68)
+                .frame(height: 180)
 
             transcript
-                .frame(maxHeight: .infinity)
+                .frame(minHeight: 132, maxHeight: .infinity)
 
             participants
 
@@ -294,17 +302,19 @@ private struct ParticipantTile: View {
                 // reads as the tile breathing rather than the icon jumping.
                 Circle()
                     .strokeBorder(Theme.cyan.opacity(0.35), lineWidth: 1)
-                    .frame(width: 54, height: 54)
+                    .frame(width: 44, height: 44)
                     .scaleEffect(1 + CGFloat(min(max(level, 0), 1)) * 0.35)
                     .opacity(isActive ? 1 : 0)
                     .animation(.easeOut(duration: 0.12), value: level)
 
                 Image(systemName: symbol)
-                    .font(.system(size: 20, weight: .light))
+                    .font(.system(size: 17, weight: .light))
                     .foregroundStyle(isActive ? Theme.cyan : Theme.textSecondary)
                     .contentTransition(.symbolEffect(.replace))
             }
-            .frame(height: 76)
+            // Sized so the tiles stay slim: every point the fixed content
+            // grows comes out of the transcript above it.
+            .frame(height: 52)
 
             Text(name)
                 .font(.ataruBody())
@@ -315,7 +325,7 @@ private struct ParticipantTile: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, Ataru.Space.md)
+        .padding(.vertical, Ataru.Space.sm)
         .ataruCard(radius: Ataru.Radius.tile)
         .overlay {
             // The accent is what marks the active speaker — the kit's one
