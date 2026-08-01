@@ -451,3 +451,27 @@ def voice_greeting():
         media_type="audio/wav",
         headers={"X-Ataru-Text": GREETING, "X-Ataru-Source": ""},
     )
+
+
+GOODBYES = ("Alright, talk later.", "Done here. Have a good one.",
+            "Got it. Talk soon.")
+
+
+@app.get("/voice/goodbye")
+def voice_goodbye():
+    """The call's closing line, spoken when the caller says they're done.
+
+    Same engine and cache as the greeting, so hello and goodbye are the same
+    voice as everything in between.
+    """
+    import random
+    phrase = random.choice(GOODBYES)
+    try:
+        wav = voice_media.synthesize(phrase, _speech_config())
+    except voice_media.SynthesisError as exc:
+        raise HTTPException(status_code=503, detail=f"speech unavailable: {exc}")
+    return Response(
+        content=wav.read_bytes(),
+        media_type="audio/wav",
+        headers={"X-Ataru-Text": phrase, "X-Ataru-Source": ""},
+    )

@@ -33,6 +33,9 @@ struct RootView: View {
         call.onAudioDeactivated = { [weak session] in session?.end() }
         // CallKit's mute action is bookkeeping; this is what stops the mic.
         call.onMuteChanged = { [weak session] muted in session?.setMuted(muted) }
+        // "That will be all" → goodbye → hang up, through the same CallKit
+        // path as the End button.
+        session.onFarewell = { [weak call] in call?.end() }
 
         _call = StateObject(wrappedValue: call)
         _session = StateObject(wrappedValue: session)

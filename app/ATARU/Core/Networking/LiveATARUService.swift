@@ -103,12 +103,24 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
     }
 
     func greeting() async throws -> SpokenAnswer {
-        guard let url = endpoints.greeting else { throw APIError.invalidURL }
+        try await cannedLine(endpoints.greeting,
+                             fallbackText: "ATARU here. What would you like to know?",
+                             name: "greeting.wav")
+    }
+
+    func goodbye() async throws -> SpokenAnswer {
+        try await cannedLine(endpoints.goodbye,
+                             fallbackText: "Alright, talk later.",
+                             name: "goodbye.wav")
+    }
+
+    private func cannedLine(_ url: URL?, fallbackText: String,
+                            name: String) async throws -> SpokenAnswer {
+        guard let url else { throw APIError.invalidURL }
         let (data, response) = try await perform(request(for: url))
-        let audio = try await downloads.store(data, preferredName: "greeting.wav")
+        let audio = try await downloads.store(data, preferredName: name)
         return SpokenAnswer(
-            text: response.value(forHTTPHeaderField: "X-Ataru-Text")
-                ?? "ATARU here. What would you like to know?",
+            text: response.value(forHTTPHeaderField: "X-Ataru-Text") ?? fallbackText,
             source: nil,
             audioURL: audio
         )

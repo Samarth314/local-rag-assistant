@@ -48,6 +48,9 @@ protocol ATARUService: AnyObject, Sendable {
     /// graceful degradation as every other voice path.
     func greeting() async throws -> SpokenAnswer
 
+    /// The call's closing line, spoken when the caller says they're done.
+    func goodbye() async throws -> SpokenAnswer
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -67,6 +70,11 @@ extension ATARUService {
     func greeting() async throws -> SpokenAnswer {
         SpokenAnswer(text: "ATARU here. What would you like to know?",
                      source: nil, audioURL: nil)
+    }
+
+    /// Backends without a voice engine say goodbye in the phone's voice.
+    func goodbye() async throws -> SpokenAnswer {
+        SpokenAnswer(text: "Alright, talk later.", source: nil, audioURL: nil)
     }
 }
 

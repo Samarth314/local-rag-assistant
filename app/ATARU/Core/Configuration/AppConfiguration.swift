@@ -153,6 +153,9 @@ struct EndpointBuilder {
     /// The call's opening line, rendered in the server's voice.
     var greeting: URL? { url("voice/greeting") }
 
+    /// The call's closing line, for when the caller says they're done.
+    var goodbye: URL? { url("voice/goodbye") }
+
     static func escape(_ component: String) -> String {
         component.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? component
     }
