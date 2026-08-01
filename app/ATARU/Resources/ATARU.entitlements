@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Required for ATARU to appear as a calling option on a contact card, and for
+    "Call ATARU" to work from Siri. INStartCallIntent donations silently do
+    nothing without it.
+
+    This entitlement needs a PAID Apple Developer Program membership. A free
+    personal team cannot enable the Siri capability, and a device build that
+    requests it fails to sign with a provisioning error.
+
+    So this file is NOT applied by default. Opt in from Config.xcconfig:
+
+        ATARU_ENTITLEMENTS = ATARU/Resources/ATARU.entitlements
+
+    Leaving it unset keeps the app building and running exactly as before, with
+    the contact-card entry as the only missing piece.
+  -->
+  <key>com.apple.developer.siri</key>
+  <true/>
+
+  <!--
+    Push Notifications, for the VoIP push that rings the phone while ATARU is
+    closed. "development" matches an Xcode-installed build and pairs with the
+    SANDBOX APNs host; TestFlight and the App Store need "production" and the
+    production host. Mismatching the two fails as BadDeviceToken and the phone
+    simply never rings — see VoIPPushService.environment, which tells the
+    server which kind of build this is so it picks the right host.
+  -->
+  <key>aps-environment</key>
+  <string>development</string>
+</dict>
+</plist>

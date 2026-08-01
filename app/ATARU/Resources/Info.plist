@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>ATARU</string>
+  <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
+  <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>LSRequiresIPhoneOS</key><true/>
+  <key>UILaunchScreen</key>
+  <dict>
+    <key>UIColorName</key><string>LaunchCanvas</string>
+  </dict>
+  <key>UIUserInterfaceStyle</key><string>Dark</string>
+  <key>UISupportedInterfaceOrientations</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+  </array>
+  <!--
+    Covers both ways in. The old wording promised "only when you tap the
+    dictation button", which stopped being true the moment calls existed: a
+    call listens hands-free between turns, without anything being held.
+  -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>ATARU uses the microphone while you hold the dictation button, and between turns during a call, so you can speak a question instead of typing it. It never records at any other time.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>ATARU transcribes your dictated question on device so it can be sent to your own private assistant.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>ATARU connects to your own ATARU server on your private network or Tailnet. No data is sent anywhere else.</string>
+  <!--
+    Lets iOS hand the app an "call ATARU" request from a contact card, the
+    Phone app or Siri. Declaring the activity type is what makes the app a
+    candidate; actually appearing on the card additionally needs the Siri
+    entitlement and at least one donated interaction — see CallIntent.swift.
+  -->
+  <key>NSUserActivityTypes</key>
+  <array>
+    <string>INStartCallIntent</string>
+  </array>
+  <key>NSContactsUsageDescription</key>
+  <string>ATARU can add itself to your contacts so you can call it like a person. It only writes its own entry and never reads or uploads your other contacts.</string>
+  <key>NSFaceIDUsageDescription</key>
+  <string>ATARU can require Face ID before showing your private records.</string>
+  <key>ITSAppUsesNonExemptEncryption</key><false/>
+
+  <!--
+    `voip` keeps the call's audio session running when the app is backgrounded
+    or the screen locks, which a call obviously has to survive.
+
+    It is also the mode PushKit requires, and that is the piece this demo does
+    not have: incoming calls here are reported locally by the app while it runs.
+    A real "ATARU rings you" needs a VoIP push from the server, and note the
+    contract that comes with it — from iOS 13, an app that receives a VoIP push
+    and does NOT call reportNewIncomingCall gets terminated, and repeat
+    offenders lose push privileges. Do not add PushKit without wiring the
+    report unconditionally.
+  -->
+  <key>UIBackgroundModes</key>
+  <array>
+    <string>audio</string>
+    <string>voip</string>
+  </array>
+
+  <!--
+    App Transport Security.
+
+    ATARU talks to a server on the user's own Tailnet, which is reached over a
+    100.64.0.0/10 address (RFC 6598, the CGNAT range Tailscale uses). Apple's
+    NSAllowsLocalNetworking exception covers RFC 1918 and .local but NOT that
+    range, so it alone is not enough — hence NSAllowsArbitraryLoads.
+
+    NSAllowsLocalNetworking must NOT be added back "for good measure". On
+    iOS 10 and later, the presence of that key (or the WebContent/Media
+    variants) causes NSAllowsArbitraryLoads to be IGNORED — the granular keys
+    exist so an app can offer a broad exception to old OS versions and a narrow
+    one to new. Setting both silently reinstates the narrow policy and every
+    Tailnet request fails with NSURLErrorAppTransportSecurityRequiresSecureConnection
+    (-1022).
+
+    What actually restricts insecure connections is the app, not ATS:
+    AppConfiguration.validate rejects every plain-http URL in a Release build,
+    and in Debug accepts one only for a private host (RFC 1918, 100.64/10,
+    .local, .ts.net). ATS is the permissive layer here and the app is the
+    strict one, which is the opposite of the usual arrangement and is
+    deliberate — see PRIVACY.md.
+
+    The better long-term answer is to stop using plain http at all: run
+    `tailscale serve` on the host and connect to the https://…ts.net name with
+    its real certificate. Then none of this applies.
+  -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key><true/>
+  </dict>
+</dict>
+</plist>

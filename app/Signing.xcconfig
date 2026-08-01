@@ -1,0 +1,32 @@
+// Signing and identity for ATARU.
+//
+// The defaults below let the project build and run in the Simulator with no
+// setup at all. To install on a real iPhone you need an Apple ID team and a
+// bundle identifier nobody else has claimed — put both in `Config.xcconfig`,
+// which is gitignored so your team ID never lands in the repo.
+//
+//     cp Config.example.xcconfig Config.xcconfig
+//
+// Nothing personal belongs in THIS file: it is tracked, so a team ID set here
+// gets committed. Defaults come first and the local file is included last, so
+// anything set in Config.xcconfig wins.
+
+ATARU_BUNDLE_ID_PREFIX = com.ataru.client
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+
+// Entitlements are off by default. The only one ATARU has is Siri, needed for
+// the contact-card calling entry — and requesting it on a free personal team
+// fails to sign, which would break device builds for everyone who has not paid
+// for the Developer Program. Opt in from Config.xcconfig:
+//
+//     ATARU_ENTITLEMENTS = ATARU/Resources/ATARU.entitlements
+//
+// This indirection is the only thing that makes that setting do anything, so
+// do not remove it.
+ATARU_ENTITLEMENTS =
+CODE_SIGN_ENTITLEMENTS = $(ATARU_ENTITLEMENTS)
+
+// Optional, gitignored, may not exist — hence `#include?` rather than
+// `#include`, which would fail the build when it is absent.
+#include? "Config.xcconfig"

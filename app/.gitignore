@@ -1,0 +1,43 @@
+# Build artifacts
+build/
+build-device/
+DerivedData/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Local, non-committed configuration: team id, bundle prefix, and a default
+# server URL pointing at somebody's private host. Each developer keeps their
+# own -- copy Config.example.xcconfig.
+Config.xcconfig
+
+# The Xcode project is GENERATED from project.yml by XcodeGen, so it is not
+# tracked. That is deliberate: project.pbxproj is a generated blob that
+# conflicts on almost any concurrent change, and two people adding files in the
+# same week is exactly when it hurts.
+#
+# After cloning, and after anyone adds or removes a source file:
+#
+#     brew install xcodegen    # once
+#     xcodegen generate
+#
+*.xcodeproj/
+*.xcworkspace/
+
+# APNs signing keys, in case one is ever put here by mistake.
+*.p8
+
+# macOS
+.DS_Store
+
+# Screenshots captured during verification
+Screenshots/
+
+# Swift Package Manager (unused — ATARU has zero third-party dependencies)
+.swiftpm/
+.build/

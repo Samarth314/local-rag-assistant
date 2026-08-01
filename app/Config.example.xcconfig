@@ -1,0 +1,31 @@
+// ATARU — local build configuration.
+//
+// Copy this to `Config.xcconfig` (gitignored) and fill it in. Nothing here is
+// secret: the bearer token is NEVER stored in a build file — it lives in the
+// Keychain. Your team ID is not secret either, but it is personal, which is
+// why this file stays out of the repo.
+//
+//     cp Config.example.xcconfig Config.xcconfig
+
+// ---------------------------------------------------------------------------
+// Required to install on a physical iPhone. Not needed for the Simulator.
+// ---------------------------------------------------------------------------
+
+// Your 10-character Apple Developer Team ID.
+// Xcode → Settings → Accounts → select your Apple ID → Team ID column.
+// A free Apple ID gets one too; you do not need the paid program.
+DEVELOPMENT_TEAM = ABCDE12345
+
+// Bundle identifiers are globally unique across all of Apple's systems.
+// `com.ataru.client` may already be claimed, which surfaces as an opaque
+// provisioning error, so use your own reverse-DNS prefix.
+ATARU_BUNDLE_ID_PREFIX = com.yourname.ataru
+
+// ---------------------------------------------------------------------------
+// Optional
+// ---------------------------------------------------------------------------
+
+// Base URL pre-filled in Settings. Always changeable in the app.
+// Plain http:// is accepted only in Debug builds and only for private hosts
+// (RFC1918, 100.64/10 Tailscale, .local, .ts.net).
+ATARU_DEFAULT_BASE_URL = http:/$()/100.106.109.31:8000
