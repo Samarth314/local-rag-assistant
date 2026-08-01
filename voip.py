@@ -20,6 +20,7 @@ image, and mount it at run time.
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, asdict
@@ -86,6 +87,38 @@ def forget_device(token: str) -> bool:
 
 
 # --- APNs --------------------------------------------------------------------
+
+def configuration_status() -> dict:
+    """Whether this host is able to ring anything, checkable before a phone has
+    ever registered.
+
+    Without this the only way to find out is to send a real push, which needs a
+    registered device — so a misconfigured key stays invisible until the moment
+    you actually want the phone to ring. Reports presence and readability
+    separately because the container runs as a different uid than the user who
+    copied the key in, and "the file is there but I cannot read it" is the
+    failure that actually happens.
+    """
+    key = Path(config.APNS_KEY_PATH) if config.APNS_KEY_PATH else None
+    exists = bool(key and key.exists())
+    return {
+        "key_path": config.APNS_KEY_PATH or None,
+        "key_present": exists,
+        # os.access as the container's own uid — the honest question is not
+        # what the mode bits say but whether this process can open it.
+        "key_readable": exists and os.access(key, os.R_OK),
+        "key_id_set": bool(config.APNS_KEY_ID),
+        "team_id_set": bool(config.APNS_TEAM_ID),
+        "topic": f"{config.APNS_BUNDLE_ID}.voip" if config.APNS_BUNDLE_ID else None,
+        "ready": bool(
+            exists
+            and os.access(key, os.R_OK)
+            and config.APNS_KEY_ID
+            and config.APNS_TEAM_ID
+            and config.APNS_BUNDLE_ID
+        ),
+    }
+
 
 class PushError(RuntimeError):
     """Raised with Apple's own reason string where there is one — 'BadDeviceToken'

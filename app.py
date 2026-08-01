@@ -120,12 +120,17 @@ def voip_register(req: DeviceRegistration):
 def voip_devices():
     # Tokens are truncated: they are device identifiers, and a full one in a
     # log or a screenshot is enough to ring somebody's phone.
+    #
+    # `configuration` rides along so the whole setup can be checked in one call
+    # before any phone has registered — otherwise a bad key stays hidden until
+    # the first time you actually need the phone to ring.
     return {
+        "configuration": voip.configuration_status(),
         "devices": [
             {"token": d.token[:12] + "…", "environment": d.environment,
              "name": d.name, "registered_at": d.registered_at}
             for d in voip.load_devices()
-        ]
+        ],
     }
 
 
