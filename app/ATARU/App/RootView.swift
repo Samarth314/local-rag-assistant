@@ -28,6 +28,9 @@ struct RootView: View {
         // CallKit says the session is live — not when the call connects.
         call.onAudioActivated = { [weak session] in session?.begin() }
         call.onAudioDeactivated = { [weak session] in session?.end() }
+        // "That will be all" → goodbye → hang up, through the same CallKit
+        // path as the End button.
+        session.onFarewell = { [weak call] in call?.end() }
 
         _call = StateObject(wrappedValue: call)
         _session = StateObject(wrappedValue: session)

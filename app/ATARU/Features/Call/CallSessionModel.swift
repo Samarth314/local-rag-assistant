@@ -31,6 +31,10 @@ final class CallSessionModel: ObservableObject {
     let player = AnswerPlayer()
     let streamPlayer = StreamingAnswerPlayer()
 
+    /// Asked to hang up because the caller said they were done. Wired by the
+    /// view that owns both this session and the CallService.
+    var onFarewell: (() -> Void)?
+
     private var service: ATARUService
     private var loop: Task<Void, Never>?
     /// The call's WebSocket to the server, opened on the first question and
@@ -89,6 +93,17 @@ final class CallSessionModel: ObservableObject {
         while !Task.isCancelled {
             guard let question = await listenForOneTurn() else { break }
             guard !Task.isCancelled else { break }
+            // "That will be all" ends the call like a call: a goodbye in the
+            // assistant's voice, then the hang-up - instead of forcing the
+            // caller to fish the phone out and tap End.
+            if Farewell.matches(question, lastAnswer: answer) {
+                heard = question
+                let bye = (try? await service.goodbye())
+                    ?? SpokenAnswer(text: "Alright, talk later.", source: nil, audioURL: nil)
+                await speak(bye)
+                onFarewell?()
+                break
+            }
             await answerQuestion(question)
         }
     }
@@ -250,5 +265,54 @@ final class CallSessionModel: ObservableObject {
     private static func failureLine(for error: Error) -> String {
         (error as? LocalizedError)?.errorDescription
             ?? "Something went wrong reaching your vault."
+    }
+}
+
+/// Decides whether an utterance means "I'm done with this call".
+///
+/// Two shapes count: an explicit sign-off ("that will be all", "goodbye"),
+/// or a bare "no" - but the bare form only when the assistant's last answer
+/// ended with a question, because "no" as the whole reply to "do you need
+/// anything else?" is a goodbye, while "no" out of nowhere may be the start
+/// of a correction the recognizer cut short.
+enum Farewell {
+
+    /// Sign-offs matched anywhere in the utterance.
+    private static let phrases = [
+        "that will be all", "that'll be all", "that is all", "thats all",
+        "that's all", "nothing else", "that's it for now", "thats it for now",
+        "that's everything", "thats everything", "we're done", "were done",
+        "i'm all set", "im all set", "all set thanks", "talk to you later",
+        "talk later", "goodbye", "good bye",
+    ]
+
+    /// Whole-utterance negatives, honored only after a question.
+    private static let bareNegatives: Set<String> = [
+        "no", "nope", "nah", "no thanks", "no thank you", "nothing",
+        "not right now", "im good", "i'm good", "im okay", "i'm okay",
+        "no that's it", "no thats it", "bye",
+    ]
+
+    static func matches(_ utterance: String, lastAnswer: String) -> Bool {
+        let normalized = normalize(utterance)
+        guard !normalized.isEmpty else { return false }
+        if phrases.contains(where: { normalized.contains($0) }) { return true }
+        if bareNegatives.contains(normalized) {
+            return lastAnswer.trimmingCharacters(in: .whitespacesAndNewlines)
+                .hasSuffix("?")
+        }
+        return false
+    }
+
+    private static func normalize(_ text: String) -> String {
+        let lowered = text.lowercased()
+        let kept = lowered.unicodeScalars.map { scalar -> Character in
+            if CharacterSet.alphanumerics.contains(scalar)
+                || scalar == "'" || scalar == " " {
+                return Character(scalar)
+            }
+            return " "
+        }
+        return String(kept).split(separator: " ").joined(separator: " ")
     }
 }
