@@ -17,15 +17,19 @@ struct RootView: View {
     @StateObject private var session: CallSessionModel
     @StateObject private var push: VoIPPushService
 
-    init() {
+    init(state: AppState) {
         // Everything is wired here rather than in `.onAppear`, because a call
         // can arrive before the view appears: tapping ATARU in Recents cold
         // launches the app straight into an intent, and a VoIP push wakes it
         // with no view lifecycle at all. Wiring on appear leaves a window where
         // the call connects and nothing is listening for the audio session.
         let call = CallService()
-        // Service is replaced in `.task` once the environment's is known.
-        let session = CallSessionModel(service: DemoATARUService())
+        // Born with the REAL service, not a placeholder: a Recents tap dials
+        // during the first render, before any `.task` runs - a session that
+        // starts as Demo and is swapped later loses that race and answers the
+        // whole call from fixtures. AppState resolves Live synchronously from
+        // the persisted configuration, so this is safe at cold launch.
+        let session = CallSessionModel(service: state.service)
 
         // The system owns the audio route, so the conversation starts when
         // CallKit says the session is live — not when the call connects.
@@ -144,5 +148,6 @@ struct RootView: View {
 }
 
 #Preview {
-    RootView().environmentObject(AppState())
+    let state = AppState()
+    RootView(state: state).environmentObject(state)
 }

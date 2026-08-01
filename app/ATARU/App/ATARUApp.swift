@@ -13,7 +13,7 @@ struct ATARUApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView()
+            RootView(state: state)
                 .environmentObject(state)
                 .preferredColorScheme(.dark)
                 .tint(Theme.cyan)
