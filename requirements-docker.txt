@@ -21,3 +21,6 @@ openai
 h2
 httpx
 PyJWT[crypto]
+# WebSocket support for /voice/session -- bare uvicorn rejects Upgrade
+# requests without a protocol implementation.
+websockets
