@@ -141,7 +141,9 @@ struct CallSessionView: View {
             switch session.phase {
             case .idle: return "Connected"
             case .listening: return "Listening"
-            case .thinking: return "Looking through your files"
+            // Not necessarily a file search - the phase can't see whether the
+            // answer comes from files, mail, or the model, so stay generic.
+            case .thinking: return "Thinking"
             case .speaking: return "Answering"
             case .failed: return "Something went wrong"
             }
@@ -192,7 +194,7 @@ struct CallSessionView: View {
 
     private var ataruCaption: String {
         switch session.phase {
-        case .thinking: return "Searching"
+        case .thinking: return "Thinking"
         case .speaking: return "Speaking"
         case .failed: return "Problem"
         default: return "Waiting"
