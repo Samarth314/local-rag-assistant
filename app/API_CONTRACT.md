@@ -126,3 +126,27 @@ Text-only answer.
 
 Decoding failures report the expected *shape*, never the payload — payloads are
 vault content and error strings end up in logs.
+
+## Streaming voice: `WS /voice/session`
+
+The streaming twin of `/voice/speak`. One WebSocket serves a whole call;
+send one ask at a time and read events until `done`:
+
+    -> {"type": "ask", "q": "...", "topK": 4}
+
+    <- {"type": "accepted"}
+    <- {"type": "delta", "text": "..."}           raw model text, live display
+    <- {"type": "audio_begin", "seq": 0, "sampleRate": 24000, "channels": 1,
+        "encoding": "pcm_s16le", "text": "<sentence>"}
+    <- <binary: raw 16-bit little-endian PCM frames for the current seq>
+    <- {"type": "audio_end", "seq": 0}
+    <- {"type": "tts_unavailable"}                at most once; speak locally
+    <- {"type": "done", "text": "...", "source": "...", "model": "..."}
+    <- {"type": "error", "message": "..."}        per-question, socket stays up
+
+Sentence audio is synthesized and sent while the model is still generating
+later sentences, so first audio costs one sentence, not the whole answer.
+Binary frames always belong to the most recent `audio_begin`. On any socket
+failure fall back to `GET /voice/speak` for that question and reconnect on
+the next one. Server truncation mirrors the blocking path
+(`RAG_VOICE_STREAM_MAX_SENTENCES`, default 3).
