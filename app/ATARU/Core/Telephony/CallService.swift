@@ -302,13 +302,21 @@ final class CallService: NSObject, ObservableObject {
         guard let id = callID, isMuted != muted else { return }
         let previous = isMuted
 
-        isMuted = muted
-        onMuteChanged?(muted)
+        applyMute(muted)
 
         request(CXSetMutedCallAction(call: id, muted: muted), fatal: false) { [weak self] in
-            self?.isMuted = previous
-            self?.onMuteChanged?(previous)
+            self?.applyMute(previous)
         }
+    }
+
+    /// The single place mute state changes, whichever surface asked.
+    ///
+    /// Idempotent, because a change can arrive twice: the app button applies it
+    /// optimistically and the CallKit delegate then confirms the same value.
+    private func applyMute(_ muted: Bool) {
+        guard isMuted != muted else { return }
+        isMuted = muted
+        onMuteChanged?(muted)
     }
 
     /// Routes audio to the speaker or back to the receiver.
@@ -495,7 +503,13 @@ extension CallService: CXProviderDelegate {
 
     nonisolated func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
         MainActor.assumeIsolated {
-            isMuted = action.isMuted
+            // This delegate fires for BOTH origins: our own button (after the
+            // transaction round-trips) and the system call UI's mute switch.
+            // It must drive `onMuteChanged`, not just the flag — the system UI
+            // path has no other way to reach the microphone, and skipping it
+            // here is what let a lock-screen mute leave the mic recording and
+            // the session permanently out of step with the call.
+            applyMute(action.isMuted)
             action.fulfill()
         }
     }

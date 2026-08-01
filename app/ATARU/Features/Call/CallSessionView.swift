@@ -363,12 +363,13 @@ private struct CallPressStyle: ButtonStyle {
     }
 }
 
-/// The call while it is minimised: a card above the tab bar.
+/// The call while it is minimised: a full-width bar just above the tab bar.
 ///
-/// Sits bottom-right, just clear of the tabs, where a thumb already is and
-/// where it covers the least content. Deliberately still says what the
-/// assistant is doing — a minimised call whose only content is "call in
-/// progress" has to be restored to learn anything, which defeats minimising it.
+/// A bar rather than a floating chip, so it reads the way a backgrounded call
+/// does in the Phone app — a strip that belongs to the frame of the app, not a
+/// widget sitting on the content. Deliberately still says what the assistant
+/// is doing: a minimised call whose only content is "call in progress" has to
+/// be restored to learn anything, which defeats minimising it.
 struct MinimizedCallBar: View {
     @ObservedObject var call: CallService
     @ObservedObject var session: CallSessionModel
@@ -380,37 +381,37 @@ struct MinimizedCallBar: View {
                 // A small orb, so the minimised call is recognisably the same
                 // thing as the full screen rather than a generic banner.
                 OrbView(phase: session.phase, level: session.dictation.level)
-                    .scaleEffect(0.32)
-                    .frame(width: 44, height: 44)
+                    .scaleEffect(0.30)
+                    .frame(width: 40, height: 40)
+                    .clipped()
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     Text("ATARU")
                         .font(.ataruBody())
                         .foregroundStyle(Theme.textPrimary)
 
-                    HStack(spacing: Ataru.Space.xs) {
-                        Text(activity)
-                            .ataruStyle(.meta)
-                            .lineLimit(1)
+                    Text(activity)
+                        .ataruStyle(.meta)
+                        .lineLimit(1)
+                }
 
-                        if case .active(let connectedAt) = call.state {
-                            TimelineView(.periodic(from: connectedAt, by: 1)) { context in
-                                Text(CallDuration.format(from: connectedAt, to: context.date))
-                                    .font(.ataruMono(11))
-                                    .foregroundStyle(Theme.textTertiary)
-                                    .monospacedDigit()
-                            }
-                        }
+                Spacer(minLength: 0)
+
+                if case .active(let connectedAt) = call.state {
+                    TimelineView(.periodic(from: connectedAt, by: 1)) { context in
+                        Text(CallDuration.format(from: connectedAt, to: context.date))
+                            .font(.ataruMono(11.5))
+                            .foregroundStyle(Theme.textTertiary)
+                            .monospacedDigit()
                     }
                 }
 
                 Image(systemName: "chevron.up")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Theme.textTertiary)
-                    .padding(.leading, Ataru.Space.xs)
             }
-            .padding(.horizontal, Ataru.Space.md)
-            .padding(.vertical, Ataru.Space.sm)
+            .padding(.horizontal, Ataru.Space.gutter)
+            .frame(maxWidth: .infinity, minHeight: 56)
             .ataruCard(radius: Ataru.Radius.tile)
             .overlay {
                 RoundedRectangle(cornerRadius: Ataru.Radius.tile, style: .continuous)

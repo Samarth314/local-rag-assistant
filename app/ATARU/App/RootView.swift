@@ -13,38 +13,24 @@ struct RootView: View {
     /// so the state has to outlive that view being torn down.
     @State private var isCallMinimized = false
 
-    @StateObject private var call: CallService
-    @StateObject private var session: CallSessionModel
-    @StateObject private var push: VoIPPushService
+    // Borrowed from CallStack, never constructed here. A view's init re-runs
+    // on any parent update, and constructing call machinery per-init is what
+    // produced the phantom-call bug: CallKit's delegate landed on a throwaway
+    // instance whose session ran the conversation audibly while the observed
+    // instance sat in `.dialing` — audio fine, no transcript, mute desynced.
+    // See CallStack for the full story.
+    @ObservedObject private var call: CallService
+    @ObservedObject private var session: CallSessionModel
 
     init(state: AppState) {
-        // Everything is wired here rather than in `.onAppear`, because a call
-        // can arrive before the view appears: tapping ATARU in Recents cold
-        // launches the app straight into an intent, and a VoIP push wakes it
-        // with no view lifecycle at all. Wiring on appear leaves a window where
-        // the call connects and nothing is listening for the audio session.
-        let call = CallService()
-        // Born with the REAL service, not a placeholder: a Recents tap dials
-        // during the first render, before any `.task` runs - a session that
-        // starts as Demo and is swapped later loses that race and answers the
-        // whole call from fixtures. AppState resolves Live synchronously from
-        // the persisted configuration, so this is safe at cold launch.
-        let session = CallSessionModel(service: state.service)
-
-        // The system owns the audio route, so the conversation starts when
-        // CallKit says the session is live — not when the call connects.
-        call.onAudioActivated = { [weak session] in session?.begin() }
-        call.onAudioDeactivated = { [weak session] in session?.end() }
-        // CallKit's mute action is bookkeeping; this is what stops the mic.
-        call.onMuteChanged = { [weak session] muted in session?.setMuted(muted) }
-        // "That will be all" → goodbye → hang up, through the same CallKit
-        // path as the End button.
-        session.onFarewell = { [weak call] in call?.end() }
-
-        _call = StateObject(wrappedValue: call)
-        _session = StateObject(wrappedValue: session)
-        // The push registry must exist before a push can arrive.
-        _push = StateObject(wrappedValue: VoIPPushService(call: call))
+        let stack = CallStack.shared
+        // Configured here rather than in `.task`, because a Recents tap dials
+        // during the first render — a session still pointed at Demo at that
+        // moment answers the whole call from fixtures. AppState resolves Live
+        // synchronously from persisted configuration, so this is safe cold.
+        stack.configure(service: state.service)
+        call = stack.call
+        session = stack.session
     }
 
     enum Tab: Hashable { case ask, library }
@@ -77,21 +63,18 @@ struct RootView: View {
                 if isCallMinimized {
                     // Floats over the app rather than pushing it down, so
                     // minimising does not reflow whatever you minimised it to
-                    // go and look at. Bottom-right, clear of the tab bar.
+                    // go and look at. Full-width, just above the tab bar.
                     VStack {
                         Spacer()
-                        HStack {
-                            Spacer()
-                            MinimizedCallBar(call: call, session: session) {
-                                withAnimation(.easeInOut(duration: 0.28)) {
-                                    isCallMinimized = false
-                                }
+                        MinimizedCallBar(call: call, session: session) {
+                            withAnimation(.easeInOut(duration: 0.28)) {
+                                isCallMinimized = false
                             }
                         }
-                        .padding(.horizontal, Theme.Space.screen)
+                        .padding(.horizontal, Theme.Space.xs)
                         // Clears the tab bar, so it never sits on top of Ask
                         // and Library.
-                        .padding(.bottom, 58)
+                        .padding(.bottom, 54)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(1)
@@ -137,11 +120,10 @@ struct RootView: View {
             if PendingCallRequest.take() { call.call() }
         }
         .task { await state.refreshConnection() }
+        // Demo ⇄ Live flips after launch. Also re-registers the push token —
+        // a token registered with Demo reaches nothing.
         .task(id: ObjectIdentifier(state.service)) {
-            session.update(service: state.service)
-            // Re-registers the push token against whichever backend is now
-            // selected. A token registered with Demo reaches nothing.
-            push.update(service: state.service)
+            CallStack.shared.configure(service: state.service)
         }
         .environmentObject(call)
     }
