@@ -390,11 +390,15 @@ final class CallService: NSObject, ObservableObject {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
-            // `.defaultToSpeaker` is what makes speakerphone the resting state
-            // rather than something to switch on after every call connects.
+            // No `.defaultToSpeaker` here, deliberately: with it set, the
+            // session's *default* route is the speaker, so clearing the
+            // override (`.none`) lands right back on the speaker and the
+            // toggle's off position does nothing. Speakerphone-by-default is
+            // done instead by applying the `.speaker` override once the
+            // session activates, which leaves `.none` genuinely meaning
+            // the receiver.
             try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                    options: [.allowBluetooth, .allowBluetoothA2DP,
-                                              .defaultToSpeaker])
+                                    options: [.allowBluetooth, .allowBluetoothA2DP])
             try session.setPreferredIOBufferDuration(0.005)
         } catch {
             // A call with a degraded session still beats no call; the failure
@@ -520,7 +524,21 @@ extension CallService: CXProviderDelegate {
             // The route can only be overridden once the session is active, so
             // the speaker preference is applied here rather than when it was
             // chosen. Setting it any earlier silently does nothing.
-            applyAudioRoute()
+            //
+            // Unless something external is already connected: forcing the
+            // built-in speaker override would yank the call out of the user's
+            // AirPods or car. Follow the accessory and let the toggle reflect
+            // reality; tapping it still forces the speaker if that is wanted.
+            let external: Set<AVAudioSession.Port> = [
+                .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE,
+                .carAudio, .airPlay,
+            ]
+            if audioSession.currentRoute.outputs
+                .contains(where: { external.contains($0.portType) }) {
+                isSpeakerOn = false
+            } else {
+                applyAudioRoute()
+            }
             onAudioActivated?()
         }
     }

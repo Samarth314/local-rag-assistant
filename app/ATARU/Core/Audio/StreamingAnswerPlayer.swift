@@ -11,6 +11,16 @@ import Foundation
 @MainActor
 final class StreamingAnswerPlayer {
 
+    /// See `AnswerPlayer.managesAudioSession`. False during a call, where
+    /// setting `.playback` here would destroy CallKit's `.playAndRecord`
+    /// session and force the loudspeaker on regardless of the route toggle.
+    var managesAudioSession = true
+
+    /// How loud playback is right now, 0...1, for the orb. Fed by a tap on
+    /// the mixer, so it follows what is actually being heard rather than what
+    /// has been scheduled.
+    private(set) var level: Double = 0
+
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
     private var format: AVAudioFormat?
@@ -32,9 +42,11 @@ final class StreamingAnswerPlayer {
         }
         stop()
 
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try session.setActive(true)
+        if managesAudioSession {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try session.setActive(true)
+        }
 
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                          sampleRate: sampleRate,
@@ -46,6 +58,11 @@ final class StreamingAnswerPlayer {
 
         engine.attach(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
+        engine.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) {
+            [weak self] buffer, _ in
+            let peak = SpeechDictation.peakLevel(of: buffer)
+            Task { @MainActor in self?.level = peak }
+        }
         try engine.start()
         node.play()
 
@@ -119,14 +136,18 @@ final class StreamingAnswerPlayer {
     }
 
     private func teardown() {
+        engine.mainMixerNode.removeTap(onBus: 0)
         node.stop()
         engine.stop()
         engine.detach(node)
         format = nil
+        level = 0
         isActive = false
         inputEnded = false
         scheduled = 0
         onDrained = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if managesAudioSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 }

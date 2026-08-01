@@ -13,9 +13,38 @@ final class AnswerPlayer: NSObject, ObservableObject {
 
     @Published private(set) var isSpeaking = false
 
+    /// Whether this player may configure and deactivate the shared audio
+    /// session. True on the Ask tab, where nobody else owns audio. False
+    /// during a call: there CallKit owns the session, and a player that sets
+    /// `.playback` mid-call tears down the call's `.playAndRecord` route —
+    /// which is what forced every answer onto the loudspeaker regardless of
+    /// the speaker toggle.
+    var managesAudioSession = true
+
     private var player: AVAudioPlayer?
     private let synthesizer = AVSpeechSynthesizer()
     private var completion: (() -> Void)?
+    /// When the synthesizer last started a word, for the pseudo-level below.
+    private var lastWordAt = Date.distantPast
+
+    /// How loud the answer is right now, 0...1, for the orb.
+    ///
+    /// Real metering when playing server audio. The synthesizer offers no
+    /// meter, so its level is a pulse that decays from each word boundary —
+    /// synthetic, but tracking actual word cadence rather than faking a
+    /// waveform from nothing.
+    var level: Double {
+        if let player, player.isPlaying {
+            player.updateMeters()
+            let db = Double(player.averagePower(forChannel: 0))
+            return min(max(pow(10, db / 20), 0), 1)
+        }
+        if synthesizer.isSpeaking {
+            let sinceWord = Date().timeIntervalSince(lastWordAt)
+            return max(0.12, 0.55 * exp(-3 * sinceWord))
+        }
+        return 0
+    }
 
     override init() {
         super.init()
@@ -37,6 +66,7 @@ final class AnswerPlayer: NSObject, ObservableObject {
             try activateSession()
             let player = try AVAudioPlayer(data: data)
             player.delegate = self
+            player.isMeteringEnabled = true
             self.player = player
             isSpeaking = true
             player.play()
@@ -100,6 +130,7 @@ final class AnswerPlayer: NSObject, ObservableObject {
     }
 
     private func activateSession() throws {
+        guard managesAudioSession else { return }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try session.setActive(true)
@@ -110,7 +141,9 @@ final class AnswerPlayer: NSObject, ObservableObject {
         player = nil
         let block = completion
         completion = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        if managesAudioSession {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
         block?()
     }
 }
@@ -126,6 +159,12 @@ extension AnswerPlayer: AVAudioPlayerDelegate {
 }
 
 extension AnswerPlayer: AVSpeechSynthesizerDelegate {
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
+                                       willSpeakRangeOfSpeechString characterRange: NSRange,
+                                       utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.lastWordAt = Date() }
+    }
+
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                                        didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in self.finish() }

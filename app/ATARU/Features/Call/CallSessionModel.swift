@@ -46,6 +46,21 @@ final class CallSessionModel: ObservableObject {
 
     init(service: ATARUService) {
         self.service = service
+        // CallKit owns the audio session for the whole call. A player that
+        // reconfigures it mid-call destroys the `.playAndRecord` route and
+        // forces the loudspeaker on — the "speaker button does nothing" bug.
+        player.managesAudioSession = false
+        streamPlayer.managesAudioSession = false
+    }
+
+    /// What drives the orb: the caller's voice while listening, ATARU's own
+    /// playback while speaking, quiet otherwise.
+    var orbLevel: Double {
+        switch phase {
+        case .listening: return isMuted ? 0 : dictation.level
+        case .speaking: return max(streamPlayer.level, player.level)
+        default: return 0
+        }
     }
 
     func update(service: ATARUService) {

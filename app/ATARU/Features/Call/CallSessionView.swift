@@ -5,19 +5,13 @@ import SwiftUI
 /// ## The idea it borrows
 ///
 /// A voice-channel UI works because it answers one question at a glance: *who
-/// is talking right now*. Two participants, each lit when they hold the floor.
-/// That is the useful part, and it maps cleanly onto a call with an assistant —
-/// exactly one of you is ever speaking, and knowing which removes the awkward
-/// "did it hear me, should I repeat myself" pause that otherwise dominates
-/// talking to a machine.
-///
-/// ## What it does not borrow
-///
-/// None of the look. No avatar grid, no green speaking ring, no floating
-/// control bar. Those read as a specific product, and ATARU is not that
-/// product. The two participants are the kit's milled cards, the active one is
-/// marked with the single accent, and the whole thing sits on the call
-/// backdrop.
+/// is talking right now*. Here that splits cleanly between the two live
+/// surfaces — the orb is ATARU's side (its motion says listening, thinking,
+/// or talking), and the waveform beside the controls is the caller's side,
+/// moving only when the mic actually hears them. Between them they remove the
+/// awkward "did it hear me, should I repeat myself" pause that otherwise
+/// dominates talking to a machine, without a row of participant tiles
+/// restating what the orb already shows.
 ///
 /// ## Controls
 ///
@@ -48,14 +42,14 @@ struct CallSessionView: View {
             // than the display — the transcript's flexible frame was the only
             // thing that could give, so it silently collapsed to nothing. The
             // words are the point of this screen; the orb yields.
-            OrbView(phase: session.phase, level: session.dictation.level)
-                .scaleEffect(0.68)
-                .frame(height: 180)
+            OrbView(phase: session.phase) { [weak session] in
+                session?.orbLevel ?? 0
+            }
+            .scaleEffect(0.68)
+            .frame(height: 180)
 
             transcript
                 .frame(minHeight: 132, maxHeight: .infinity)
-
-            participants
 
             controls
         }
@@ -152,55 +146,6 @@ struct CallSessionView: View {
         }
     }
 
-    // MARK: - Participants
-
-    /// Who is in the call, and who currently has the floor.
-    private var participants: some View {
-        HStack(spacing: Ataru.Space.md) {
-            ParticipantTile(
-                name: "You",
-                symbol: call.isMuted ? "mic.slash" : "waveform",
-                caption: youCaption,
-                isActive: session.phase == .listening && !call.isMuted,
-                // Drives a ring that tracks the actual voice, so a silent room
-                // and a room the mic cannot hear look different.
-                level: session.phase == .listening ? session.dictation.level : 0
-            )
-
-            ParticipantTile(
-                name: "ATARU",
-                symbol: ataruSymbol,
-                caption: ataruCaption,
-                isActive: session.phase == .thinking || session.phase == .speaking,
-                // No input level for the assistant: it is either holding the
-                // floor or it is not, and a fake waveform would be a lie.
-                level: session.phase == .speaking ? 0.7 : 0
-            )
-        }
-    }
-
-    private var youCaption: String {
-        if call.isMuted { return "Muted" }
-        return session.phase == .listening ? "Speaking" : "Listening for you"
-    }
-
-    private var ataruSymbol: String {
-        switch session.phase {
-        case .thinking: return "ellipsis"
-        case .speaking: return "speaker.wave.2"
-        default: return "sparkle"
-        }
-    }
-
-    private var ataruCaption: String {
-        switch session.phase {
-        case .thinking: return "Thinking"
-        case .speaking: return "Speaking"
-        case .failed: return "Problem"
-        default: return "Waiting"
-        }
-    }
-
     // MARK: - What was said
 
     private var transcript: some View {
@@ -250,7 +195,17 @@ struct CallSessionView: View {
     // MARK: - Controls
 
     private var controls: some View {
-        HStack(spacing: Ataru.Space.lg) {
+        HStack(spacing: Ataru.Space.md) {
+            // The caller's own audio, live. Flat when the room is quiet or
+            // the mic is muted, moving when the mic is actually hearing them
+            // — which is the question a call screen has to answer.
+            MicWaveformBar(
+                dictation: session.dictation,
+                isLive: session.phase == .listening && !call.isMuted,
+                isMuted: call.isMuted
+            )
+            .frame(maxWidth: .infinity)
+
             CallControl(
                 symbol: call.isSpeakerOn ? "speaker.wave.2.fill" : "speaker.fill",
                 label: call.isSpeakerOn ? "Speaker on" : "Speaker off",
@@ -285,59 +240,76 @@ struct CallSessionView: View {
 
 // MARK: - Pieces
 
-/// One side of the conversation.
+/// The caller's audio as a scrolling waveform, sitting with the call controls.
 ///
-/// The active one is marked with the accent and a ring that grows with voice
-/// level. Everything else stays the resting card, so at a glance the lit tile
-/// is the one holding the floor.
-private struct ParticipantTile: View {
-    let name: String
-    let symbol: String
-    let caption: String
-    let isActive: Bool
-    let level: Double
+/// Bars march right-to-left, each one the mic's peak level over one frame —
+/// the Voice Memos idiom, drawn in the kit's materials. It answers "is this
+/// thing hearing me" at a glance: a live mic shows movement the moment the
+/// caller speaks, a muted or resting one settles to a flat line.
+private struct MicWaveformBar: View {
+    @ObservedObject var dictation: SpeechDictation
+    /// Whether the mic is actually feeding the recogniser right now.
+    let isLive: Bool
+    let isMuted: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var history = LevelHistory()
 
     var body: some View {
-        VStack(spacing: Ataru.Space.sm) {
-            ZStack {
-                // Grows with the voice. Sits behind the glyph so a loud moment
-                // reads as the tile breathing rather than the icon jumping.
-                Circle()
-                    .strokeBorder(Theme.cyan.opacity(0.35), lineWidth: 1)
-                    .frame(width: 44, height: 44)
-                    .scaleEffect(1 + CGFloat(min(max(level, 0), 1)) * 0.35)
-                    .opacity(isActive ? 1 : 0)
-                    .animation(.easeOut(duration: 0.12), value: level)
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { _ in
+            Canvas { context, size in
+                history.push(isLive ? dictation.level : 0)
 
-                Image(systemName: symbol)
-                    .font(.system(size: 17, weight: .light))
-                    .foregroundStyle(isActive ? Theme.cyan : Theme.textSecondary)
-                    .contentTransition(.symbolEffect(.replace))
+                let barWidth: CGFloat = 2.5
+                let gap: CGFloat = 2.5
+                let count = min(history.samples.count,
+                                Int((size.width - gap) / (barWidth + gap)))
+                let midY = size.height / 2
+                let maxRise = size.height * 0.38
+
+                for i in 0..<count {
+                    // Newest sample at the right edge, like tape moving left.
+                    let sample = history.samples[history.samples.count - count + i]
+                    let rise = max(1.2, CGFloat(sample) * maxRise)
+                    let x = size.width - gap - barWidth
+                        - CGFloat(count - 1 - i) * (barWidth + gap)
+                    let bar = CGRect(x: x, y: midY - rise,
+                                     width: barWidth, height: rise * 2)
+                    context.fill(
+                        Path(roundedRect: bar, cornerRadius: barWidth / 2),
+                        with: .color(Theme.cyan.opacity(sample > 0.02 ? 0.85 : 0.3))
+                    )
+                }
             }
-            // Sized so the tiles stay slim: every point the fixed content
-            // grows comes out of the transcript above it.
-            .frame(height: 52)
-
-            Text(name)
-                .font(.ataruBody())
-                .foregroundStyle(Theme.textPrimary)
-
-            Text(caption)
-                .ataruStyle(.meta)
-                .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, Ataru.Space.sm)
-        .ataruCard(radius: Ataru.Radius.tile)
-        .overlay {
-            // The accent is what marks the active speaker — the kit's one
-            // accent doing the job it exists for.
+        .frame(height: 64)
+        .clipShape(RoundedRectangle(cornerRadius: Ataru.Radius.tile, style: .continuous))
+        .background {
+            // The resting control material, same as the un-filled call
+            // buttons beside it, so the row reads as one family.
             RoundedRectangle(cornerRadius: Ataru.Radius.tile, style: .continuous)
-                .strokeBorder(Theme.cyan.opacity(isActive ? 0.55 : 0), lineWidth: 1)
+                .fill(Color.white.opacity(0.09))
         }
-        .animation(.easeInOut(duration: Ataru.Motion.micro), value: isActive)
+        .overlay {
+            RoundedRectangle(cornerRadius: Ataru.Radius.tile, style: .continuous)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        }
+        .opacity(isMuted ? 0.45 : 1)
+        .animation(.easeInOut(duration: Ataru.Motion.micro), value: isMuted)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(name), \(caption)")
+        .accessibilityLabel("Your microphone")
+        .accessibilityValue(isMuted ? "Muted" : (isLive ? "Live" : "Waiting"))
+    }
+}
+
+/// The rolling buffer behind the waveform. A reference type so the Canvas
+/// draw closure can append without touching SwiftUI state mid-render.
+private final class LevelHistory {
+    private(set) var samples: [Double] = Array(repeating: 0, count: 96)
+
+    func push(_ level: Double) {
+        samples.append(min(max(level, 0), 1))
+        if samples.count > 96 { samples.removeFirst(samples.count - 96) }
     }
 }
 
@@ -392,10 +364,12 @@ struct MinimizedCallBar: View {
             HStack(spacing: Ataru.Space.md) {
                 // A small orb, so the minimised call is recognisably the same
                 // thing as the full screen rather than a generic banner.
-                OrbView(phase: session.phase, level: session.dictation.level)
-                    .scaleEffect(0.30)
-                    .frame(width: 40, height: 40)
-                    .clipped()
+                OrbView(phase: session.phase) { [weak session] in
+                    session?.orbLevel ?? 0
+                }
+                .scaleEffect(0.30)
+                .frame(width: 40, height: 40)
+                .clipped()
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text("ATARU")
@@ -440,7 +414,7 @@ struct MinimizedCallBar: View {
         switch session.phase {
         case .idle: return "connected"
         case .listening: return "listening"
-        case .thinking: return "searching"
+        case .thinking: return "thinking"
         case .speaking: return "speaking"
         case .failed: return "problem"
         }

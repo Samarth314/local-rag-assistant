@@ -26,7 +26,9 @@ struct VoiceView: View {
 
                     Spacer(minLength: 0)
 
-                    OrbView(phase: model.phase, level: model.dictation.level)
+                    OrbView(phase: model.phase) { [weak model] in
+                        model?.orbLevel ?? 0
+                    }
 
                     statusLine
 

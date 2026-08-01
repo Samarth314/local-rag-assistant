@@ -34,6 +34,16 @@ final class VoiceViewModel: ObservableObject {
 
     var canRecord: Bool { phase.allowsNewQuestion }
 
+    /// What drives the orb: the user's voice while listening, the answer's
+    /// own playback while speaking, quiet otherwise.
+    var orbLevel: Double {
+        switch phase {
+        case .listening: return dictation.level
+        case .speaking: return player.level
+        default: return 0
+        }
+    }
+
     // MARK: - Listening
 
     func beginListening() async {

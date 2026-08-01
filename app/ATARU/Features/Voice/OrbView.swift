@@ -15,8 +15,12 @@ import SwiftUI
 /// and the phase is carried by colour and the label instead.
 struct OrbView: View {
     let phase: VoicePhase
-    /// Live microphone level, 0...1. Only meaningful while listening.
-    var level: Double = 0
+    /// Live audio level, 0...1 — the mic while listening, playback while
+    /// speaking. A closure rather than a value so the per-frame Canvas reads
+    /// the level as it is *now*: a plain parameter only updates when SwiftUI
+    /// re-renders the view, and during non-streamed playback nothing else
+    /// changes, which froze the orb at whatever level it last saw.
+    var level: () -> Double = { 0 }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var engine = ReactorEngine()
@@ -30,7 +34,7 @@ struct OrbView: View {
                 engine.render(into: context, size: size,
                               now: timeline.date,
                               config: OrbConfig.for(phase),
-                              level: phase == .listening ? level : 0,
+                              level: min(max(level(), 0), 1),
                               frozen: reduceMotion)
             }
         }
@@ -114,9 +118,10 @@ private final class ReactorEngine {
             ripT += frames
         }
 
-        // The mic drives the breath while listening — the web orb reacts to
-        // ripples alone; on the phone the level is right there, so a loud
-        // moment deepens the pulse instead of animating a separate ring.
+        // Live audio drives the breath — the web orb reacts to ripples alone;
+        // on the phone the level is right there, so a loud moment deepens the
+        // pulse. While speaking the same level also feeds the waveform ring
+        // below, which is what makes talking visibly different from idle.
         let pulseAmp = cfg.pulse + level * 0.10
         let pulse = 1 + sin(t * 5) * pulseAmp
         let R = base * pulse
@@ -180,7 +185,10 @@ private final class ReactorEngine {
         // -- waveform ring (the "voice" look, only while speaking) ---------- #
         if wave > 0.005 {
             var wavePath = Path()
-            let rr = R * 1.42, amp = R * wave
+            // Amplitude rides the playback level, so the ring wobbles with
+            // the voice itself rather than at one fixed depth — quiet words
+            // barely stir it, emphasis kicks it visibly outward.
+            let rr = R * 1.42, amp = R * wave * (0.75 + level * 1.6)
             var first = true
             for step in stride(from: 0.0, through: 6.2832, by: 0.025) {
                 let w = sin(step * 8 + t * 18) * sin(step * 3 - t * 7)
