@@ -28,20 +28,31 @@ import SwiftUI
 struct CallSessionView: View {
     @ObservedObject var call: CallService
     @ObservedObject var session: CallSessionModel
+    /// Owned by the parent, because a minimised call still exists — the state
+    /// has to outlive this view being torn down.
+    @Binding var isMinimized: Bool
 
     var body: some View {
-        VStack(spacing: Ataru.Space.xl) {
+        VStack(spacing: Ataru.Space.lg) {
+            minimizeBar
+
             header
 
-            participants
+            // Orb, then what is being said, then who is saying it. The words
+            // sit directly under the orb because that is where the eye already
+            // is — the orb is what moves, so anything further away gets missed
+            // while someone is mid-sentence.
+            OrbView(phase: session.phase, level: session.dictation.level)
 
             transcript
                 .frame(maxHeight: .infinity)
 
+            participants
+
             controls
         }
         .padding(.horizontal, Ataru.Space.gutter)
-        .padding(.top, Ataru.Space.xl)
+        .padding(.top, Ataru.Space.md)
         .padding(.bottom, Ataru.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
@@ -55,7 +66,38 @@ struct CallSessionView: View {
             }
             .ignoresSafeArea()
         }
+        // Two fingers, not one: the transcript scrolls with one, and
+        // overloading that would minimise the call every time somebody read a
+        // long answer.
+        .twoFingerSwipe(
+            up: { setMinimized(false) },
+            down: { setMinimized(true) }
+        )
         .accessibilityElement(children: .contain)
+    }
+
+    private func setMinimized(_ minimized: Bool) {
+        guard isMinimized != minimized else { return }
+        withAnimation(.easeInOut(duration: 0.28)) { isMinimized = minimized }
+        Haptics.fire(.selection)
+    }
+
+    // MARK: - Minimise
+
+    private var minimizeBar: some View {
+        HStack {
+            Button { setMinimized(true) } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+                    .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Minimise call")
+            .accessibilityHint("The call keeps running. Swipe up with two fingers to bring it back.")
+
+            Spacer()
+        }
     }
 
     // MARK: - Header
@@ -175,7 +217,8 @@ struct CallSessionView: View {
                 }
 
                 if session.heard.isEmpty && session.answer.isEmpty {
-                    Text("Just start talking.")
+                    Text(call.isMuted ? "Muted — nothing is being heard."
+                                      : "Just start talking.")
                         .ataruStyle(.hint)
                 }
 
@@ -197,7 +240,17 @@ struct CallSessionView: View {
     // MARK: - Controls
 
     private var controls: some View {
-        HStack(spacing: Ataru.Space.xl) {
+        HStack(spacing: Ataru.Space.lg) {
+            CallControl(
+                symbol: call.isSpeakerOn ? "speaker.wave.2.fill" : "speaker.fill",
+                label: call.isSpeakerOn ? "Speaker on" : "Speaker off",
+                foreground: call.isSpeakerOn ? Theme.onAccent : Theme.textPrimary,
+                fill: call.isSpeakerOn ? Theme.textPrimary : nil
+            ) {
+                call.setSpeaker(!call.isSpeakerOn)
+                Haptics.fire(.selection)
+            }
+
             CallControl(
                 symbol: call.isMuted ? "mic.slash.fill" : "mic.fill",
                 label: call.isMuted ? "Unmute" : "Mute",
@@ -307,6 +360,77 @@ private struct CallPressStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? Ataru.Motion.pressScale : 1)
             .animation(.easeOut(duration: Ataru.Motion.press), value: configuration.isPressed)
+    }
+}
+
+/// The call while it is minimised: a card above the tab bar.
+///
+/// Sits bottom-right, just clear of the tabs, where a thumb already is and
+/// where it covers the least content. Deliberately still says what the
+/// assistant is doing — a minimised call whose only content is "call in
+/// progress" has to be restored to learn anything, which defeats minimising it.
+struct MinimizedCallBar: View {
+    @ObservedObject var call: CallService
+    @ObservedObject var session: CallSessionModel
+    let onExpand: () -> Void
+
+    var body: some View {
+        Button(action: onExpand) {
+            HStack(spacing: Ataru.Space.md) {
+                // A small orb, so the minimised call is recognisably the same
+                // thing as the full screen rather than a generic banner.
+                OrbView(phase: session.phase, level: session.dictation.level)
+                    .scaleEffect(0.32)
+                    .frame(width: 44, height: 44)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("ATARU")
+                        .font(.ataruBody())
+                        .foregroundStyle(Theme.textPrimary)
+
+                    HStack(spacing: Ataru.Space.xs) {
+                        Text(activity)
+                            .ataruStyle(.meta)
+                            .lineLimit(1)
+
+                        if case .active(let connectedAt) = call.state {
+                            TimelineView(.periodic(from: connectedAt, by: 1)) { context in
+                                Text(CallDuration.format(from: connectedAt, to: context.date))
+                                    .font(.ataruMono(11))
+                                    .foregroundStyle(Theme.textTertiary)
+                                    .monospacedDigit()
+                            }
+                        }
+                    }
+                }
+
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.leading, Ataru.Space.xs)
+            }
+            .padding(.horizontal, Ataru.Space.md)
+            .padding(.vertical, Ataru.Space.sm)
+            .ataruCard(radius: Ataru.Radius.tile)
+            .overlay {
+                RoundedRectangle(cornerRadius: Ataru.Radius.tile, style: .continuous)
+                    .strokeBorder(Theme.cyanSubdued.opacity(0.4), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Call with ATARU, \(activity)")
+        .accessibilityHint("Double tap to return to the call.")
+    }
+
+    private var activity: String {
+        if call.isMuted { return "muted" }
+        switch session.phase {
+        case .idle: return "connected"
+        case .listening: return "listening"
+        case .thinking: return "searching"
+        case .speaking: return "speaking"
+        case .failed: return "problem"
+        }
     }
 }
 

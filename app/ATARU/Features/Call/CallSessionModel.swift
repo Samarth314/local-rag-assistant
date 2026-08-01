@@ -26,6 +26,8 @@ final class CallSessionModel: ObservableObject {
     /// The most recent answer, shown under the transcript.
     @Published private(set) var answer: String = ""
     @Published private(set) var exchanges: [VoiceExchange] = []
+    /// Mirrors `CallService.isMuted`, driven through `onMuteChanged`.
+    @Published private(set) var isMuted = false
 
     let dictation = SpeechDictation()
     let player = AnswerPlayer()
@@ -93,9 +95,33 @@ final class CallSessionModel: ObservableObject {
         }
     }
 
+    /// Mutes or unmutes the microphone.
+    ///
+    /// Stops the recogniser outright rather than discarding what it hears.
+    /// Muting has to mean the audio is not being processed at all — a mute that
+    /// merely drops the transcript still feeds the room to the speech engine,
+    /// and on a privacy-first assistant that is the wrong kind of "muted".
+    func setMuted(_ muted: Bool) {
+        isMuted = muted
+        if muted {
+            dictation.cancel()
+            if phase == .listening { phase = .idle }
+        }
+        // Unmuting does not restart listening from here; the turn loop picks it
+        // up on its next pass, so one place decides when to record.
+    }
+
     /// Records until the caller stops talking. Returns nil if the turn produced
     /// nothing, which ends the loop rather than spinning on an empty mic.
     private func listenForOneTurn() async -> String? {
+        // Wait rather than record into a void. A muted call holds the line open
+        // and picks up the moment it is unmuted.
+        while isMuted, !Task.isCancelled {
+            if phase != .idle { phase = .idle }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        guard !Task.isCancelled else { return nil }
+
         do {
             try dictation.start()
         } catch {
@@ -113,6 +139,9 @@ final class CallSessionModel: ObservableObject {
 
         while !Task.isCancelled, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(120))
+            // Muted mid-sentence: drop what was heard rather than answering
+            // half a question the user decided not to finish asking.
+            if isMuted { _ = dictation.stop(); return nil }
 
             let current = dictation.transcript
             if current != lastTranscript {

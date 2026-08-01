@@ -82,12 +82,23 @@ final class CallService: NSObject, ObservableObject {
 
     @Published private(set) var state: CallState = .idle
     @Published private(set) var isMuted = false
+    /// Speakerphone, on by default.
+    ///
+    /// A call to ATARU is not a private conversation with a person — it is
+    /// asking a machine a question, usually with the phone on a desk rather
+    /// than against an ear. Defaulting to the receiver would mean lifting the
+    /// phone to hear every answer.
+    @Published private(set) var isSpeakerOn = true
 
     /// Called once the system has activated the audio session, which is the
     /// only safe moment to start playing or recording.
     var onAudioActivated: (() -> Void)?
     /// Called when the route goes away — stop everything immediately.
     var onAudioDeactivated: (() -> Void)?
+    /// Actually stops or resumes the microphone. CallKit's mute action is
+    /// bookkeeping and does not touch audio, so without this the call would
+    /// display "muted" while still listening to the room.
+    var onMuteChanged: ((Bool) -> Void)?
 
     private let provider: CXProvider
     private let controller = CXCallController()
@@ -144,7 +155,7 @@ final class CallService: NSObject, ObservableObject {
 
         let action = CXStartCallAction(call: id, handle: Self.handle)
         action.isVideo = false
-        request(action)
+        request(action, fatal: true)
     }
 
     /// Fakes an incoming call from ATARU, optionally after a delay so the
@@ -262,7 +273,7 @@ final class CallService: NSObject, ObservableObject {
     /// `provider(_:perform: CXAnswerCallAction)` and cannot diverge.
     func answer() {
         guard case .incoming = state, let id = callID else { return }
-        request(CXAnswerCallAction(call: id))
+        request(CXAnswerCallAction(call: id), fatal: true)
     }
 
     /// Hangs up. Routed through `CXCallController` rather than reported
@@ -273,20 +284,86 @@ final class CallService: NSObject, ObservableObject {
             state = .idle
             return
         }
-        request(CXEndCallAction(call: id))
+        request(CXEndCallAction(call: id), fatal: true)
     }
 
+    /// Mutes or unmutes the microphone.
+    ///
+    /// Applied locally first, then asked of CallKit. Waiting for the round trip
+    /// meant the button did nothing visible until the delegate came back — and
+    /// when it never came back, the button looked broken while the microphone
+    /// stayed live. Muting has to be believable the instant it is pressed.
+    ///
+    /// `onMuteChanged` is what actually stops the microphone. CallKit's action
+    /// is bookkeeping — it tells the system so the lock screen and Watch agree
+    /// — but it does not touch audio. Without that callback, "muted" was a
+    /// label on a microphone that was still listening.
     func setMuted(_ muted: Bool) {
-        guard let id = callID else { return }
-        request(CXSetMutedCallAction(call: id, muted: muted))
+        guard let id = callID, isMuted != muted else { return }
+        let previous = isMuted
+
+        isMuted = muted
+        onMuteChanged?(muted)
+
+        request(CXSetMutedCallAction(call: id, muted: muted), fatal: false) { [weak self] in
+            self?.isMuted = previous
+            self?.onMuteChanged?(previous)
+        }
     }
 
-    private func request(_ action: CXAction) {
+    /// Routes audio to the speaker or back to the receiver.
+    ///
+    /// Not a CallKit action — CallKit has no concept of speakerphone, so unlike
+    /// mute this is set directly on the audio session. The system call UI's own
+    /// speaker button drives the same override, so the two stay consistent by
+    /// acting on the same thing rather than by being kept in step.
+    func setSpeaker(_ on: Bool) {
+        isSpeakerOn = on
+        applyAudioRoute()
+    }
+
+    private func applyAudioRoute() {
+        do {
+            try AVAudioSession.sharedInstance()
+                .overrideOutputAudioPort(isSpeakerOn ? .speaker : .none)
+        } catch {
+            // The route request failed, so the state we are showing would be a
+            // lie. Read it back from the session instead of asserting it.
+            isSpeakerOn = AVAudioSession.sharedInstance().currentRoute.outputs
+                .contains { $0.portType == .builtInSpeaker }
+        }
+    }
+
+    /// Submits a CallKit action.
+    ///
+    /// - Parameter fatal: whether failing this action means the call is over.
+    ///   Starting, answering and ending are fatal — if one fails there is no
+    ///   working call left. Mute is **not**: a mute that does not go through is
+    ///   an unmuted call, not a dead one, and treating every failure the same
+    ///   way meant a couple of taps on mute would hang up.
+    /// Submits a CallKit action.
+    ///
+    /// - Parameters:
+    ///   - fatal: whether failing this action means the call is over. Starting,
+    ///     answering and ending are fatal — if one fails there is no working
+    ///     call left. Mute is **not**: a mute that does not go through leaves an
+    ///     unmuted call, not a dead one. Treating every failure identically is
+    ///     what made a couple of taps on mute hang up.
+    ///   - onFailure: undoes whatever was applied optimistically.
+    private func request(_ action: CXAction, fatal: Bool,
+                         onFailure: (@MainActor () -> Void)? = nil) {
         controller.request(CXTransaction(action: action)) { [weak self] error in
-            guard let error else { return }
+            guard error != nil else { return }
             Task { @MainActor in
                 guard let self else { return }
-                self.teardown(reason: .failed(error.localizedDescription))
+                onFailure?()
+                guard fatal else { return }
+                // A failed transaction means CallKit never learned the call is
+                // over, so clearing local state alone dismisses the app's call
+                // UI and leaves the system's running — one the user has
+                // "ended" that still holds the audio route.
+                self.teardown(reason: .failed(error?.localizedDescription ?? "Call failed."),
+                              notifyProvider: true)
             }
         }
     }
@@ -305,8 +382,11 @@ final class CallService: NSObject, ObservableObject {
     private func configureAudioSession() {
         let session = AVAudioSession.sharedInstance()
         do {
+            // `.defaultToSpeaker` is what makes speakerphone the resting state
+            // rather than something to switch on after every call connects.
             try session.setCategory(.playAndRecord, mode: .voiceChat,
-                                    options: [.allowBluetooth, .allowBluetoothA2DP])
+                                    options: [.allowBluetooth, .allowBluetoothA2DP,
+                                              .defaultToSpeaker])
             try session.setPreferredIOBufferDuration(0.005)
         } catch {
             // A call with a degraded session still beats no call; the failure
@@ -314,7 +394,18 @@ final class CallService: NSObject, ObservableObject {
         }
     }
 
-    private func teardown(reason: CallEndReason) {
+    /// Clears local call state.
+    ///
+    /// - Parameter notifyProvider: whether CallKit still believes the call is
+    ///   up. Pass `true` from any path that gives up locally — a failed or
+    ///   timed-out transaction — because otherwise the system keeps a call the
+    ///   app has already forgotten and the two can never be reconciled. Pass
+    ///   `false` from the delegate, where CallKit is the one telling *us*.
+    private func teardown(reason: CallEndReason, notifyProvider: Bool = false) {
+        if notifyProvider, let id = callID {
+            provider.reportCall(with: id, endedAt: Date(), reason: .failed)
+        }
+
         // Donate before clearing state — this is what teaches iOS to offer
         // ATARU on a contact card. Only completed calls count: donating a
         // dialing-then-failed call would advertise a way to reach something
@@ -412,6 +503,10 @@ extension CallService: CXProviderDelegate {
     nonisolated func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         MainActor.assumeIsolated {
             didActivateAudio = true
+            // The route can only be overridden once the session is active, so
+            // the speaker preference is applied here rather than when it was
+            // chosen. Setting it any earlier silently does nothing.
+            applyAudioRoute()
             onAudioActivated?()
         }
     }

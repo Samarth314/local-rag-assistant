@@ -9,6 +9,9 @@ import SwiftUI
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @State private var selection: Tab = .ask
+    /// Lives here rather than in the call screen: a minimised call still exists,
+    /// so the state has to outlive that view being torn down.
+    @State private var isCallMinimized = false
 
     @StateObject private var call: CallService
     @StateObject private var session: CallSessionModel
@@ -28,6 +31,8 @@ struct RootView: View {
         // CallKit says the session is live — not when the call connects.
         call.onAudioActivated = { [weak session] in session?.begin() }
         call.onAudioDeactivated = { [weak session] in session?.end() }
+        // CallKit's mute action is bookkeeping; this is what stops the mic.
+        call.onMuteChanged = { [weak session] muted in session?.setMuted(muted) }
 
         _call = StateObject(wrappedValue: call)
         _session = StateObject(wrappedValue: session)
@@ -62,9 +67,48 @@ struct RootView: View {
             .ataruBackdrop()
 
             if call.state.isLive {
-                CallSessionView(call: call, session: session)
+                if isCallMinimized {
+                    // Floats over the app rather than pushing it down, so
+                    // minimising does not reflow whatever you minimised it to
+                    // go and look at. Bottom-right, clear of the tab bar.
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            MinimizedCallBar(call: call, session: session) {
+                                withAnimation(.easeInOut(duration: 0.28)) {
+                                    isCallMinimized = false
+                                }
+                            }
+                        }
+                        .padding(.horizontal, Theme.Space.screen)
+                        // Clears the tab bar, so it never sits on top of Ask
+                        // and Library.
+                        .padding(.bottom, 58)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(1)
+                    // Two fingers up restores the call from anywhere in the app.
+                    .twoFingerSwipe(
+                        up: {
+                            withAnimation(.easeInOut(duration: 0.28)) {
+                                isCallMinimized = false
+                            }
+                        },
+                        down: {}
+                    )
+                } else {
+                    CallSessionView(call: call, session: session,
+                                    isMinimized: $isCallMinimized)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(1)
+                }
             }
+        }
+        // A finished call always comes back expanded. Restoring minimised would
+        // hide the next call behind a bar the user has to notice and tap.
+        .onChange(of: call.state.isLive) { _, isLive in
+            if !isLive { isCallMinimized = false }
         }
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
