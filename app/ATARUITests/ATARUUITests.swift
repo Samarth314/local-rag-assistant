@@ -25,7 +25,7 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testLibraryListsDocumentsAndFiltersByCategory() {
-        app.tabBars.buttons["Library"].tap()
+        openLibrary()
 
         let firstDocument = app.staticTexts["System Architecture.md"]
         XCTAssertTrue(firstDocument.waitForExistence(timeout: 8))
@@ -37,7 +37,7 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testDocumentOpensAndOffersSending() {
-        app.tabBars.buttons["Library"].tap()
+        openLibrary()
         app.staticTexts["System Architecture.md"].firstMatch.tap()
 
         XCTAssertTrue(app.buttons["Send"].waitForExistence(timeout: 5))
@@ -65,5 +65,17 @@ final class ATARUUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts.containing(
             NSPredicate(format: "label CONTAINS 'Snapshots'")
         ).firstMatch.waitForExistence(timeout: 15))
+    }
+
+    /// Navigates to the document library.
+    ///
+    /// There is no tab bar any more — the radial dial is the app's only
+    /// navigation, so a test has to open it the same way a thumb does: one tap
+    /// latches the fan open, then the tile takes the tap.
+    private func openLibrary() {
+        app.buttons["open-menu"].tap()
+        let tile = app.buttons["tile-documents"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 5), "the dial did not open")
+        tile.tap()
     }
 }

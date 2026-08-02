@@ -60,18 +60,22 @@ struct RootView: View {
     /// lose that race.
     var body: some View {
         ZStack {
-            TabView(selection: $selection) {
-                VoiceView(composerActive: $isComposerActive)
-                    .tabItem { Label("Ask", systemImage: "waveform") }
-                    .tag(Tab.ask)
-
-                TilesView(onOpen: open(tile:))
-                    .tabItem { Label("Tiles", systemImage: "square.grid.2x2") }
-                    .tag(Tab.tiles)
-
-                DocumentsView()
-                    .tabItem { Label("Library", systemImage: "tray.full") }
-                    .tag(Tab.library)
+            // No tab bar. The dial reaches every destination, and a permanent
+            // row of three was both a second way to do the same thing and the
+            // busiest chrome on an otherwise near-empty screen. The dial now
+            // sits in the band the tabs occupied, so nothing moves — the app
+            // just stops carrying a menu it does not need.
+            Group {
+                switch selection {
+                case .ask:     VoiceView(composerActive: $isComposerActive)
+                case .tiles:   TilesView(onOpen: open(tile:))
+                case .library: DocumentsView()
+                }
+            }
+            // Keeps content clear of the dial, which used to be the tab bar's
+            // job. Without it a list's last row sits under the launcher.
+            .safeAreaInset(edge: .bottom) {
+                Color.clear.frame(height: RadialTileMenu.reservedHeight)
             }
             .ataruBackdrop()
 

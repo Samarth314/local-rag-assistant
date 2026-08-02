@@ -128,10 +128,10 @@ struct RadialTileMenu: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Two rings now that every surface is present: eight core tiles close
-    /// in, the rest of the homelab on an outer arc. 128/198 is the largest
+    /// in, the rest of the homelab on an outer arc. 114/176 is the largest
     /// pair that keeps both arcs on a phone with the dial bottom-centre.
-    private let innerRadius: Double = 128
-    private let outerRadius: Double = 198
+    private let innerRadius: Double = 114
+    private let outerRadius: Double = 176
     /// Ignore travel this small: a press always wobbles a little, and a wobble
     /// is not a choice.
     private let deadZone: CGFloat = 34
@@ -140,7 +140,16 @@ struct RadialTileMenu: View {
 
     /// How far the dial sits above the bottom edge. The fan is laid out from
     /// the same anchor, so both stay put as it opens.
-    private let bottomInset: CGFloat = 70
+    ///
+    /// Small, because the dial now stands where the tab bar stood: it is the
+    /// app's only permanent navigation, so it belongs in the band the eye
+    /// already goes to, not floating above it.
+    private let bottomInset: CGFloat = 6
+
+    /// Vertical space screens should leave clear at the bottom, so their
+    /// content does not slide under the dial. This is the tab bar's old job,
+    /// and roughly its old height.
+    static let reservedHeight: CGFloat = 76
 
     var body: some View {
         // Full-screen and anchored to the bottom centre, rather than a box
@@ -195,6 +204,12 @@ struct RadialTileMenu: View {
                     }
                     .onEnded { _ in commit() }
             )
+            // A shape with a gesture, not a Button, so the trait and the
+            // identifier have to be stated: without them it is invisible to
+            // Switch Control and to UI tests alike.
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("open-menu")
             .accessibilityLabel("Open menu")
             .accessibilityHint("Hold and slide to a destination, then release.")
             // VoiceOver cannot sweep, so every destination is offered as a
@@ -293,14 +308,14 @@ private struct TileBubble: View {
     var body: some View {
         VStack(spacing: 3) {
             Image(systemName: tile.symbol)
-                .font(.system(size: 15, weight: .light))
+                .font(.system(size: 13, weight: .light))
             Text(tile.title)
-                .font(.system(size: 8.5, weight: .medium))
+                .font(.system(size: 7.5, weight: .medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
         .foregroundStyle(foreground)
-        .frame(width: 58, height: 58)
+        .frame(width: 48, height: 48)
         .background(Ataru.metal, in: Circle())
         .overlay {
             Circle().strokeBorder(
@@ -311,7 +326,14 @@ private struct TileBubble: View {
         .shadow(color: .black.opacity(0.3), radius: 10, y: 6)
         .scaleEffect(isHighlighted ? 1.12 : 1)
         .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isHighlighted)
-        .accessibilityHidden(true)
+        // Exposed rather than hidden. The dial's own accessibilityActions
+        // cover VoiceOver, but Switch Control and UI tests drive real elements
+        // — and a launcher only reachable by sweeping a thumb is reachable by
+        // neither.
+        .accessibilityElement()
+        .accessibilityLabel(tile.title)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityIdentifier("tile-\(tile.rawValue)")
     }
 
     private var foreground: Color {
