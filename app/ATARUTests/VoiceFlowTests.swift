@@ -31,6 +31,10 @@ private final class StubService: ATARUService, @unchecked Sendable {
     func registerVoIPToken(_ token: String, environment: String) async throws {
         registeredTokens.append((token, environment))
     }
+
+    // No roster in tests: an empty vocabulary is the "bias nothing" case the
+    // session already treats as normal.
+    func vocabulary() async throws -> [String] { [] }
 }
 
 @MainActor
