@@ -149,10 +149,22 @@ private final class ReactorEngine {
             .init(color: A(0.045 * cfg.glow), location: 0.4),
             .init(color: .clear, location: 1),
         ])
+        // The halo is painted over the whole canvas, so its gradient has to
+        // reach fully transparent *before* the canvas edge — otherwise it is
+        // sliced off mid-fade and the four straight cuts read as a square
+        // panel around the orb.
+        //
+        // At the web's ratios it does not: 3.4 x a radius of 0.17 x the canvas
+        // is 0.578 of it, against 0.5 to the nearest edge. That leftover alpha
+        // is only a few parts in 255, invisible on the web's grey page and
+        // plainly a box on this near-black backdrop — worst while speaking,
+        // when glow peaks. Capping to the inscribed circle ends the fade
+        // exactly at the edge and changes nothing a viewer can see.
         context.fill(
             Path(CGRect(origin: .zero, size: size)),
             with: .radialGradient(halo, center: CGPoint(x: cx, y: cy),
-                                  startRadius: R * 0.2, endRadius: R * 3.4))
+                                  startRadius: R * 0.2,
+                                  endRadius: min(R * 3.4, min(W, H) / 2)))
 
         // -- ripples -------------------------------------------------------- #
         for p in ripples {
