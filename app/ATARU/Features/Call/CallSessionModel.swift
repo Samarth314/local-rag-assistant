@@ -19,6 +19,9 @@ final class CallSessionModel: ObservableObject {
     /// Short enough not to feel like a wait, long enough to survive the pause
     /// in the middle of "what did the landlord say about… the boiler".
     static let silenceGrace: Duration = .milliseconds(1600)
+    /// Mic level above this counts as someone speaking. `level` is a peak
+    /// amplitude scaled to 0...1, where room tone sits near zero.
+    static let voiceLevel: Double = 0.12
 
     @Published private(set) var phase: VoicePhase = .idle
     /// What the caller is saying right now.
@@ -103,8 +106,10 @@ final class CallSessionModel: ObservableObject {
         // Load the name roster once per call. It only makes dictation more
         // likely to hear a name correctly, so a failure here is silent -
         // an unbiased recogniser is exactly what we had before.
-        if let names = try? await service.vocabulary(), !names.isEmpty {
-            dictation.vocabulary = names
+        Task { [service] in
+            if let names = try? await service.vocabulary(), !names.isEmpty {
+                SpeechDictation.sharedVocabulary = names
+            }
         }
 
         // Greet in the server's voice when it has one, so the call opens
@@ -170,7 +175,15 @@ final class CallSessionModel: ObservableObject {
         heard = ""
 
         var lastTranscript = ""
-        var quietSince = ContinuousClock.now
+        // The turn ends on a QUIET MICROPHONE, not on a transcript that
+        // stopped growing. Watching the transcript meant any recogniser stall
+        // read as silence: while the Whisper model was downloading in the
+        // background the phone was busy enough to lag Apple's partials, and
+        // turns were cut off mid-sentence - "When was the last time I got an
+        // email from" (no name), "How are" for "hey you there", which then got
+        // answered as a finances question. Audio level is ground truth about
+        // whether someone is still speaking, whatever the recogniser is doing.
+        var lastVoiceAt: ContinuousClock.Instant?
         // Give the caller a moment to start before silence counts against them.
         let deadline = ContinuousClock.now + .seconds(20)
 
@@ -184,8 +197,12 @@ final class CallSessionModel: ObservableObject {
             if current != lastTranscript {
                 lastTranscript = current
                 heard = current
-                quietSince = ContinuousClock.now
-            } else if !current.isEmpty, ContinuousClock.now - quietSince > Self.silenceGrace {
+            }
+
+            if dictation.level > Self.voiceLevel { lastVoiceAt = ContinuousClock.now }
+            // Only after the caller has actually said something, and then gone
+            // quiet for the full grace period.
+            if let voiced = lastVoiceAt, ContinuousClock.now - voiced > Self.silenceGrace {
                 break
             }
         }

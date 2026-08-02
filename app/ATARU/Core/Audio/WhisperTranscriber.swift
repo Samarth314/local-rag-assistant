@@ -17,31 +17,43 @@ import WhisperKit
 /// why Whisper is here rather than the newer, otherwise-more-accurate Apple
 /// engine, which offers no equivalent.
 ///
-/// ## Shape
+/// ## Why this is a lock and not an actor
 ///
-/// Loading pulls a CoreML model (hundreds of MB) on first run, so it happens
-/// off the hot path and every caller degrades politely: until `isReady`, the
-/// Apple recogniser's transcript stands. Audio never leaves the phone - the
-/// model is local, and only the finished text is sent to ATARU.
-actor WhisperTranscriber {
+/// It was an actor, and the app hung on "Thinking" forever. Loading was
+/// started with `Task { ... }` from inside an actor method, which INHERITS the
+/// actor's isolation - so WhisperKit's model load (hundreds of MB, compiled
+/// for the Neural Engine) occupied the actor for as long as it took, and the
+/// `isReady` check every question makes had to queue behind it. The fallback
+/// that was supposed to make loading invisible could never run.
+///
+/// Loading is now a detached task and state lives behind a lock, so asking
+/// "is it ready" is always answerable immediately, whatever the model is
+/// doing. Audio never leaves the phone either way: the model is local, and
+/// only the finished text is sent to ATARU.
+final class WhisperTranscriber: @unchecked Sendable {
 
-    /// What the engine is doing, for the Settings screen. Without this there
-    /// is no way to tell a Whisper transcript from an Apple fallback, which
-    /// made the first bad result impossible to diagnose from the outside.
+    /// What the engine is doing, for the Settings screen. Without this a
+    /// Whisper transcript and an Apple fallback are indistinguishable from
+    /// outside, which is what made the first bad result so hard to place.
     enum State: Equatable {
-        case idle, loading, ready, failed(String)
+        case idle
+        case downloading(Double)      // 0...1
+        case preparing                // downloaded; compiling for the ANE
+        case ready
+        case failed(String)
 
         var label: String {
             switch self {
             case .idle: return "Not loaded"
-            case .loading: return "Downloading model…"
+            case .downloading(let fraction):
+                return "Downloading model… \(Int(fraction * 100))%"
+            case .preparing: return "Preparing model…"
             case .ready: return "Whisper (on-device, name-aware)"
             case .failed(let why): return "Apple dictation - Whisper unavailable (\(why))"
             }
         }
     }
 
-    /// Readable from any actor; mirrors `state` for the UI.
     @MainActor static private(set) var uiState: State = .idle
 
     static let shared = WhisperTranscriber()
@@ -50,36 +62,73 @@ actor WhisperTranscriber {
     /// cost, which is what makes it usable on a phone between call turns.
     private static let modelName = "openai_whisper-large-v3-v20240930_turbo_632MB"
 
-    private var kit: WhisperKit?
-    private var loading: Task<WhisperKit?, Never>?
-    private(set) var lastError: String?
+    /// Where the model lives. Application Support survives app reinstalls, so
+    /// a rebuild does not re-download 632MB - the old default put it somewhere
+    /// that did not obviously persist, and every install started over.
+    private static var modelStore: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+            .appendingPathComponent("WhisperKitModels", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
 
-    /// True once a model is resident and transcription will actually run.
-    var isReady: Bool { kit != nil }
+    private let lock = NSLock()
+    private var kit: WhisperKit?
+    private var isLoading = false
+
+    /// True once a model is resident. Non-blocking by construction - see the
+    /// type's note about the hang this replaced.
+    var isReady: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return kit != nil
+    }
 
     /// Starts the download/load if it has not begun. Safe to call repeatedly.
     func prepare() {
-        guard kit == nil, loading == nil else { return }
-        Task { @MainActor in Self.uiState = .loading }
-        loading = Task { [modelName = Self.modelName] in
-            do {
-                let config = WhisperKitConfig(model: modelName, download: true)
-                return try await WhisperKit(config)
-            } catch {
-                return nil
-            }
-        }
-        Task { await self.finishLoading() }
-    }
+        lock.lock()
+        guard kit == nil, !isLoading else { lock.unlock(); return }
+        isLoading = true
+        lock.unlock()
 
-    private func finishLoading() async {
-        guard let loading else { return }
-        let loaded = await loading.value
-        self.kit = loaded
-        self.loading = nil
-        if loaded == nil { self.lastError = "WhisperKit model unavailable" }
-        let resolved: State = loaded == nil ? .failed("download failed") : .ready
-        await MainActor.run { Self.uiState = resolved }
+        Task { @MainActor in Self.uiState = .downloading(0) }
+        // Detached on purpose: this must not run on any caller's executor, or
+        // it blocks whatever asked it to start.
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            var loaded: WhisperKit?
+            var failure = "download failed"
+            do {
+                let store = Self.modelStore
+                // Downloading explicitly (rather than letting init do it) is
+                // what makes a percentage possible - otherwise the UI can only
+                // say "downloading" for several silent minutes.
+                let folder = try await WhisperKit.download(
+                    variant: Self.modelName, downloadBase: store,
+                    useBackgroundSession: false
+                ) { progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor in Self.uiState = .downloading(fraction) }
+                }
+                await MainActor.run { Self.uiState = .preparing }
+                // prewarm: compile into the Neural Engine now. Skipping it
+                // moves that cost onto the user's first question, which reads
+                // as the app hanging.
+                let config = WhisperKitConfig(model: Self.modelName,
+                                              downloadBase: store,
+                                              modelFolder: folder.path,
+                                              prewarm: true, load: true, download: false)
+                loaded = try await WhisperKit(config)
+            } catch {
+                failure = error.localizedDescription
+            }
+            self.lock.lock()
+            self.kit = loaded
+            self.isLoading = false
+            self.lock.unlock()
+            let resolved: State = loaded == nil ? .failed(failure) : .ready
+            await MainActor.run { Self.uiState = resolved }
+        }
     }
 
     /// Transcribes 16 kHz mono samples, biased toward `vocabulary`.
@@ -87,7 +136,11 @@ actor WhisperTranscriber {
     /// Returns nil when no model is loaded or the audio yields nothing, so the
     /// caller keeps whatever Apple heard rather than losing the question.
     func transcribe(samples: [Float], vocabulary: [String]) async -> String? {
+        lock.lock()
+        let kit = self.kit
+        lock.unlock()
         guard let kit, samples.count > 1_600 else { return nil }   // <0.1s is not speech
+
         var options = DecodingOptions()
         options.language = "en"
         options.temperature = 0
@@ -110,7 +163,6 @@ actor WhisperTranscriber {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
         } catch {
-            lastError = error.localizedDescription
             return nil
         }
     }

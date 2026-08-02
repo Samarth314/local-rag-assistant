@@ -74,7 +74,17 @@ final class SpeechDictation: NSObject, ObservableObject {
     private let captured = SampleBuffer()
     private var converter: AVAudioConverter?
     /// Proper nouns to expect - set from the backend's correspondent list.
+    ///
+    /// Seeded from `sharedVocabulary` at capture time. It must NEVER be
+    /// fetched on the press path: awaiting the server between the button
+    /// going down and the microphone opening meant a hold recorded nothing
+    /// and the release was ignored, so every question came back "I didn't
+    /// hear anything".
     var vocabulary: [String] = []
+
+    /// Roster shared by every dictation instance, refreshed in the background
+    /// when the backend changes. Empty just means unbiased transcription.
+    static var sharedVocabulary: [String] = []
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -124,9 +134,10 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
 
         transcript = ""
+        if vocabulary.isEmpty { vocabulary = Self.sharedVocabulary }
         captured.reset()
         // Loading is idempotent; the first call downloads, later ones no-op.
-        Task { await WhisperTranscriber.shared.prepare() }
+        WhisperTranscriber.shared.prepare()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
@@ -177,9 +188,26 @@ final class SpeechDictation: NSObject, ObservableObject {
     func finish() async -> String {
         let apple = stop()
         let samples = captured.drain()
-        guard await WhisperTranscriber.shared.isReady else { return apple }
-        guard let whisper = await WhisperTranscriber.shared.transcribe(
-            samples: samples, vocabulary: vocabulary) else { return apple }
+        guard WhisperTranscriber.shared.isReady else { return apple }
+        // Hard ceiling. A question that never comes back is worse than one
+        // transcribed slightly worse: the app sat on "Thinking" forever the
+        // first time this path misbehaved, so Whisper now gets a fixed budget
+        // and Apple's transcript wins by default if it overruns.
+        let names = vocabulary
+        let whisperText: String? = await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                await WhisperTranscriber.shared.transcribe(
+                    samples: samples, vocabulary: names)
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(10))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let whisper = whisperText else { return apple }
         // Whisper writes "[BLANK_AUDIO]" and similar for silence; a bracketed
         // artefact is not a question, so fall back rather than ask it.
         let cleaned = whisper.replacingOccurrences(

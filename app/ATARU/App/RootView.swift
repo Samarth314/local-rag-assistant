@@ -160,6 +160,12 @@ struct RootView: View {
         // a token registered with Demo reaches nothing.
         .task(id: ObjectIdentifier(state.service)) {
             CallStack.shared.configure(service: state.service)
+            // Warm the name roster here, where waiting costs nothing. Fetching
+            // it when the talk button goes down delayed the microphone past
+            // the user's release.
+            if let names = try? await state.service.vocabulary(), !names.isEmpty {
+                SpeechDictation.sharedVocabulary = names
+            }
         }
         .environmentObject(call)
     }
