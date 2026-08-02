@@ -22,6 +22,14 @@ final class VoiceViewModel: ObservableObject {
 
     private var service: ATARUService
     private var askTask: Task<Void, Never>?
+    /// Whether the orb is still held. `beginListening` has real async work
+    /// before the mic opens (permission check, audio session, engine start),
+    /// so a quick tap can RELEASE before `phase` ever reaches `.listening` -
+    /// `endListening`'s guard then drops the release, and the mic opens with
+    /// the button already up and stays stuck on "Listening" with nobody
+    /// holding it. This flag lets the open notice the release already
+    /// happened and stand down.
+    private var holdActive = false
 
     init(service: ATARUService) {
         self.service = service
@@ -48,12 +56,21 @@ final class VoiceViewModel: ObservableObject {
 
     func beginListening() async {
         guard phase.allowsNewQuestion else { return }
+        holdActive = true
         guard await dictation.requestAuthorization() else {
             phase = .failed(SpeechDictation.Failure.permissionDenied.localizedDescription)
             return
         }
+        guard holdActive else { return }   // released while permissions settled
         do {
             try dictation.start()
+            guard holdActive else {
+                // A tap, not a hold: the finger left before the mic finished
+                // opening. There is nothing worth transcribing in a few
+                // milliseconds of audio, so this is a cancel, not a question.
+                dictation.cancel()
+                return
+            }
             partialTranscript = ""
             phase = .listening
             Haptics.fire(.tap)
@@ -75,6 +92,7 @@ final class VoiceViewModel: ObservableObject {
     }
 
     func endListening() {
+        holdActive = false
         guard phase == .listening else { return }
         // Whisper's pass is asynchronous, so the question is settled in a
         // Task; `.thinking` is set first so the UI never shows an idle orb
@@ -92,6 +110,7 @@ final class VoiceViewModel: ObservableObject {
     }
 
     func cancelListening() {
+        holdActive = false
         dictation.cancel()
         partialTranscript = ""
         phase = .idle

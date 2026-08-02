@@ -119,8 +119,22 @@ final class CallSessionModel: ObservableObject {
             ?? SpokenAnswer(text: Self.greeting, source: nil, audioURL: nil)
         await speak(greeting)
 
+        // One empty turn must not kill the call. It used to: any turn that
+        // produced no text broke this loop, and since nothing hangs up, the
+        // line just sat there - connected, silent, dead. A cough that trips
+        // the level detector, a mid-sentence mute, a recogniser that had
+        // nothing by the deadline: all of those ended the conversation
+        // permanently. Now the loop simply listens again, and only gives up
+        // after several empty turns in a row - a caller who has genuinely
+        // walked away.
+        var emptyTurns = 0
         while !Task.isCancelled {
-            guard let question = await listenForOneTurn() else { break }
+            guard let question = await listenForOneTurn() else {
+                emptyTurns += 1
+                if emptyTurns >= 3 { break }
+                continue
+            }
+            emptyTurns = 0
             guard !Task.isCancelled else { break }
             // "That will be all" ends the call like a call: a goodbye in the
             // assistant's voice, then the hang-up - instead of forcing the
@@ -134,6 +148,11 @@ final class CallSessionModel: ObservableObject {
                 break
             }
             await answerQuestion(question)
+        }
+        // However the loop ends, don't leave the orb claiming a state that no
+        // longer has anything behind it.
+        if !Task.isCancelled, phase == .listening || phase == .thinking {
+            phase = .idle
         }
     }
 

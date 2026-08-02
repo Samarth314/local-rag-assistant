@@ -80,6 +80,7 @@ final class WhisperTranscriber: @unchecked Sendable {
     private let lock = NSLock()
     private var kit: WhisperKit?
     private var isLoading = false
+    private var isDecoding = false
     private var lastRun: Double?
 
     /// True once a model is resident. Non-blocking by construction - see the
@@ -181,10 +182,21 @@ final class WhisperTranscriber: @unchecked Sendable {
     /// Returns nil when no model is loaded or the audio yields nothing, so the
     /// caller keeps whatever Apple heard rather than losing the question.
     func transcribe(samples: [Float], vocabulary: [String]) async -> String? {
+        // One decode at a time - and that is a hard rule, not tidiness. A
+        // timed-out decode is ABANDONED, not stopped: it keeps running on the
+        // Neural Engine. Starting a second decode on the same WhisperKit
+        // instance while it grinds means two inferences sharing one decoder
+        // state - they slow each other until every turn overruns, so one bad
+        // turn poisoned the whole session. If the engine is busy, this turn
+        // simply keeps Apple's transcript.
         lock.lock()
-        let kit = self.kit
+        guard let kit = self.kit, !isDecoding, samples.count > 1_600 else {
+            lock.unlock()
+            return nil   // no model, engine busy, or <0.1s of audio
+        }
+        isDecoding = true
         lock.unlock()
-        guard let kit, samples.count > 1_600 else { return nil }   // <0.1s is not speech
+        defer { lock.lock(); isDecoding = false; lock.unlock() }
 
         var options = DecodingOptions()
         options.language = "en"
@@ -192,19 +204,24 @@ final class WhisperTranscriber: @unchecked Sendable {
         options.usePrefillPrompt = true
         options.withoutTimestamps = true
         // The biasing itself. Whisper reads the prompt as "text that came
-        // just before", so a bare comma-separated roster is the shape that
-        // works; tokens beyond the model's prompt window are dropped by
-        // WhisperKit, hence the cap on how many names we send.
+        // just before" - it is context, not an instruction. So the prompt is
+        // the bare comma-separated roster and nothing else: a sentence like
+        // "Names likely in this audio:" is prose the model may happily
+        // continue into the transcript.
         if !vocabulary.isEmpty, let tokenizer = kit.tokenizer {
             // Whisper reserves about half its 448-token context for the
-            // prompt. Sixty names blew through that, which both degrades the
-            // decode and makes it crawl - the phone sat on "Thinking" while
-            // inference ground away. Sixteen names is ~60 tokens and leaves
-            // the model room to actually transcribe.
-            let roster = vocabulary.prefix(16).joined(separator: ", ")
-            let prompt = "Names and terms likely in this audio: \(roster)."
-            let tokens = tokenizer.encode(text: " " + prompt)
-                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            // prompt (~224 tokens). Budget by TOKENS, not by a name count: a
+            // fixed cap of 16 names silently dropped the very people this
+            // engine exists to hear (the roster is recency-ordered and ~200
+            // long). ~192 tokens fits comfortably and covers ~50 names.
+            let special = tokenizer.specialTokens.specialTokenBegin
+            var tokens: [Int] = []
+            for name in vocabulary {
+                let piece = (tokens.isEmpty ? " " : ", ") + name
+                let extra = tokenizer.encode(text: piece).filter { $0 < special }
+                if tokens.count + extra.count > 192 { break }
+                tokens.append(contentsOf: extra)
+            }
             if !tokens.isEmpty { options.promptTokens = tokens }
         }
         let started = Date()

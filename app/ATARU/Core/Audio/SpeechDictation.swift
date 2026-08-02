@@ -70,9 +70,55 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
     }
 
+    /// Resamples capture buffers to Whisper's 16 kHz mono, keeping ONE
+    /// converter alive across the turn. The first version built a new
+    /// `AVAudioConverter` for every ~23 ms buffer on the audio tap thread -
+    /// an allocation per buffer, and a resampler whose filter state reset at
+    /// every buffer boundary, which stitches faint artifacts into the audio
+    /// Whisper decodes. A persistent converter keeps its filter state across
+    /// buffers, so the 16 kHz stream is continuous.
+    private final class Resampler: @unchecked Sendable {
+        private let lock = NSLock()
+        private var converter: AVAudioConverter?
+        private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                           sampleRate: 16_000, channels: 1,
+                                           interleaved: false)!
+
+        func resample(_ buffer: AVAudioPCMBuffer) -> [Float]? {
+            if buffer.format.sampleRate == 16_000, buffer.format.channelCount == 1 {
+                guard let data = buffer.floatChannelData?[0] else { return nil }
+                return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
+            }
+            lock.lock(); defer { lock.unlock() }
+            if converter == nil || converter?.inputFormat != buffer.format {
+                converter = AVAudioConverter(from: buffer.format, to: target)
+            }
+            guard let converter else { return nil }
+            let ratio = 16_000 / buffer.format.sampleRate
+            let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1_024)
+            guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+            var supplied = false
+            var error: NSError?
+            converter.convert(to: out, error: &error) { _, status in
+                if supplied { status.pointee = .noDataNow; return nil }
+                supplied = true
+                status.pointee = .haveData
+                return buffer
+            }
+            guard error == nil, let data = out.floatChannelData?[0] else { return nil }
+            return Array(UnsafeBufferPointer(start: data, count: Int(out.frameLength)))
+        }
+
+        /// Fresh filter state for a fresh turn.
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            converter?.reset()
+        }
+    }
+
     private let engine = AVAudioEngine()
     private let captured = SampleBuffer()
-    private var converter: AVAudioConverter?
+    private let resampler = Resampler()
     /// Proper nouns to expect - set from the backend's correspondent list.
     ///
     /// Seeded from `sharedVocabulary` at capture time. It must NEVER be
@@ -136,14 +182,17 @@ final class SpeechDictation: NSObject, ObservableObject {
         transcript = ""
         if vocabulary.isEmpty { vocabulary = Self.sharedVocabulary }
         captured.reset()
+        resampler.reset()
         // Loading is idempotent; the first call downloads, later ones no-op.
         WhisperTranscriber.shared.prepare()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
+        let resampler = self.resampler
+        let captured = self.captured
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
             request.append(buffer)
-            if let mono = self?.downsample(buffer) { self?.captured.append(mono) }
+            if let mono = resampler.resample(buffer) { captured.append(mono) }
             let peak = Self.peakLevel(of: buffer)
             Task { @MainActor in self?.level = peak }
         }
@@ -206,31 +255,6 @@ final class SpeechDictation: NSObject, ObservableObject {
         guard !cleaned.isEmpty else { return apple }
         transcript = cleaned
         return cleaned
-    }
-
-    /// Down-mixes a capture buffer to the 16 kHz mono Float32 Whisper wants.
-    nonisolated private func downsample(_ buffer: AVAudioPCMBuffer) -> [Float]? {
-        guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: 16_000, channels: 1,
-                                         interleaved: false) else { return nil }
-        if buffer.format.sampleRate == 16_000, buffer.format.channelCount == 1 {
-            guard let data = buffer.floatChannelData?[0] else { return nil }
-            return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
-        }
-        guard let converter = AVAudioConverter(from: buffer.format, to: target) else { return nil }
-        let ratio = 16_000 / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1_024)
-        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
-        var supplied = false
-        var error: NSError?
-        converter.convert(to: out, error: &error) { _, status in
-            if supplied { status.pointee = .noDataNow; return nil }
-            supplied = true
-            status.pointee = .haveData
-            return buffer
-        }
-        guard error == nil, let data = out.floatChannelData?[0] else { return nil }
-        return Array(UnsafeBufferPointer(start: data, count: Int(out.frameLength)))
     }
 
     /// Abandons the current capture without producing a transcript.
