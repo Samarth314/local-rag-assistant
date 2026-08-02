@@ -6,7 +6,7 @@ import SwiftUI
 /// apps — an iPhone reaches Infuse or Bitwarden from its own Home Screen, and
 /// duplicating those here would be a menu of links to other icons.
 enum HomeTile: String, CaseIterable, Identifiable {
-    case assistant, documents, finances, health, personal, system
+    case assistant, documents, finances, health, personal, system, canvas, uikit
 
     var id: String { rawValue }
 
@@ -14,23 +14,12 @@ enum HomeTile: String, CaseIterable, Identifiable {
         switch self {
         case .assistant: return "Ask"
         case .documents: return "Documents"
-        case .finances: return "Finances"
+        case .finances:  return "Finances"
         case .health:    return "Health"
         case .personal:  return "Personal"
         case .system:    return "System"
-        }
-    }
-
-    /// The one-line subtitle from the desktop tiles, so the two read as the
-    /// same product rather than two apps that happen to share a name.
-    var caption: String {
-        switch self {
-        case .assistant: return "Ask anything"
-        case .documents: return "Browse · search"
-        case .finances:  return "Net worth · spend"
-        case .health:    return "Labs · meds"
-        case .personal:  return "Vault entries"
-        case .system:    return "Orin health"
+        case .canvas:    return "Canvas"
+        case .uikit:     return "UI kit"
         }
     }
 
@@ -42,18 +31,54 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .health:    return "heart.text.square"
         case .personal:  return "person.crop.circle"
         case .system:    return "cpu"
+        case .canvas:    return "scribble.variable"
+        case .uikit:     return "paintpalette"
         }
     }
 
-    /// Whether the app can actually show this yet. The rest are on the server
-    /// but have no phone screen — offering them as if they worked would be a
-    /// menu that lies.
-    var isAvailable: Bool {
+    /// Where the tile goes.
+    ///
+    /// Two kinds, because two kinds exist: Ask and Documents are native
+    /// screens; the rest are pages on the server with no native equivalent
+    /// yet. Opening the real page beats greying the tile out — it works today,
+    /// and swapping in a native screen later changes nothing here but this
+    /// one value.
+    enum Destination: Equatable {
+        case ask
+        case library
+        case web(URL)
+    }
+
+    var destination: Destination {
         switch self {
-        case .assistant, .documents, .system: return true
-        case .finances, .health, .personal:   return false
+        case .assistant: return .ask
+        case .documents: return .library
+        default:
+            // Force-unwrap is safe: these are compile-time literals, and a typo
+            // would fail on the first tap rather than silently doing nothing.
+            return .web(URL(string: Self.webRoot + path)!)
         }
     }
+
+    private var path: String {
+        switch self {
+        case .finances: return "finance/dev/"
+        case .health:   return "health/dev/"
+        case .personal: return "journal/dev/"
+        case .system:   return "status/dev/"
+        case .canvas:   return "canvas/dev/"
+        case .uikit:    return "uikit/"
+        case .assistant, .documents: return ""
+        }
+    }
+
+    /// The web app these pages live on.
+    ///
+    /// Hard-coded for now, and it should not stay that way — it is a different
+    /// host from the RAG server in Settings, so there is nowhere honest to put
+    /// it yet. When the web app moves or gains a Tailnet name, this is the one
+    /// line to change.
+    private static let webRoot = "https://dev.ataru.aryasasikumar.com/"
 }
 
 /// Hold, sweep a thumb, release to choose.
@@ -88,38 +113,36 @@ struct RadialTileMenu: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// How far the tiles sit from the centre of the button.
-    private let radius: CGFloat = 200
+    private let radius: CGFloat = 152
     /// Ignore travel this small: a press always wobbles a little, and a wobble
     /// is not a choice.
     private let deadZone: CGFloat = 34
 
     private var tiles: [HomeTile] { HomeTile.allCases }
 
-    /// How far the button sits from the trailing and bottom edges. The fan is
-    /// laid out from the same anchor, so both stay put as the fan opens.
-    private let edgeInset = CGSize(width: 18, height: 70)
+    /// How far the dial sits above the bottom edge. The fan is laid out from
+    /// the same anchor, so both stay put as it opens.
+    private let bottomInset: CGFloat = 70
 
     var body: some View {
-        // Full-screen and anchored bottom-trailing, rather than a box that
-        // grows when the fan opens. A resizing frame pushed the launcher out of
-        // its corner and ran the tiles off the left edge — and hit-testing is
-        // clipped to a view's bounds, so a small frame could never let the
-        // tiles be tapped however far outside they were drawn.
+        // Full-screen and anchored to the bottom centre, rather than a box
+        // that grows when the fan opens. A resizing frame pushed the dial out
+        // of place and ran tiles off screen — and hit-testing is clipped to a
+        // view's bounds, so a small frame could never let the tiles be tapped
+        // however far outside they were drawn.
         //
         // Nothing here paints a background, so the empty area stays
         // untouchable and the app underneath keeps working normally.
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: .bottom) {
             if isOpen {
                 ForEach(Array(tiles.enumerated()), id: \.element.id) { index, tile in
                     TileBubble(tile: tile, isHighlighted: highlighted == tile)
                         .offset(offset(for: index))
-                        .padding(.trailing, edgeInset.width)
-                        .padding(.bottom, edgeInset.height)
+                        .padding(.bottom, bottomInset)
                         // Tappable only when latched; during a sweep the choice
                         // comes from the drag's direction, not from hit-testing.
                         .allowsHitTesting(isLatched)
                         .onTapGesture {
-                            guard tile.isAvailable else { return }
                             close()
                             Haptics.fire(.success)
                             onSelect(tile)
@@ -129,10 +152,9 @@ struct RadialTileMenu: View {
             }
 
             centerButton
-                .padding(.trailing, edgeInset.width)
-                .padding(.bottom, edgeInset.height)
+                .padding(.bottom, bottomInset)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     private var centerButton: some View {
@@ -160,7 +182,7 @@ struct RadialTileMenu: View {
             // VoiceOver cannot sweep, so every destination is offered as a
             // plain action instead of leaving the menu unreachable.
             .accessibilityActions {
-                ForEach(tiles.filter(\.isAvailable)) { tile in
+                ForEach(tiles) { tile in
                     Button(tile.title) { onSelect(tile) }
                 }
             }
@@ -168,20 +190,19 @@ struct RadialTileMenu: View {
 
     // MARK: - Geometry
 
-    /// Fans up and to the left, into the empty quadrant.
+    /// A half circle above the dial.
     ///
-    /// The launcher sits in the bottom-right corner, so a full ring would put
-    /// half the tiles off screen and the rest under the palm. A quarter-turn
-    /// arc opening away from the corner keeps every tile both visible and
-    /// inside the sweep of one thumb, and lands them on empty backdrop rather
-    /// than on top of the text field.
+    /// With the dial centred rather than cornered, the full 180 degrees is
+    /// usable: every tile clears the screen edges and the whole arc stays
+    /// inside one thumb's sweep. Nothing fans downward, where a hand would
+    /// cover it.
     private func offset(for index: Int) -> CGSize {
         let count = max(tiles.count, 1)
         // A quarter turn, from straight left to straight up. Wider would push
         // tiles past the right edge — the launcher sits ~50pt from it — and
         // narrower would overlap them: six 58pt bubbles need about 63pt of arc
         // each, which is what 90 degrees at this radius buys.
-        let spread = Double.pi * 0.5
+        let spread = Double.pi                 // left, over the top, to right
         let start = -Double.pi                 // straight left
         let step = count > 1 ? spread / Double(count - 1) : 0
         let angle = start + step * Double(index)
@@ -246,7 +267,7 @@ struct RadialTileMenu: View {
         close()
         // Unavailable tiles are shown but not selectable: seeing what is coming
         // is useful, being dropped on an empty screen is not.
-        guard let chosen, chosen.isAvailable else { return }
+        guard let chosen else { return }
         Haptics.fire(.success)
         onSelect(chosen)
     }
@@ -290,7 +311,6 @@ private struct TileBubble: View {
     }
 
     private var foreground: Color {
-        if !tile.isAvailable { return Theme.textTertiary }
-        return isHighlighted ? Theme.cyan : Theme.textSecondary
+        isHighlighted ? Theme.cyan : Theme.textSecondary
     }
 }

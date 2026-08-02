@@ -15,6 +15,9 @@ struct RootView: View {
     /// Owned here so the app behind the launcher can be dimmed while its fan
     /// is open.
     @State private var isMenuOpen = false
+    /// The web page a tile opened, if any. Tiles without a native screen show
+    /// the real page rather than nothing.
+    @State private var webTile: URL?
 
     // Borrowed from CallStack, never constructed here. A view's init re-runs
     // on any parent update, and constructing call machinery per-init is what
@@ -83,13 +86,10 @@ struct RootView: View {
                 // corner and paints no background, so it costs nothing when
                 // closed.
                 RadialTileMenu(isOpen: $isMenuOpen) { tile in
-                    switch tile {
-                    case .assistant: selection = .ask
-                    case .documents: selection = .library
-                    // System has no screen of its own yet; Settings is where
-                    // its status actually lives.
-                    case .system: selection = .ask
-                    default: break
+                    switch tile.destination {
+                    case .ask: selection = .ask
+                    case .library: selection = .library
+                    case .web(let url): webTile = url
                     }
                 }
                 .zIndex(2)
@@ -166,6 +166,9 @@ struct RootView: View {
             if let names = try? await state.service.vocabulary(), !names.isEmpty {
                 SpeechDictation.sharedVocabulary = names
             }
+        }
+        .sheet(item: $webTile) { url in
+            WebTileView(url: url).ignoresSafeArea()
         }
         .environmentObject(call)
     }
