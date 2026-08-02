@@ -193,20 +193,10 @@ final class SpeechDictation: NSObject, ObservableObject {
         // transcribed slightly worse: the app sat on "Thinking" forever the
         // first time this path misbehaved, so Whisper now gets a fixed budget
         // and Apple's transcript wins by default if it overruns.
-        let names = vocabulary
-        let whisperText: String? = await withTaskGroup(of: String?.self) { group in
-            group.addTask {
-                await WhisperTranscriber.shared.transcribe(
-                    samples: samples, vocabulary: names)
-            }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(10))
-                return nil
-            }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
-        }
+        // 10s ceiling, enforced by the transcriber itself - a question that
+        // never comes back is worse than one transcribed slightly worse.
+        let whisperText = await WhisperTranscriber.shared.transcribe(
+            samples: samples, vocabulary: vocabulary, timeout: 10)
         guard let whisper = whisperText else { return apple }
         // Whisper writes "[BLANK_AUDIO]" and similar for silence; a bracketed
         // artefact is not a question, so fall back rather than ask it.
