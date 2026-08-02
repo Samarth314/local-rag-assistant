@@ -36,12 +36,18 @@ final class WhisperTranscriber: @unchecked Sendable {
     /// Whisper transcript and an Apple fallback are indistinguishable from
     /// outside, which is what made the first bad result so hard to place.
     enum State: Equatable {
-        case idle, loading, ready, failed(String)
+        case idle
+        case downloading(Double)      // 0...1
+        case preparing                // downloaded; compiling for the ANE
+        case ready
+        case failed(String)
 
         var label: String {
             switch self {
             case .idle: return "Not loaded"
-            case .loading: return "Downloading model…"
+            case .downloading(let fraction):
+                return "Downloading model… \(Int(fraction * 100))%"
+            case .preparing: return "Preparing model…"
             case .ready: return "Whisper (on-device, name-aware)"
             case .failed(let why): return "Apple dictation - Whisper unavailable (\(why))"
             }
@@ -55,6 +61,17 @@ final class WhisperTranscriber: @unchecked Sendable {
     /// large-v3-turbo: the accuracy of large-v3 at a fraction of the decode
     /// cost, which is what makes it usable on a phone between call turns.
     private static let modelName = "openai_whisper-large-v3-v20240930_turbo_632MB"
+
+    /// Where the model lives. Application Support survives app reinstalls, so
+    /// a rebuild does not re-download 632MB - the old default put it somewhere
+    /// that did not obviously persist, and every install started over.
+    private static var modelStore: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask)[0]
+            .appendingPathComponent("WhisperKitModels", isDirectory: true)
+        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        return base
+    }
 
     private let lock = NSLock()
     private var kit: WhisperKit?
@@ -74,7 +91,7 @@ final class WhisperTranscriber: @unchecked Sendable {
         isLoading = true
         lock.unlock()
 
-        Task { @MainActor in Self.uiState = .loading }
+        Task { @MainActor in Self.uiState = .downloading(0) }
         // Detached on purpose: this must not run on any caller's executor, or
         // it blocks whatever asked it to start.
         Task.detached(priority: .utility) { [weak self] in
@@ -82,11 +99,25 @@ final class WhisperTranscriber: @unchecked Sendable {
             var loaded: WhisperKit?
             var failure = "download failed"
             do {
+                let store = Self.modelStore
+                // Downloading explicitly (rather than letting init do it) is
+                // what makes a percentage possible - otherwise the UI can only
+                // say "downloading" for several silent minutes.
+                let folder = try await WhisperKit.download(
+                    variant: Self.modelName, downloadBase: store,
+                    useBackgroundSession: false
+                ) { progress in
+                    let fraction = progress.fractionCompleted
+                    Task { @MainActor in Self.uiState = .downloading(fraction) }
+                }
+                await MainActor.run { Self.uiState = .preparing }
                 // prewarm: compile into the Neural Engine now. Skipping it
                 // moves that cost onto the user's first question, which reads
                 // as the app hanging.
                 let config = WhisperKitConfig(model: Self.modelName,
-                                              prewarm: true, load: true, download: true)
+                                              downloadBase: store,
+                                              modelFolder: folder.path,
+                                              prewarm: true, load: true, download: false)
                 loaded = try await WhisperKit(config)
             } catch {
                 failure = error.localizedDescription
