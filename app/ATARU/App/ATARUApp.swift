@@ -27,7 +27,7 @@ struct ATARUApp: App {
                     // it is resident, so the fetch starts at launch rather than
                     // when the first question is already being asked - that
                     // first turn would otherwise always fall back to Apple.
-                    await WhisperTranscriber.shared.prepare()
+                    WhisperTranscriber.shared.prepare()
                     guard !hasRequestedVoicePermissions else { return }
                     hasRequestedVoicePermissions = true
                     _ = await SpeechDictation.requestAuthorization()

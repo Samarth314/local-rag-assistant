@@ -126,7 +126,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         transcript = ""
         captured.reset()
         // Loading is idempotent; the first call downloads, later ones no-op.
-        Task { await WhisperTranscriber.shared.prepare() }
+        WhisperTranscriber.shared.prepare()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
@@ -177,9 +177,26 @@ final class SpeechDictation: NSObject, ObservableObject {
     func finish() async -> String {
         let apple = stop()
         let samples = captured.drain()
-        guard await WhisperTranscriber.shared.isReady else { return apple }
-        guard let whisper = await WhisperTranscriber.shared.transcribe(
-            samples: samples, vocabulary: vocabulary) else { return apple }
+        guard WhisperTranscriber.shared.isReady else { return apple }
+        // Hard ceiling. A question that never comes back is worse than one
+        // transcribed slightly worse: the app sat on "Thinking" forever the
+        // first time this path misbehaved, so Whisper now gets a fixed budget
+        // and Apple's transcript wins by default if it overruns.
+        let names = vocabulary
+        let whisperText: String? = await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                await WhisperTranscriber.shared.transcribe(
+                    samples: samples, vocabulary: names)
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(10))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let whisper = whisperText else { return apple }
         // Whisper writes "[BLANK_AUDIO]" and similar for silence; a bracketed
         // artefact is not a question, so fall back rather than ask it.
         let cleaned = whisper.replacingOccurrences(
