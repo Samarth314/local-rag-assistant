@@ -102,6 +102,13 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         VoiceStreamSession(baseURL: baseURL, token: tokenProvider())
     }
 
+    func vocabulary() async throws -> [String] {
+        guard let url = endpoints.vocabulary else { throw APIError.invalidURL }
+        let (data, _) = try await perform(request(for: url))
+        struct Roster: Decodable { let names: [String] }
+        return try decode(Roster.self, from: data).names
+    }
+
     func greeting() async throws -> SpokenAnswer {
         try await cannedLine(endpoints.greeting,
                              fallbackText: "ATARU here. What would you like to know?",

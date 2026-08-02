@@ -156,6 +156,10 @@ struct EndpointBuilder {
     /// The call's closing line, for when the caller says they're done.
     var goodbye: URL? { url("voice/goodbye") }
 
+    /// Proper nouns to bias on-device recognition toward - the people ATARU
+    /// knows Arya corresponds with. Only the server can know them.
+    var vocabulary: URL? { url("voice/vocabulary") }
+
     static func escape(_ component: String) -> String {
         component.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? component
     }

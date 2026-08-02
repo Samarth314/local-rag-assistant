@@ -52,6 +52,10 @@ final class VoiceViewModel: ObservableObject {
             phase = .failed(SpeechDictation.Failure.permissionDenied.localizedDescription)
             return
         }
+        if dictation.vocabulary.isEmpty,
+           let names = try? await service.vocabulary(), !names.isEmpty {
+            dictation.vocabulary = names
+        }
         do {
             try dictation.start()
             partialTranscript = ""
@@ -68,13 +72,19 @@ final class VoiceViewModel: ObservableObject {
 
     func endListening() {
         guard phase == .listening else { return }
-        let question = dictation.stop()
-        partialTranscript = ""
-        guard !question.isEmpty else {
-            phase = .failed(SpeechDictation.Failure.noSpeechDetected.localizedDescription)
-            return
+        // Whisper's pass is asynchronous, so the question is settled in a
+        // Task; `.thinking` is set first so the UI never shows an idle orb
+        // between the button release and the answer starting.
+        phase = .thinking
+        Task {
+            let question = await dictation.finish()
+            partialTranscript = ""
+            guard !question.isEmpty else {
+                phase = .failed(SpeechDictation.Failure.noSpeechDetected.localizedDescription)
+                return
+            }
+            ask(question)
         }
-        ask(question)
     }
 
     func cancelListening() {

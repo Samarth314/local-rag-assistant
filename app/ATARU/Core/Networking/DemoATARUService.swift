@@ -71,6 +71,10 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
     /// Accepted and discarded. Demo mode has no server, so there is nothing to
     /// ring this phone — but failing here would surface a registration error in
     /// Settings for a mode where being un-ringable is the expected state.
+    /// Demo mode biases nothing: there is no real correspondent list, and
+    /// inventing one would train the recogniser on names that do not exist.
+    func vocabulary() async throws -> [String] { [] }
+
     func registerVoIPToken(_ token: String, environment: String) async throws {}
 
     private func pause() async throws {

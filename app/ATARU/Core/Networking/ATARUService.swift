@@ -40,6 +40,11 @@ protocol ATARUService: AnyObject, Sendable {
     /// nil and a broken stream identically — degrade, never fail the question.
     func voiceStream() -> VoiceStreamSession?
 
+    /// Names the speech recogniser should expect, biasing it toward the
+    /// people Arya actually deals with. Empty is fine - it just means
+    /// unbiased transcription, which is where this started.
+    func vocabulary() async throws -> [String]
+
     /// The call's opening line, ideally in the server's voice.
     ///
     /// A call that greets in an iOS voice and answers in the server's sounds

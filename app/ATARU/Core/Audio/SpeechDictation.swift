@@ -41,6 +41,14 @@ final class SpeechDictation: NSObject, ObservableObject {
     @Published private(set) var level: Double = 0
 
     private let engine = AVAudioEngine()
+    /// 16 kHz mono copy of everything captured this turn, for WhisperKit.
+    /// Apple's recogniser gives instant partials; Whisper gives the accurate
+    /// final read, so both run off the same tap rather than the user speaking
+    /// twice.
+    private var captured: [Float] = []
+    private var converter: AVAudioConverter?
+    /// Proper nouns to expect - set from the backend's correspondent list.
+    var vocabulary: [String] = []
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -90,13 +98,20 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
 
         transcript = ""
+        captured.removeAll(keepingCapacity: true)
+        // Loading is idempotent; the first call downloads, later ones no-op.
+        Task { await WhisperTranscriber.shared.prepare() }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
             request.append(buffer)
             let peak = Self.peakLevel(of: buffer)
-            Task { @MainActor in self?.level = peak }
+            let mono = self?.downsample(buffer)
+            Task { @MainActor in
+                self?.level = peak
+                if let mono { self?.captured.append(contentsOf: mono) }
+            }
         }
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
@@ -129,9 +144,59 @@ final class SpeechDictation: NSObject, ObservableObject {
         return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// The final question: Whisper's read when a model is loaded, Apple's
+    /// otherwise.
+    ///
+    /// Separate from `stop()` because transcription is asynchronous and the
+    /// old signature is synchronous. Callers that only need to abandon audio
+    /// (mute mid-sentence) keep using `stop()`; callers that are about to ASK
+    /// something use this, because this is where the proper nouns get fixed.
+    func finish() async -> String {
+        let apple = stop()
+        let samples = captured
+        captured.removeAll(keepingCapacity: false)
+        guard await WhisperTranscriber.shared.isReady else { return apple }
+        guard let whisper = await WhisperTranscriber.shared.transcribe(
+            samples: samples, vocabulary: vocabulary) else { return apple }
+        // Whisper writes "[BLANK_AUDIO]" and similar for silence; a bracketed
+        // artefact is not a question, so fall back rather than ask it.
+        let cleaned = whisper.replacingOccurrences(
+            of: "\\[[^\\]]+\\]", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return apple }
+        transcript = cleaned
+        return cleaned
+    }
+
+    /// Down-mixes a capture buffer to the 16 kHz mono Float32 Whisper wants.
+    nonisolated private func downsample(_ buffer: AVAudioPCMBuffer) -> [Float]? {
+        guard let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                         sampleRate: 16_000, channels: 1,
+                                         interleaved: false) else { return nil }
+        if buffer.format.sampleRate == 16_000, buffer.format.channelCount == 1 {
+            guard let data = buffer.floatChannelData?[0] else { return nil }
+            return Array(UnsafeBufferPointer(start: data, count: Int(buffer.frameLength)))
+        }
+        guard let converter = AVAudioConverter(from: buffer.format, to: target) else { return nil }
+        let ratio = 16_000 / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1_024)
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return nil }
+        var supplied = false
+        var error: NSError?
+        converter.convert(to: out, error: &error) { _, status in
+            if supplied { status.pointee = .noDataNow; return nil }
+            supplied = true
+            status.pointee = .haveData
+            return buffer
+        }
+        guard error == nil, let data = out.floatChannelData?[0] else { return nil }
+        return Array(UnsafeBufferPointer(start: data, count: Int(out.frameLength)))
+    }
+
     /// Abandons the current capture without producing a transcript.
     func cancel() {
         _ = stop()
+        captured.removeAll(keepingCapacity: false)
         transcript = ""
     }
 
