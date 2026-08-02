@@ -1,20 +1,22 @@
 import Intents
 import SwiftUI
 
-/// Two tabs, because the app does two things: ask, and browse what it asked of.
+/// The app's one screen, and everything that can take it over.
 ///
-/// The original nine-feature dashboard was deliberately cut back to this. A
-/// tab bar full of destinations the backend cannot yet fill would be a worse
-/// product than two that work.
+/// There is no tab bar and no visible launcher. Three root screens swap in
+/// place, every other destination arrives as a sheet, and the way between them
+/// is a thumb held anywhere on the glass — see `RadialPressMenu`. What is left
+/// is the content and nothing else.
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @State private var selection: Tab = .ask
     /// Lives here rather than in the call screen: a minimised call still exists,
     /// so the state has to outlive that view being torn down.
     @State private var isCallMinimized = false
-    /// Owned here so the app behind the launcher can be dimmed while its fan
-    /// is open.
-    @State private var isMenuOpen = false
+    /// Rects the launcher's long press must keep its hands off, reported up
+    /// from whatever is on screen. The orb is the one that matters: holding it
+    /// is how you talk to ATARU.
+    @State private var pressExclusions: [CGRect] = []
     /// The native tile screen currently presented, if any. Every tile is
     /// native now - the grid and the radial dial are two ways of opening the
     /// same set, and nothing routes to a web page.
@@ -47,11 +49,11 @@ struct RootView: View {
     /// used to float on top of the keyboard and the composer.
     @State private var isComposerActive = false
 
-    /// Two tabs, plus the call.
+    /// The current screen, the launcher over it, and the call over everything.
     ///
     /// CallKit still owns the call *outside* the app — lock screen, banner, the
     /// green pill — and answering there needs nothing from us. But when the app
-    /// is on screen during a call, a tab bar says nothing about the fact that a
+    /// is on screen during a call, nothing in the ordinary chrome says a
     /// conversation is audibly in progress. `CallSessionView` is what the app
     /// shows for the duration.
     ///
@@ -60,11 +62,10 @@ struct RootView: View {
     /// lose that race.
     var body: some View {
         ZStack {
-            // No tab bar. The dial reaches every destination, and a permanent
-            // row of three was both a second way to do the same thing and the
-            // busiest chrome on an otherwise near-empty screen. The dial now
-            // sits in the band the tabs occupied, so nothing moves — the app
-            // just stops carrying a menu it does not need.
+            // No tab bar, and no launcher either — nothing permanent at the
+            // bottom at all. Every destination is a held thumb away, so the
+            // screen belongs entirely to its content and the app looks like
+            // almost nothing until someone reaches for it.
             Group {
                 switch selection {
                 case .ask:     VoiceView(composerActive: $isComposerActive)
@@ -72,51 +73,37 @@ struct RootView: View {
                 case .library: DocumentsView()
                 }
             }
-            // Keeps content clear of the dial, which used to be the tab bar's
-            // job. Without it a list's last row sits under the launcher.
-            .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: RadialTileMenu.reservedHeight)
-            }
+            // Read from the content only, and applied to a sibling: a
+            // preference consumed by something that could resize its own
+            // producer is how layout loops start.
+            .onPreferenceChange(PressExclusionKey.self) { pressExclusions = $0 }
             .ataruBackdrop()
 
-            // The launcher: one circle at rest, a fan of destinations while a
-            // thumb is held on it. Sits above the tabs rather than inside a
-            // screen, because it navigates between them.
-            // Dims the app behind the fan, and takes the tap that dismisses
-            // it. Drawn as a sibling because a scrim from inside the menu
-            // could not reach past the menu's own bounds.
-            if isMenuOpen {
-                Color.black.opacity(0.5)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-                    .zIndex(1.5)
-                    .onTapGesture {
-                        withAnimation(.easeOut(duration: 0.2)) { isMenuOpen = false }
-                    }
-            }
-
-            // Hidden during a call, and faded out while the user is typing:
-            // the dial used to float over the keyboard and the composer.
-            // Faded rather than removed - a structural change to the
-            // hierarchy at the exact moment the text field is acquiring
-            // focus made SwiftUI drop first responder, and the keyboard
-            // never appeared at all.
-            if !call.state.isLive {
-                // Full-screen layer; the menu anchors itself to the bottom-right
-                // corner and paints no background, so it costs nothing when
-                // closed.
-                RadialTileMenu(isOpen: $isMenuOpen, onSelect: open(tile:))
-                .opacity(isComposerActive ? 0 : 1)
-                .allowsHitTesting(!isComposerActive)
-                .animation(.easeOut(duration: 0.18), value: isComposerActive)
-                .zIndex(2)
-            }
+            // The launcher. Invisible and untouchable until a press is held,
+            // which is why it can sit over the entire app: it takes its
+            // touches from a recogniser on the window rather than from the
+            // view hierarchy, so nothing underneath loses a tap to it.
+            //
+            // Off during a call — the call screen owns the whole surface, and
+            // its own gestures are the ones that should answer — off while the
+            // keyboard is up, where a hold means text selection, and off
+            // behind a presented tile. That last one is not cosmetic: a sheet
+            // is a separate presentation but the same *window*, so the
+            // recogniser still fires under it while this layer draws behind
+            // it. The fan would be invisible and the release would silently
+            // change the screen the sheet is covering.
+            RadialPressMenu(
+                isEnabled: !call.state.isLive && !isComposerActive && presentedTile == nil,
+                exclusions: pressExclusions,
+                onSelect: open(tile:)
+            )
+            .zIndex(2)
 
             if call.state.isLive {
                 if isCallMinimized {
                     // Floats over the app rather than pushing it down, so
                     // minimising does not reflow whatever you minimised it to
-                    // go and look at. Full-width, just above the tab bar.
+                    // go and look at. Full-width, along the bottom.
                     VStack {
                         Spacer()
                         MinimizedCallBar(call: call, session: session) {
@@ -125,9 +112,10 @@ struct RootView: View {
                             }
                         }
                         .padding(.horizontal, Theme.Space.xs)
-                        // Clears the tab bar, so it never sits on top of Ask
-                        // and Library.
-                        .padding(.bottom, 54)
+                        // Was 54 to clear the tab bar. There is no tab bar and
+                        // no launcher down here any more, so the bar can sit
+                        // where it belongs.
+                        .padding(.bottom, Theme.Space.xs)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .zIndex(1)
@@ -189,6 +177,9 @@ struct RootView: View {
                 .environmentObject(state)
         }
         .environmentObject(call)
+        // Lets a navigation bar anywhere in the app route without being handed
+        // a closure through three initialisers. See TileDestinationsMenu.
+        .environment(\.openTile, open(tile:))
     }
 
     /// One routing table for both launchers: tabs for the two tab-native

@@ -69,13 +69,20 @@ final class ATARUUITests: XCTestCase {
 
     /// Navigates to the document library.
     ///
-    /// There is no tab bar any more — the radial dial is the app's only
-    /// navigation, so a test has to open it the same way a thumb does: one tap
-    /// latches the fan open, then the tile takes the tap.
+    /// Through the navigation bar's destinations menu, not the radial
+    /// launcher. The launcher takes its touches from a recogniser on the
+    /// window and never participates in hit-testing, so there is nothing there
+    /// for XCUITest to tap — which is the same reason VoiceOver and Switch
+    /// Control cannot use it, and the reason this menu exists.
+    ///
+    /// That makes this test the guard on the accessible route: if the menu is
+    /// ever dropped as redundant, this fails rather than the app silently
+    /// becoming unnavigable for anyone who cannot press-and-sweep.
     private func openLibrary() {
         app.buttons["open-menu"].tap()
-        let tile = app.buttons["tile-documents"]
-        XCTAssertTrue(tile.waitForExistence(timeout: 5), "the dial did not open")
-        tile.tap()
+        let item = app.buttons["Docs"]
+        XCTAssertTrue(item.waitForExistence(timeout: 5),
+                      "the destinations menu did not open")
+        item.tap()
     }
 }

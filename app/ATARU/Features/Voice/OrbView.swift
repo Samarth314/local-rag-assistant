@@ -28,14 +28,26 @@ struct OrbView: View {
     /// The web engine's natural canvas; call sites scale from here.
     private static let side: CGFloat = 260
 
+    /// Reduce Motion, or a UI test run.
+    ///
+    /// The test half is not about motion sickness. `TimelineView(.animation)`
+    /// redraws forever, and XCUITest waits for the app to be *idle* around
+    /// every synthesised event — an app that never stops animating never goes
+    /// idle. On the Ask screen that turned a single tap into an eight-second
+    /// round trip that ended with the text field never taking focus, failing
+    /// the typed-question test with "Neither element nor any descendant has
+    /// keyboard focus". Freezing the orb under test is what makes this screen
+    /// testable at all.
+    private var isStill: Bool { reduceMotion || RuntimeMode.isUITesting }
+
     var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { timeline in
+        TimelineView(.animation(minimumInterval: nil, paused: isStill)) { timeline in
             Canvas { context, size in
                 engine.render(into: context, size: size,
                               now: timeline.date,
                               config: OrbConfig.for(phase),
                               level: min(max(level(), 0), 1),
-                              frozen: reduceMotion)
+                              frozen: isStill)
             }
         }
         .frame(width: Self.side, height: Self.side)

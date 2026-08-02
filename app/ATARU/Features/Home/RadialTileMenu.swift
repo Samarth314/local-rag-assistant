@@ -96,207 +96,325 @@ enum HomeTile: String, CaseIterable, Identifiable {
     }
 }
 
-/// Hold, sweep a thumb, release to choose.
+// MARK: - Layout
+
+/// Where each tile goes for one particular press.
 ///
-/// ## Why a ring rather than a menu
+/// Solved once when the press lands and then held for its duration, so the fan
+/// never rearranges under a moving thumb — and so the arithmetic runs once
+/// rather than on every touch-moved event.
+struct RadialFan: Equatable {
+    /// Where the finger actually went down.
+    let anchor: CGPoint
+    /// Where the fan is centred. Usually the same as `anchor`; it separates
+    /// only when no orientation fits and the whole cluster has to be nudged
+    /// inward. Angles are measured from here, so a sweep still points at what
+    /// it looks like it points at.
+    let origin: CGPoint
+    let offsets: [CGSize]
+
+    let innerRadius: Double
+    let outerRadius: Double
+    let innerCount: Int
+    let count: Int
+    let centerAngle: Double
+    let innerSweep: Double
+    let outerSweep: Double
+
+    /// Travel below this is a wobble, not a choice — and releasing inside it
+    /// is how you cancel.
+    static let deadZone: Double = 34
+
+    /// Radius of one bubble plus the breathing room it wants from the edge.
+    static let clearance: Double = 30
+
+    // Two rings, because sixteen tiles on one arc either overlap or need a
+    // radius no thumb can reach. The outer arc is the narrower of the two:
+    // its ends are the points that run into the left and right edges first,
+    // so pulling them in is what buys the whole fan its room.
+    private static let innerSweepDefault = Double.pi * 176 / 180
+    private static let outerSweepDefault = Double.pi * 140 / 180
+
+    /// Straight up. The hand comes from the bottom of the phone, so anywhere
+    /// else is a direction the palm covers.
+    private static let preferredAngle = -Double.pi / 2
+
+    /// Fits the fan around `point`, keeping every bubble inside `field`.
+    ///
+    /// `field` is the region a bubble *centre* may occupy — already inset by
+    /// `clearance` — so containment here means visibly clear of the edge, not
+    /// merely touching it.
+    ///
+    /// Two knobs, in order of preference. First the orientation: the fan turns
+    /// away from whichever edges are close, which is why pressing low fans up
+    /// and pressing at the left edge fans right. Then, only if no orientation
+    /// fits, the whole cluster slides inward — a last resort, because sliding
+    /// moves the tiles away from the thumb that has to reach them.
+    static func solve(at point: CGPoint, in field: CGRect, count: Int) -> RadialFan {
+        let anchor = CGPoint(x: min(max(point.x, field.minX), field.maxX),
+                             y: min(max(point.y, field.minY), field.maxY))
+        let innerCount = min(8, count)
+        let outerCount = count - innerCount
+        let innerSweep = innerSweepDefault
+        let outerSweep = outerSweepDefault
+
+        // Scaled to the screen rather than fixed, so a narrow phone gets a
+        // smaller fan instead of one that has to be shoved sideways to fit.
+        // The half-width of the outer arc is `radius * sin(sweep / 2)`, so
+        // inverting that gives the largest radius the field can hold.
+        let widthLimit = (field.width / 2) / sin(outerSweep / 2)
+        let outerRadius = max(96, min(172, widthLimit, field.height * 0.45))
+        let innerRadius = outerRadius * 0.665
+
+        func offsets(_ centerAngle: Double) -> [CGSize] {
+            (0..<count).map { index in
+                let isInner = index < innerCount
+                let indexInRing = isInner ? index : index - innerCount
+                let ringCount = isInner ? innerCount : outerCount
+                let radius = isInner ? innerRadius : outerRadius
+                let sweep = isInner ? innerSweep : outerSweep
+                let step = ringCount > 1 ? sweep / Double(ringCount - 1) : 0
+                let angle = centerAngle - sweep / 2 + step * Double(indexInRing)
+                return CGSize(width: radius * cos(angle), height: radius * sin(angle))
+            }
+        }
+
+        /// How far this orientation would have to be dragged back on screen,
+        /// and by how much it cannot be saved at all.
+        func fit(_ offsets: [CGSize]) -> (shift: CGSize, overflow: Double) {
+            var box = CGRect(x: anchor.x, y: anchor.y, width: 0, height: 0)
+            for offset in offsets {
+                box = box.union(CGRect(x: anchor.x + offset.width,
+                                       y: anchor.y + offset.height,
+                                       width: 0, height: 0))
+            }
+            var shift = CGSize.zero
+            var overflow: Double = 0
+
+            if box.width <= field.width {
+                shift.width = max(0, field.minX - box.minX) - max(0, box.maxX - field.maxX)
+            } else {
+                shift.width = field.midX - box.midX
+                overflow += box.width - field.width
+            }
+            if box.height <= field.height {
+                shift.height = max(0, field.minY - box.minY) - max(0, box.maxY - field.maxY)
+            } else {
+                shift.height = field.midY - box.midY
+                overflow += box.height - field.height
+            }
+            return (shift, overflow)
+        }
+
+        // Start from the direction with the most room, then try every 15°
+        // around from there. Turning is cheap (40pt of penalty per radian,
+        // so a right angle costs about 63pt); not fitting is not (×4).
+        var best: (angle: Double, offsets: [CGSize], shift: CGSize, score: Double)?
+        for step in 0...24 {
+            // 0, +15, -15, +30, -30 … so ties resolve toward the ideal.
+            let turn = Double((step + 1) / 2) * (step % 2 == 0 ? 1 : -1) * .pi / 12
+            let angle = preferredAngle + turn
+            let candidate = offsets(angle)
+            let (shift, overflow) = fit(candidate)
+            let score = hypot(shift.width, shift.height)
+                + overflow * 4
+                + abs(turn) * 40
+            if best == nil || score < best!.score {
+                best = (angle, candidate, shift, score)
+            }
+            // Every remaining candidate turns at least this far, so none of
+            // them can beat what we already have.
+            if let best, abs(turn) * 40 >= best.score { break }
+        }
+
+        let chosen = best!
+        return RadialFan(
+            anchor: anchor,
+            origin: CGPoint(x: anchor.x + chosen.shift.width,
+                            y: anchor.y + chosen.shift.height),
+            offsets: chosen.offsets,
+            innerRadius: innerRadius,
+            outerRadius: outerRadius,
+            innerCount: innerCount,
+            count: count,
+            centerAngle: chosen.angle,
+            innerSweep: innerSweep,
+            outerSweep: outerSweep
+        )
+    }
+
+    /// Which tile the thumb is currently pointing at, by index.
+    ///
+    /// Matched by ring-then-angle rather than by nearest bubble. Nearest-bubble
+    /// makes the outer ring almost unreachable: it sits 172pt out, and a thumb
+    /// pivoting from the base of the hand rarely travels that far. Here the
+    /// distance only has to cross the halfway line to mean "outer", so both
+    /// rings are inside comfortable reach.
+    func index(at point: CGPoint) -> Int? {
+        guard hypot(point.x - anchor.x, point.y - anchor.y) > Self.deadZone else { return nil }
+
+        let dx = Double(point.x - origin.x)
+        let dy = Double(point.y - origin.y)
+        let distance = hypot(dx, dy)
+        let outerCount = count - innerCount
+        let isInner = distance < (innerRadius + outerRadius) / 2 || outerCount == 0
+
+        let ringCount = isInner ? innerCount : outerCount
+        let sweep = isInner ? innerSweep : outerSweep
+        guard ringCount > 1 else { return ringCount == 1 ? (isInner ? 0 : innerCount) : nil }
+        let step = sweep / Double(ringCount - 1)
+
+        // Angle relative to the arc's first tile, wrapped into (-π, π] so the
+        // comparison works whichever way the fan is turned.
+        let raw = atan2(dy, dx) - (centerAngle - sweep / 2)
+        let relative = atan2(sin(raw), cos(raw))
+        // Half a step of tolerance past each end, and nothing beyond: sweeping
+        // behind the fan should select nothing, not clamp to whichever end
+        // happens to be closest.
+        guard relative >= -step / 2, relative <= sweep + step / 2 else { return nil }
+
+        let indexInRing = min(ringCount - 1, max(0, Int((relative / step).rounded())))
+        return isInner ? indexInRing : innerCount + indexInRing
+    }
+}
+
+// MARK: - View
+
+/// Hold anywhere, sweep a thumb, release to choose.
 ///
-/// A tap-then-tap menu costs two deliberate acts and a look. This costs one
-/// press you never lift: options fan out under the thumb already touching the
-/// screen, and the choice is made by *where you let go*. Nothing is committed
-/// until release, so sliding back to the centre cancels — the gesture is
+/// ## Why it is invisible
+///
+/// The launcher used to be a circle parked at the bottom of every screen. It
+/// worked, and it was still a permanent piece of chrome advertising a menu
+/// that is only wanted for the half second someone reaches for it. So it is
+/// gone: the app shows its content and nothing else until a thumb is held
+/// down, and the fan opens *at the thumb* rather than somewhere it has to be
+/// travelled to.
+///
+/// ## Why release commits
+///
+/// One press you never lift, instead of tap-then-tap. Nothing is committed
+/// until release, so sliding back to the middle cancels — the gesture stays
 /// reversible right up to the last moment, which is what makes it safe to
 /// explore blind.
 ///
-/// It collapses to a single circle at rest because a launcher that is always
-/// open is just a menu bar. The point is that the app looks like almost
-/// nothing until you reach for it.
-struct RadialTileMenu: View {
-    /// Owned by the parent so it can dim the app behind the fan — a scrim
-    /// drawn from in here could not extend past this view's bounds.
-    @Binding var isOpen: Bool
+/// ## What is not here
+///
+/// No hit-testing, at all. Touches arrive from a recogniser on the window (see
+/// `PressAnywhere`) and the bubbles are pure drawing, so this layer can sit
+/// over the entire app permanently without intercepting a single tap. It also
+/// means the fan is unreachable by VoiceOver and Switch Control, which cannot
+/// press-and-sweep — the destinations menu in the navigation bar exists to be
+/// that path, and must not be removed on the grounds that the dial does the
+/// same job.
+struct RadialPressMenu: View {
+    /// Off during a call and while the keyboard is up.
+    var isEnabled: Bool
+    /// Places where holding already means something. See `PressAnywhere`.
+    var exclusions: [CGRect]
     let onSelect: (HomeTile) -> Void
 
-    /// Opened by a tap rather than a hold, so it stays put and the tiles can be
-    /// tapped individually. Holding and sweeping is the fast path; this is the
-    /// one that works when you are not already committed to a direction, and
-    /// the one VoiceOver and Switch Control can actually reach.
-    @State private var isLatched = false
-    @State private var highlighted: HomeTile?
-    /// Distinguishes a sweep from a tap: a gesture that never left the dead
-    /// zone was a tap, whatever its duration.
-    @State private var didSweep = false
+    @State private var fan: RadialFan?
+    @State private var highlighted: Int?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Two rings now that every surface is present: eight core tiles close
-    /// in, the rest of the homelab on an outer arc. 114/176 is the largest
-    /// pair that keeps both arcs on a phone with the dial bottom-centre.
-    private let innerRadius: Double = 114
-    private let outerRadius: Double = 176
-    /// Ignore travel this small: a press always wobbles a little, and a wobble
-    /// is not a choice.
-    private let deadZone: CGFloat = 34
-
-    private var tiles: [HomeTile] { HomeTile.allCases }
-
-    /// How far the dial sits above the bottom edge. The fan is laid out from
-    /// the same anchor, so both stay put as it opens.
-    ///
-    /// Small, because the dial now stands where the tab bar stood: it is the
-    /// app's only permanent navigation, so it belongs in the band the eye
-    /// already goes to, not floating above it.
-    private let bottomInset: CGFloat = 6
-
-    /// Vertical space screens should leave clear at the bottom, so their
-    /// content does not slide under the dial. This is the tab bar's old job,
-    /// and roughly its old height.
-    static let reservedHeight: CGFloat = 76
+    private let tiles = HomeTile.allCases
+    private let bubbleSize: CGFloat = 44
 
     var body: some View {
-        // Full-screen and anchored to the bottom centre, rather than a box
-        // that grows when the fan opens. A resizing frame pushed the dial out
-        // of place and ran tiles off screen — and hit-testing is clipped to a
-        // view's bounds, so a small frame could never let the tiles be tapped
-        // however far outside they were drawn.
-        //
-        // Nothing here paints a background, so the empty area stays
-        // untouchable and the app underneath keeps working normally.
-        ZStack(alignment: .bottom) {
-            if isOpen {
-                ForEach(Array(tiles.enumerated()), id: \.element.id) { index, tile in
-                    TileBubble(tile: tile, isHighlighted: highlighted == tile)
-                        .offset(offset(for: index))
-                        .padding(.bottom, bottomInset)
-                        // Tappable only when latched; during a sweep the choice
-                        // comes from the drag's direction, not from hit-testing.
-                        .allowsHitTesting(isLatched)
-                        .onTapGesture {
-                            close()
-                            Haptics.fire(.success)
-                            onSelect(tile)
-                        }
-                        .transition(.scale(scale: 0.2).combined(with: .opacity))
-                }
-            }
+        GeometryReader { geo in
+            // Global, because the recogniser reports window coordinates and
+            // this layer is inset by the safe area — the fan should keep clear
+            // of the notch and the home indicator, not merely of the screen.
+            let frame = geo.frame(in: .global)
 
-            centerButton
-                .padding(.bottom, bottomInset)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-    }
+            ZStack {
+                if let fan {
+                    Color.black.opacity(0.55)
+                        .ignoresSafeArea()
 
-    private var centerButton: some View {
-        Circle()
-            .fill(Ataru.metal)
-            .overlay { Circle().strokeBorder(Theme.cyanSubdued, lineWidth: 1) }
-            .overlay {
-                Image(systemName: isOpen ? "circle.grid.3x3.fill" : "circle.grid.3x3")
-                    .font(.system(size: 22, weight: .light))
-                    .foregroundStyle(Theme.cyan)
-            }
-            .frame(width: 64, height: 64)
-            .shadow(color: .black.opacity(0.35), radius: 14, y: 8)
-            .scaleEffect(isOpen ? 0.86 : 1)
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isOpen { open() }
-                        update(for: value.translation)
+                    // Marks the pivot, and shows how far back is far enough to
+                    // cancel.
+                    Circle()
+                        .strokeBorder(Theme.cyanSubdued.opacity(0.5), lineWidth: 1)
+                        .frame(width: RadialFan.deadZone * 2,
+                               height: RadialFan.deadZone * 2)
+                        .position(fan.origin)
+
+                    ForEach(Array(tiles.prefix(fan.offsets.count).enumerated()),
+                            id: \.element.id) { index, tile in
+                        let offset = fan.offsets[index]
+                        TileBubble(tile: tile,
+                                   isHighlighted: highlighted == index,
+                                   size: bubbleSize)
+                            .position(x: fan.origin.x + offset.width,
+                                      y: fan.origin.y + offset.height)
+                            // Scaled about the pivot rather than about itself,
+                            // so the tiles read as thrown out from under the
+                            // thumb instead of simply fading in where they land.
+                            .transition(
+                                .scale(scale: 0.2, anchor: anchor(for: offset))
+                                    .combined(with: .opacity))
                     }
-                    .onEnded { _ in commit() }
-            )
-            // A shape with a gesture, not a Button, so the trait and the
-            // identifier have to be stated: without them it is invisible to
-            // Switch Control and to UI tests alike.
-            .accessibilityElement()
-            .accessibilityAddTraits(.isButton)
-            .accessibilityIdentifier("open-menu")
-            .accessibilityLabel("Open menu")
-            .accessibilityHint("Hold and slide to a destination, then release.")
-            // VoiceOver cannot sweep, so every destination is offered as a
-            // plain action instead of leaving the menu unreachable.
-            .accessibilityActions {
-                ForEach(tiles) { tile in
-                    Button(tile.title) { onSelect(tile) }
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
+            .background(
+                PressAnywhere(
+                    isEnabled: isEnabled,
+                    exclusions: exclusions,
+                    onBegan: { open(at: $0, in: frame, size: geo.size) },
+                    onMoved: { move(to: $0, in: frame) },
+                    onEnded: commit
+                )
+            )
+        }
+        // Never takes a touch. Every one of them arrives from the window
+        // recogniser instead, which is what lets this sit over the whole app.
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
-    // MARK: - Geometry
-
-    /// Two half-circle arcs above the dial: the first eight tiles on the
-    /// inner ring, the rest on the outer. Both use the full 180 degrees;
-    /// nothing fans downward, where a hand would cover it.
-    private func offset(for index: Int) -> CGSize {
-        let ring = index < 8 ? 0 : 1
-        let indexInRing = ring == 0 ? index : index - 8
-        let count = ring == 0 ? min(tiles.count, 8) : tiles.count - 8
-        let radius = ring == 0 ? innerRadius : outerRadius
-        let spread = Double.pi                 // left, over the top, to right
-        let start = -Double.pi                 // straight left
-        let step = count > 1 ? spread / Double(count - 1) : 0
-        let angle = start + step * Double(indexInRing)
-        return CGSize(width: radius * cos(angle), height: radius * sin(angle))
-    }
-
-    /// Nearest bubble to the thumb, by straight-line distance - with two
-    /// rings, matching by angle alone cannot tell inner from outer.
-    private func tile(nearest translation: CGSize) -> HomeTile? {
-        let distance = hypot(translation.width, translation.height)
-        guard distance > deadZone else { return nil }
-
-        return tiles.indices.min { lhs, rhs in
-            bubbleDistance(translation, to: lhs) < bubbleDistance(translation, to: rhs)
-        }.map { tiles[$0] }
-    }
-
-    private func bubbleDistance(_ translation: CGSize, to index: Int) -> Double {
-        let target = offset(for: index)
-        return hypot(Double(translation.width) - Double(target.width),
-                     Double(translation.height) - Double(target.height))
+    /// The pivot, expressed in the bubble's own unit space. Values outside
+    /// 0...1 are exactly the point: the pivot is nowhere near the bubble.
+    private func anchor(for offset: CGSize) -> UnitPoint {
+        UnitPoint(x: 0.5 - offset.width / bubbleSize,
+                  y: 0.5 - offset.height / bubbleSize)
     }
 
     // MARK: - Gesture
 
-    private func open() {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.75)) {
-            isOpen = true
+    private func open(at point: CGPoint, in frame: CGRect, size: CGSize) {
+        let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
+        let field = CGRect(origin: .zero, size: size)
+            .insetBy(dx: RadialFan.clearance, dy: RadialFan.clearance)
+        guard field.width > 0, field.height > 0 else { return }
+
+        highlighted = nil
+        withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.78)) {
+            fan = RadialFan.solve(at: local, in: field, count: tiles.count)
         }
         Haptics.fire(.tap)
     }
 
-    private func update(for translation: CGSize) {
-        let next = tile(nearest: translation)
-        if next != nil { didSweep = true }
+    private func move(to point: CGPoint, in frame: CGRect) {
+        guard let fan else { return }
+        let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
+        let next = fan.index(at: local)
         guard next != highlighted else { return }
         highlighted = next
         if next != nil { Haptics.fire(.selection) }
     }
 
     private func commit() {
-        let chosen = highlighted
-        let swept = didSweep
-        didSweep = false
+        let chosen = highlighted.map { tiles[$0] }
         highlighted = nil
-
-        // A press that never swept was a tap: leave the fan up so the tiles can
-        // be read and tapped, instead of flashing open and shut.
-        guard swept else {
-            if isLatched { close() } else { isLatched = true }
-            return
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+            fan = nil
         }
-
-        close()
         guard let chosen else { return }
         Haptics.fire(.success)
         onSelect(chosen)
-    }
-
-    private func close() {
-        withAnimation(reduceMotion ? nil : .spring(response: 0.26, dampingFraction: 0.8)) {
-            isOpen = false
-        }
-        isLatched = false
-        highlighted = nil
     }
 }
 
@@ -304,18 +422,19 @@ struct RadialTileMenu: View {
 private struct TileBubble: View {
     let tile: HomeTile
     let isHighlighted: Bool
+    let size: CGFloat
 
     var body: some View {
         VStack(spacing: 3) {
             Image(systemName: tile.symbol)
-                .font(.system(size: 13, weight: .light))
+                .font(.system(size: 14, weight: .light))
             Text(tile.title)
-                .font(.system(size: 7.5, weight: .medium))
+                .font(.system(size: 8, weight: .medium))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .foregroundStyle(foreground)
-        .frame(width: 48, height: 48)
+        .foregroundStyle(isHighlighted ? Theme.cyan : Theme.textSecondary)
+        .frame(width: size, height: size)
         .background(Ataru.metal, in: Circle())
         .overlay {
             Circle().strokeBorder(
@@ -324,19 +443,7 @@ private struct TileBubble: View {
             )
         }
         .shadow(color: .black.opacity(0.3), radius: 10, y: 6)
-        .scaleEffect(isHighlighted ? 1.12 : 1)
+        .scaleEffect(isHighlighted ? 1.18 : 1)
         .animation(.spring(response: 0.2, dampingFraction: 0.7), value: isHighlighted)
-        // Exposed rather than hidden. The dial's own accessibilityActions
-        // cover VoiceOver, but Switch Control and UI tests drive real elements
-        // — and a launcher only reachable by sweeping a thumb is reachable by
-        // neither.
-        .accessibilityElement()
-        .accessibilityLabel(tile.title)
-        .accessibilityAddTraits(.isButton)
-        .accessibilityIdentifier("tile-\(tile.rawValue)")
-    }
-
-    private var foreground: Color {
-        isHighlighted ? Theme.cyan : Theme.textSecondary
     }
 }

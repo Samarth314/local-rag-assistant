@@ -19,6 +19,9 @@ struct DocumentsView: View {
             .navigationBarTitleDisplayMode(.large)
             .searchable(text: $model.query, prompt: "Search titles and paths")
             .toolbar {
+                // Without this the Library is a dead end for anyone who
+                // cannot press-and-sweep. See TileDestinationsMenu.
+                ToolbarItem(placement: .topBarLeading) { TileDestinationsMenu() }
                 ToolbarItem(placement: .topBarTrailing) { sortMenu }
             }
             .refreshable { await model.refresh() }

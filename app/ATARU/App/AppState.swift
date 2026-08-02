@@ -27,7 +27,7 @@ final class AppState: ObservableObject {
         // UI tests get a throwaway defaults suite and an in-memory token, so a
         // run never inherits whatever server the simulator was last pointed at
         // — otherwise the suite passes or fails based on leftover state.
-        let isUITesting = ProcessInfo.processInfo.arguments.contains("-ATARUUITesting")
+        let isUITesting = RuntimeMode.isUITesting
         self.defaults = defaults
             ?? (isUITesting ? UserDefaults(suiteName: "ataru.uitests")! : .standard)
         self.tokenStore = tokenStore ?? (isUITesting ? InMemoryTokenStore() : KeychainTokenStore())

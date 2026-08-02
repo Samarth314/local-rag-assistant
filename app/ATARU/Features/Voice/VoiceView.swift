@@ -55,6 +55,9 @@ struct VoiceView: View {
             .navigationTitle("Ask")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The only route between screens that does not require
+                // press-and-sweep. Not decoration — see TileDestinationsMenu.
+                ToolbarItem(placement: .topBarLeading) { TileDestinationsMenu() }
                 ToolbarItem(placement: .topBarTrailing) {
                     NavigationLink {
                         SettingsView()
@@ -141,6 +144,10 @@ struct VoiceView: View {
             model?.orbLevel ?? 0
         }
         .contentShape(Circle())
+        // Holding the orb is how you ask a question. Without this the radial
+        // launcher would open a third of a second into every spoken question
+        // and cancel the recording underneath it.
+        .pressMenuExclusion()
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -234,6 +241,10 @@ struct VoiceView: View {
                 RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
                     .strokeBorder(Theme.border, lineWidth: 1)
             }
+            // A hold on a text field is how iOS offers the magnifier and
+            // "Paste". The launcher must not take that away, even before the
+            // field has focus.
+            .pressMenuExclusion()
 
             if model.phase == .speaking {
                 Button("Stop") { model.stopSpeaking() }
