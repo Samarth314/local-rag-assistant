@@ -10,7 +10,10 @@ struct DocumentCard: View {
 
     var body: some View {
         ATCard {
-            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            // Interior air. The three rows sat 8pt apart, which read as one
+            // dense block; at 12pt the title, excerpt and metadata separate
+            // into layers the eye can take one at a time.
+            VStack(alignment: .leading, spacing: Theme.Space.s) {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.Space.xs) {
                     Text(document.title)
                         .font(.ataruBody())

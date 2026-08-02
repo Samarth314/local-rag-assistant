@@ -88,7 +88,8 @@ struct DocumentsView: View {
             }
         }
         .padding(.horizontal, Theme.Space.screen)
-        .padding(.bottom, Theme.Space.s)
+        // A clear pause between the filters and the list below them.
+        .padding(.bottom, Theme.Space.m)
     }
 
     private var countLabel: String {
@@ -107,7 +108,11 @@ struct DocumentsView: View {
 
     private var list: some View {
         ScrollView {
-            LazyVStack(spacing: Theme.Space.s) {
+            // Gutter-sized gaps between cards. The tighter list read as a
+            // solid wall of panels; at this spacing each document floats on
+            // the backdrop instead, which is most of what "less cramped"
+            // means on this screen.
+            LazyVStack(spacing: Theme.Space.m) {
                 HStack {
                     // "11 of 11" is noise; the fraction only means something
                     // once a filter is actually hiding things.
