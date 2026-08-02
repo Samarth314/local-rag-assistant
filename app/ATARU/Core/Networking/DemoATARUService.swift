@@ -77,6 +77,64 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
 
     func registerVoIPToken(_ token: String, environment: String) async throws {}
 
+    // MARK: Plan (in-memory)
+
+    /// A working plan, so the tile is fully exercisable in Demo: add, check
+    /// off, remove - state lives for the process and resets on relaunch,
+    /// which is exactly what a demo wants.
+    private static let planLock = NSLock()
+    nonisolated(unsafe) private static var planState = DailyPlan(
+        date: DailyPlan.todayKey,
+        top3: [PlanItem(text: "Review the demo pull request", done: false),
+               PlanItem(text: "Gym before lunch", done: true),
+               PlanItem(text: "Ship the sandbox build", done: false)],
+        also: [PlanItem(text: "Water the plants", done: false)])
+
+    private func withPlan(_ mutate: (DailyPlan) -> DailyPlan) -> DailyPlan {
+        Self.planLock.lock()
+        defer { Self.planLock.unlock() }
+        Self.planState = mutate(Self.planState)
+        return Self.planState
+    }
+
+    func plan() async throws -> DailyPlan {
+        try await pause()
+        return withPlan { $0 }
+    }
+
+    func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan {
+        try await pause()
+        return withPlan { plan in
+            var top = plan.top3, rest = plan.also
+            if top3, top.count < 3 { top.append(PlanItem(text: text, done: false)) }
+            else { rest.append(PlanItem(text: text, done: false)) }
+            return DailyPlan(date: plan.date, top3: top, also: rest)
+        }
+    }
+
+    func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan {
+        try await pause()
+        return withPlan { plan in
+            var top = plan.top3, rest = plan.also
+            if section == "top3", top.indices.contains(index) {
+                top[index] = PlanItem(text: top[index].text, done: done)
+            } else if section == "also", rest.indices.contains(index) {
+                rest[index] = PlanItem(text: rest[index].text, done: done)
+            }
+            return DailyPlan(date: plan.date, top3: top, also: rest)
+        }
+    }
+
+    func planRemove(section: String, index: Int) async throws -> DailyPlan {
+        try await pause()
+        return withPlan { plan in
+            var top = plan.top3, rest = plan.also
+            if section == "top3", top.indices.contains(index) { top.remove(at: index) }
+            else if section == "also", rest.indices.contains(index) { rest.remove(at: index) }
+            return DailyPlan(date: plan.date, top3: top, also: rest)
+        }
+    }
+
     private func pause() async throws {
         try await Task.sleep(for: latency)
     }

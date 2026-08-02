@@ -9,61 +9,40 @@ struct VoiceView: View {
     @EnvironmentObject private var state: AppState
     @StateObject private var model: VoiceViewModel
 
-    init() {
+    /// The keyboard's actual owner. Everything that dismisses the keyboard -
+    /// Done, submit, tapping the backdrop, dragging the transcript - goes
+    /// through this one flag; before it existed nothing in the app could
+    /// resign the field and the keyboard stayed up forever.
+    @FocusState private var composerFocused: Bool
+    /// Reported upward so RootView can hide the radial launcher while the
+    /// user is typing - the dial used to float on top of the composer.
+    @Binding private var composerActive: Bool
+
+    init(composerActive: Binding<Bool> = .constant(false)) {
         // Replaced in `.task` once the environment's service is known; a
         // StateObject cannot read the environment during init.
         _model = StateObject(wrappedValue: VoiceViewModel(service: DemoATARUService()))
+        _composerActive = composerActive
     }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                Ataru.backdrop.ignoresSafeArea()
+                Ataru.backdrop
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    // Tapping anywhere that isn't a control puts the keyboard
+                    // away. The orb and buttons sit above this layer, so their
+                    // gestures are untouched.
+                    .onTapGesture { composerFocused = false }
 
-                VStack(spacing: Theme.Space.l) {
-                    FreshnessBanner(state: state.freshness)
-                        .padding(.horizontal, Theme.Space.screen)
-
-                    Spacer(minLength: 0)
-
-                    // The orb IS the talk control. Holding the thing that
-                    // reacts to your voice is a smaller idea to hold in your
-                    // head than a separate button that operates it — the
-                    // instrument and the control are one object.
-                    OrbView(phase: model.phase) { [weak model] in
-                        model?.orbLevel ?? 0
+                GeometryReader { geo in
+                    if geo.size.width > geo.size.height {
+                        landscapeLayout
+                    } else {
+                        portraitLayout
                     }
-                    .contentShape(Circle())
-                    .simultaneousGesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { _ in
-                                guard model.canRecord, model.phase != .listening else { return }
-                                Task { await model.beginListening() }
-                            }
-                            .onEnded { _ in model.endListening() }
-                    )
-                    .accessibilityElement()
-                    .accessibilityLabel("Ask a question")
-                    .accessibilityHint("Double tap to start listening, then double tap again to send.")
-                    .accessibilityAction {
-                        // VoiceOver cannot hold; toggle instead.
-                        if model.phase == .listening {
-                            model.endListening()
-                        } else {
-                            Task { await model.beginListening() }
-                        }
-                    }
-
-                    statusLine
-
-                    Spacer(minLength: 0)
-
-                    typeField
-                        .padding(.bottom, Theme.Space.xs)
-
-                    transcript
                 }
-                .padding(.top, Theme.Space.s)
             }
             .navigationTitle("Ask")
             .navigationBarTitleDisplayMode(.inline)
@@ -76,14 +55,104 @@ struct VoiceView: View {
                     }
                     .accessibilityLabel("Settings")
                 }
+                // The vertical-axis field turns Return into newline, so the
+                // keyboard needs its own explicit way out.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { composerFocused = false }
+                        .font(.ataruLabel())
+                }
             }
         }
         .task(id: ObjectIdentifier(state.service)) {
             model.update(service: state.service)
         }
+        .onChange(of: composerFocused) { _, focused in
+            withAnimation(.easeOut(duration: 0.18)) { composerActive = focused }
+        }
+    }
+
+    // MARK: - Layouts
+
+    /// The original single-column screen.
+    private var portraitLayout: some View {
+        VStack(spacing: Theme.Space.l) {
+            FreshnessBanner(state: state.freshness)
+                .padding(.horizontal, Theme.Space.screen)
+
+            Spacer(minLength: 0)
+
+            orbControl
+
+            statusLine
+
+            Spacer(minLength: 0)
+
+            typeField
+                .padding(.bottom, Theme.Space.xs)
+
+            transcript(maxHeight: 260)
+        }
+        .padding(.top, Theme.Space.s)
+    }
+
+    /// Landscape: orb and status on the left, conversation on the right. The
+    /// portrait stack's fixed heights (260 orb + 54 status + composer + 260
+    /// transcript) do not fit a phone on its side; two columns do.
+    private var landscapeLayout: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: Theme.Space.s) {
+                Spacer(minLength: 0)
+                orbControl
+                    .scaleEffect(0.72)
+                    .frame(width: 190, height: 190)
+                statusLine
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: 250)
+            .padding(.leading, Theme.Space.m)
+
+            VStack(spacing: Theme.Space.s) {
+                FreshnessBanner(state: state.freshness)
+                transcript(maxHeight: .infinity)
+                Spacer(minLength: 0)
+                typeField
+                    .padding(.bottom, Theme.Space.xs)
+            }
+            .padding(.top, Theme.Space.s)
+        }
     }
 
     // MARK: - Pieces
+
+    /// The orb IS the talk control. Holding the thing that reacts to your
+    /// voice is a smaller idea to hold in your head than a separate button
+    /// that operates it - the instrument and the control are one object.
+    private var orbControl: some View {
+        OrbView(phase: model.phase) { [weak model] in
+            model?.orbLevel ?? 0
+        }
+        .contentShape(Circle())
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    guard model.canRecord, model.phase != .listening else { return }
+                    Task { await model.beginListening() }
+                }
+                .onEnded { _ in model.endListening() }
+        )
+        .accessibilityElement()
+        .accessibilityLabel("Ask a question")
+        .accessibilityHint("Double tap to start listening, then double tap again to send.")
+        .accessibilityAction {
+            // VoiceOver cannot hold; toggle instead.
+            if model.phase == .listening {
+                model.endListening()
+            } else {
+                Task { await model.beginListening() }
+            }
+        }
+    }
 
     private var statusLine: some View {
         VStack(spacing: Theme.Space.xs) {
@@ -122,7 +191,7 @@ struct VoiceView: View {
     }
 
     /// Typing lives inline, not behind a sheet. The orb above is the voice
-    /// path; this is the whole text path — one screen, both doors open.
+    /// path; this is the whole text path - one screen, both doors open.
     private var typeField: some View {
         VStack(spacing: Theme.Space.s) {
             HStack(spacing: Theme.Space.s) {
@@ -131,12 +200,13 @@ struct VoiceView: View {
                     .font(.ataruBody())
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1...4)
+                    .focused($composerFocused)
                     .submitLabel(.send)
-                    .onSubmit { model.submitTypedQuestion() }
+                    .onSubmit { submit() }
                     .accessibilityIdentifier("question-field")
 
                 Button {
-                    model.submitTypedQuestion()
+                    submit()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 26))
@@ -166,12 +236,20 @@ struct VoiceView: View {
         .padding(.horizontal, Theme.Space.screen)
     }
 
+    /// Submitting always puts the keyboard away: the answer is about to be
+    /// read (and possibly spoken), which is a reading posture, not a typing
+    /// one. Focus was the missing half of the old submit path.
+    private func submit() {
+        model.submitTypedQuestion()
+        composerFocused = false
+    }
+
     private var canSubmitTyped: Bool {
         !model.typedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder
-    private var transcript: some View {
+    private func transcript(maxHeight: CGFloat) -> some View {
         if model.exchanges.isEmpty {
             Color.clear.frame(height: 120)
         } else {
@@ -184,7 +262,8 @@ struct VoiceView: View {
                 .padding(.horizontal, Theme.Space.screen)
                 .padding(.bottom, Theme.Space.m)
             }
-            .frame(maxHeight: 260)
+            .scrollDismissesKeyboard(.interactively)
+            .frame(maxHeight: maxHeight)
         }
     }
 }

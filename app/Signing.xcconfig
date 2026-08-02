@@ -30,3 +30,8 @@ CODE_SIGN_ENTITLEMENTS = $(ATARU_ENTITLEMENTS)
 // Optional, gitignored, may not exist — hence `#include?` rather than
 // `#include`, which would fail the build when it is absent.
 #include? "Config.xcconfig"
+
+// Tiles host for the Tiles tab (see Info.plist ATARUTilesURL). Empty by
+// default: the tab falls back to its static grid. Set your launcher origin
+// in Config.xcconfig.
+ATARU_TILES_URL =

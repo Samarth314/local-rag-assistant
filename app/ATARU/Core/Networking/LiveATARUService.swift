@@ -140,6 +140,49 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return SpokenAnswer(text: answer.text, source: answer.source, audioURL: nil)
     }
 
+    // MARK: - Plan
+
+    func plan() async throws -> DailyPlan {
+        guard let url = endpoints.url("api/plan") else { throw APIError.invalidURL }
+        let (data, _) = try await perform(request(for: url))
+        return try decode(DTO.Plan.self, from: data).domain
+    }
+
+    func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan {
+        try await planPost("api/plan/add", body: PlanAddBody(text: text, top3: top3))
+    }
+
+    func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan {
+        try await planPost("api/plan/toggle",
+                           body: PlanRowBody(section: section, index: index, done: done))
+    }
+
+    func planRemove(section: String, index: Int) async throws -> DailyPlan {
+        try await planPost("api/plan/remove",
+                           body: PlanRowBody(section: section, index: index, done: true))
+    }
+
+    private func planPost<Body: Encodable>(_ path: String, body: Body) async throws -> DailyPlan {
+        guard let url = endpoints.url(path) else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, _) = try await perform(request)
+        return try decode(DTO.Plan.self, from: data).domain
+    }
+
+    private struct PlanAddBody: Encodable {
+        let text: String
+        let top3: Bool
+    }
+
+    private struct PlanRowBody: Encodable {
+        let section: String
+        let index: Int
+        let done: Bool
+    }
+
     // MARK: - Calls
 
     func registerVoIPToken(_ token: String, environment: String) async throws {

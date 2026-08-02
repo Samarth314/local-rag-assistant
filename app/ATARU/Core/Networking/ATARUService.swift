@@ -56,6 +56,16 @@ protocol ATARUService: AnyObject, Sendable {
     /// The call's closing line, spoken when the caller says they're done.
     func goodbye() async throws -> SpokenAnswer
 
+    // MARK: Plan
+
+    /// Today's plan - the three main things plus the todo list. The same
+    /// vault file the morning call announces and writes by voice; the Plan
+    /// tile is a third view of one list.
+    func plan() async throws -> DailyPlan
+    func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan
+    func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan
+    func planRemove(section: String, index: Int) async throws -> DailyPlan
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -70,6 +80,14 @@ protocol ATARUService: AnyObject, Sendable {
 extension ATARUService {
     /// Backends without streaming (Demo) inherit the blocking path.
     func voiceStream() -> VoiceStreamSession? { nil }
+
+    /// Backends without a plan store report an empty day rather than failing;
+    /// the tile renders its empty state and the rest of the app is untouched.
+    /// (Also keeps the test stubs compiling without learning the vocabulary.)
+    func plan() async throws -> DailyPlan { .empty() }
+    func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan { .empty() }
+    func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan { .empty() }
+    func planRemove(section: String, index: Int) async throws -> DailyPlan { .empty() }
 
     /// Backends without a voice engine greet in the phone's voice.
     func greeting() async throws -> SpokenAnswer {

@@ -39,7 +39,12 @@ struct RootView: View {
         session = stack.session
     }
 
-    enum Tab: Hashable { case ask, library }
+    enum Tab: Hashable { case ask, tiles, library }
+
+    /// True while the Ask composer owns the keyboard. Reported up from
+    /// VoiceView so the radial launcher can get out of the way - the dial
+    /// used to float on top of the keyboard and the composer.
+    @State private var isComposerActive = false
 
     /// Two tabs, plus the call.
     ///
@@ -55,9 +60,17 @@ struct RootView: View {
     var body: some View {
         ZStack {
             TabView(selection: $selection) {
-                VoiceView()
+                VoiceView(composerActive: $isComposerActive)
                     .tabItem { Label("Ask", systemImage: "waveform") }
                     .tag(Tab.ask)
+
+                TilesView(
+                    openAsk: { selection = .ask },
+                    openLibrary: { selection = .library },
+                    openWeb: { webTile = $0 }
+                )
+                .tabItem { Label("Tiles", systemImage: "square.grid.2x2") }
+                .tag(Tab.tiles)
 
                 DocumentsView()
                     .tabItem { Label("Library", systemImage: "tray.full") }
@@ -81,7 +94,10 @@ struct RootView: View {
                     }
             }
 
-            if !call.state.isLive {
+            // Hidden during a call AND while the user is typing: the dial
+            // used to float over the keyboard and the composer, exactly where
+            // a thumb was working.
+            if !call.state.isLive && !isComposerActive {
                 // Full-screen layer; the menu anchors itself to the bottom-right
                 // corner and paints no background, so it costs nothing when
                 // closed.
@@ -93,6 +109,7 @@ struct RootView: View {
                     }
                 }
                 .zIndex(2)
+                .transition(.opacity)
             }
 
             if call.state.isLive {

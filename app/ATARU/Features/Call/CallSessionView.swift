@@ -27,35 +27,13 @@ struct CallSessionView: View {
     @Binding var isMinimized: Bool
 
     var body: some View {
-        VStack(spacing: Ataru.Space.lg) {
-            minimizeBar
-
-            header
-
-            // Orb, then what is being said, then who is saying it. The words
-            // sit directly under the orb because that is where the eye already
-            // is — the orb is what moves, so anything further away gets missed
-            // while someone is mid-sentence.
-            //
-            // Compacted, and not negotiable: the orb's natural size is 260pt,
-            // and at full size this screen's fixed content added up to more
-            // than the display — the transcript's flexible frame was the only
-            // thing that could give, so it silently collapsed to nothing. The
-            // words are the point of this screen; the orb yields.
-            OrbView(phase: session.phase) { [weak session] in
-                session?.orbLevel ?? 0
+        GeometryReader { geo in
+            if geo.size.width > geo.size.height {
+                landscapeBody
+            } else {
+                portraitBody
             }
-            .scaleEffect(0.68)
-            .frame(height: 180)
-
-            transcript
-                .frame(minHeight: 132, maxHeight: .infinity)
-
-            controls
         }
-        .padding(.horizontal, Ataru.Space.gutter)
-        .padding(.top, Ataru.Space.md)
-        .padding(.bottom, Ataru.Space.xl)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
             // An opaque base under the gradient. `callBackdrop` is a scrim —
@@ -76,6 +54,68 @@ struct CallSessionView: View {
             down: { setMinimized(true) }
         )
         .accessibilityElement(children: .contain)
+    }
+
+    /// The original stacked screen.
+    ///
+    /// Orb, then what is being said, then who is saying it. The words sit
+    /// directly under the orb because that is where the eye already is - the
+    /// orb is what moves, so anything further away gets missed mid-sentence.
+    ///
+    /// Compacted, and not negotiable: the orb's natural size is 260pt, and at
+    /// full size this screen's fixed content added up to more than the
+    /// display - the transcript's flexible frame was the only thing that
+    /// could give, so it silently collapsed to nothing. The words are the
+    /// point of this screen; the orb yields.
+    private var portraitBody: some View {
+        VStack(spacing: Ataru.Space.lg) {
+            minimizeBar
+
+            header
+
+            OrbView(phase: session.phase) { [weak session] in
+                session?.orbLevel ?? 0
+            }
+            .scaleEffect(0.68)
+            .frame(height: 180)
+
+            transcript
+                .frame(minHeight: 132, maxHeight: .infinity)
+
+            controls
+        }
+        .padding(.horizontal, Ataru.Space.gutter)
+        .padding(.top, Ataru.Space.md)
+        .padding(.bottom, Ataru.Space.xl)
+    }
+
+    /// On its side the stack cannot fit at all (the portrait sum already
+    /// exceeded a portrait screen once - see above), so landscape goes to two
+    /// columns: orb + state on the left, the words and controls on the right.
+    private var landscapeBody: some View {
+        HStack(spacing: Ataru.Space.lg) {
+            VStack(spacing: Ataru.Space.sm) {
+                minimizeBar
+                Spacer(minLength: 0)
+                OrbView(phase: session.phase) { [weak session] in
+                    session?.orbLevel ?? 0
+                }
+                .scaleEffect(0.55)
+                .frame(width: 150, height: 150)
+                header
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: 230)
+
+            VStack(spacing: Ataru.Space.md) {
+                transcript
+                    .frame(minHeight: 80, maxHeight: .infinity)
+                controls
+            }
+            .padding(.top, Ataru.Space.md)
+        }
+        .padding(.horizontal, Ataru.Space.gutter)
+        .padding(.vertical, Ataru.Space.md)
     }
 
     private func setMinimized(_ minimized: Bool) {
