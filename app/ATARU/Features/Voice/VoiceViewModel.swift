@@ -52,15 +52,19 @@ final class VoiceViewModel: ObservableObject {
             phase = .failed(SpeechDictation.Failure.permissionDenied.localizedDescription)
             return
         }
-        if dictation.vocabulary.isEmpty,
-           let names = try? await service.vocabulary(), !names.isEmpty {
-            dictation.vocabulary = names
-        }
         do {
             try dictation.start()
             partialTranscript = ""
             phase = .listening
             Haptics.fire(.tap)
+            // Refresh for the NEXT turn, off the critical path.
+            if SpeechDictation.sharedVocabulary.isEmpty {
+                Task { [service] in
+                    if let names = try? await service.vocabulary(), !names.isEmpty {
+                        SpeechDictation.sharedVocabulary = names
+                    }
+                }
+            }
         } catch let failure as SpeechDictation.Failure {
             phase = .failed(failure.localizedDescription)
             // On-device dictation missing is not a dead end: typing still works.

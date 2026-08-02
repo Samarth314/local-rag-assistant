@@ -74,7 +74,17 @@ final class SpeechDictation: NSObject, ObservableObject {
     private let captured = SampleBuffer()
     private var converter: AVAudioConverter?
     /// Proper nouns to expect - set from the backend's correspondent list.
+    ///
+    /// Seeded from `sharedVocabulary` at capture time. It must NEVER be
+    /// fetched on the press path: awaiting the server between the button
+    /// going down and the microphone opening meant a hold recorded nothing
+    /// and the release was ignored, so every question came back "I didn't
+    /// hear anything".
     var vocabulary: [String] = []
+
+    /// Roster shared by every dictation instance, refreshed in the background
+    /// when the backend changes. Empty just means unbiased transcription.
+    static var sharedVocabulary: [String] = []
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -124,6 +134,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
 
         transcript = ""
+        if vocabulary.isEmpty { vocabulary = Self.sharedVocabulary }
         captured.reset()
         // Loading is idempotent; the first call downloads, later ones no-op.
         WhisperTranscriber.shared.prepare()

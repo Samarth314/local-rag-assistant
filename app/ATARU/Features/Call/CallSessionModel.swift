@@ -106,8 +106,10 @@ final class CallSessionModel: ObservableObject {
         // Load the name roster once per call. It only makes dictation more
         // likely to hear a name correctly, so a failure here is silent -
         // an unbiased recogniser is exactly what we had before.
-        if let names = try? await service.vocabulary(), !names.isEmpty {
-            dictation.vocabulary = names
+        Task { [service] in
+            if let names = try? await service.vocabulary(), !names.isEmpty {
+                SpeechDictation.sharedVocabulary = names
+            }
         }
 
         // Greet in the server's voice when it has one, so the call opens
