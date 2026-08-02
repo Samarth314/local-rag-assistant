@@ -12,6 +12,9 @@ struct RootView: View {
     /// Lives here rather than in the call screen: a minimised call still exists,
     /// so the state has to outlive that view being torn down.
     @State private var isCallMinimized = false
+    /// Owned here so the app behind the launcher can be dimmed while its fan
+    /// is open.
+    @State private var isMenuOpen = false
 
     // Borrowed from CallStack, never constructed here. A view's init re-runs
     // on any parent update, and constructing call machinery per-init is what
@@ -58,6 +61,39 @@ struct RootView: View {
                     .tag(Tab.library)
             }
             .ataruBackdrop()
+
+            // The launcher: one circle at rest, a fan of destinations while a
+            // thumb is held on it. Sits above the tabs rather than inside a
+            // screen, because it navigates between them.
+            // Dims the app behind the fan, and takes the tap that dismisses
+            // it. Drawn as a sibling because a scrim from inside the menu
+            // could not reach past the menu's own bounds.
+            if isMenuOpen {
+                Color.black.opacity(0.5)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .zIndex(1.5)
+                    .onTapGesture {
+                        withAnimation(.easeOut(duration: 0.2)) { isMenuOpen = false }
+                    }
+            }
+
+            if !call.state.isLive {
+                // Full-screen layer; the menu anchors itself to the bottom-right
+                // corner and paints no background, so it costs nothing when
+                // closed.
+                RadialTileMenu(isOpen: $isMenuOpen) { tile in
+                    switch tile {
+                    case .assistant: selection = .ask
+                    case .documents: selection = .library
+                    // System has no screen of its own yet; Settings is where
+                    // its status actually lives.
+                    case .system: selection = .ask
+                    default: break
+                    }
+                }
+                .zIndex(2)
+            }
 
             if call.state.isLive {
                 if isCallMinimized {

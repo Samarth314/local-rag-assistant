@@ -26,15 +26,39 @@ struct VoiceView: View {
 
                     Spacer(minLength: 0)
 
+                    // The orb IS the talk control. Holding the thing that
+                    // reacts to your voice is a smaller idea to hold in your
+                    // head than a separate button that operates it — the
+                    // instrument and the control are one object.
                     OrbView(phase: model.phase) { [weak model] in
                         model?.orbLevel ?? 0
+                    }
+                    .contentShape(Circle())
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                guard model.canRecord, model.phase != .listening else { return }
+                                Task { await model.beginListening() }
+                            }
+                            .onEnded { _ in model.endListening() }
+                    )
+                    .accessibilityElement()
+                    .accessibilityLabel("Ask a question")
+                    .accessibilityHint("Double tap to start listening, then double tap again to send.")
+                    .accessibilityAction {
+                        // VoiceOver cannot hold; toggle instead.
+                        if model.phase == .listening {
+                            model.endListening()
+                        } else {
+                            Task { await model.beginListening() }
+                        }
                     }
 
                     statusLine
 
                     Spacer(minLength: 0)
 
-                    talkButton
+                    typeField
                         .padding(.bottom, Theme.Space.xs)
 
                     transcript
@@ -53,7 +77,6 @@ struct VoiceView: View {
                     .accessibilityLabel("Settings")
                 }
             }
-            .sheet(isPresented: $model.isShowingTypeField) { typeSheet }
         }
         .task(id: ObjectIdentifier(state.service)) {
             model.update(service: state.service)
@@ -98,59 +121,53 @@ struct VoiceView: View {
             : "Ask about your schedule, mail, records, or anything else."
     }
 
-    private var talkButton: some View {
+    /// Typing lives inline, not behind a sheet. The orb above is the voice
+    /// path; this is the whole text path — one screen, both doors open.
+    private var typeField: some View {
         VStack(spacing: Theme.Space.s) {
-            Button {
-                // The press-and-hold gesture below does the work; this action
-                // fires only for VoiceOver's activate, where "hold" is not a
-                // gesture the user can perform.
-                if model.phase == .listening {
-                    model.endListening()
-                } else {
-                    Task { await model.beginListening() }
-                }
-            } label: {
-                Text(model.phase == .listening ? "Release to ask" : "Hold to speak")
+            HStack(spacing: Theme.Space.s) {
+                TextField("Type instead", text: $model.typedQuestion, axis: .vertical)
+                    .textFieldStyle(.plain)
                     .font(.ataruBody())
-                    .foregroundStyle(model.canRecord || model.phase == .listening
-                                     ? Theme.textPrimary : Theme.textTertiary)
-                    .frame(maxWidth: .infinity, minHeight: Theme.minHitTarget + 12)
-                    .background {
-                        RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
-                            .fill(model.phase == .listening
-                                  ? Theme.cyan.opacity(0.16) : Theme.surface)
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
-                            .strokeBorder(model.phase == .listening
-                                          ? Theme.cyan.opacity(0.6) : Theme.border, lineWidth: 1)
-                    }
-            }
-            .disabled(model.phase.isBusy)
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in
-                        guard model.canRecord, model.phase != .listening else { return }
-                        Task { await model.beginListening() }
-                    }
-                    .onEnded { _ in model.endListening() }
-            )
-            .accessibilityLabel("Ask a question")
-            .accessibilityHint("Double tap to start listening, then double tap again to send.")
+                    .foregroundStyle(Theme.textPrimary)
+                    .lineLimit(1...4)
+                    .submitLabel(.send)
+                    .onSubmit { model.submitTypedQuestion() }
+                    .accessibilityIdentifier("question-field")
 
-            HStack(spacing: Theme.Space.m) {
-                Button("Type instead") { model.isShowingTypeField = true }
-                    .font(.ataruCaption())
-                    .foregroundStyle(Theme.textSecondary)
-
-                if model.phase == .speaking {
-                    Button("Stop") { model.stopSpeaking() }
-                        .font(.ataruCaption())
-                        .foregroundStyle(Theme.amber)
+                Button {
+                    model.submitTypedQuestion()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 26))
+                        .foregroundStyle(canSubmitTyped ? Theme.cyan : Theme.textTertiary)
                 }
+                .disabled(!canSubmitTyped)
+                .accessibilityLabel("Ask")
+                .accessibilityIdentifier("submit-question")
+            }
+            .padding(.horizontal, Theme.Space.m)
+            .frame(minHeight: Theme.minHitTarget + 8)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
+                    .fill(Theme.surface)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+            }
+
+            if model.phase == .speaking {
+                Button("Stop") { model.stopSpeaking() }
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.amber)
             }
         }
         .padding(.horizontal, Theme.Space.screen)
+    }
+
+    private var canSubmitTyped: Bool {
+        !model.typedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     @ViewBuilder
@@ -169,46 +186,6 @@ struct VoiceView: View {
             }
             .frame(maxHeight: 260)
         }
-    }
-
-    private var typeSheet: some View {
-        NavigationStack {
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                Text("Ask in writing")
-                    .font(.ataruTitle())
-                    .foregroundStyle(Theme.textPrimary)
-                TextField("What would you like to know?", text: $model.typedQuestion, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.ataruBody())
-                    .foregroundStyle(Theme.textPrimary)
-                    .lineLimit(2...6)
-                    .padding(Theme.Space.s)
-                    .background {
-                        RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
-                            .fill(Theme.surface)
-                    }
-                    .submitLabel(.send)
-                    .onSubmit { model.submitTypedQuestion() }
-                    .accessibilityIdentifier("question-field")
-                Spacer()
-            }
-            .padding(Theme.Space.screen)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .ataruBackdrop()
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { model.isShowingTypeField = false }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Ask") { model.submitTypedQuestion() }
-                        .disabled(model.typedQuestion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        // "Ask" is also the tab and the navigation title, so
-                        // this button needs an unambiguous handle for tests.
-                        .accessibilityIdentifier("submit-question")
-                }
-            }
-        }
-        .presentationDetents([.medium])
     }
 }
 

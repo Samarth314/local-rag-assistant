@@ -46,8 +46,9 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testTypedQuestionProducesAnAnswer() {
-        app.buttons["Type instead"].tap()
-
+        // The field is inline on the Ask screen now, not behind a sheet —
+        // there is no "Type instead" button to open first.
+        //
         // Queried by identifier across any element type: a multi-line
         // TextField surfaces as a textView on some iOS versions and a
         // textField on others, and the test should not care which.
