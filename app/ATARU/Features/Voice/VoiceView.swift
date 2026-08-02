@@ -28,20 +28,28 @@ struct VoiceView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Ataru.backdrop
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    // Tapping anywhere that isn't a control puts the keyboard
-                    // away. The orb and buttons sit above this layer, so their
-                    // gestures are untouched.
-                    .onTapGesture { composerFocused = false }
+                Ataru.backdrop.ignoresSafeArea()
+
+                // Exists only while the keyboard is up, so it can never
+                // interfere with the tap that ACQUIRES focus - a plain
+                // always-on backdrop tap handler turned out to race the
+                // field's own tap and the keyboard never appeared.
+                if composerFocused {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                        .onTapGesture { composerFocused = false }
+                }
 
                 GeometryReader { geo in
-                    if geo.size.width > geo.size.height {
-                        landscapeLayout
-                    } else {
-                        portraitLayout
+                    Group {
+                        if geo.size.width > geo.size.height {
+                            landscapeLayout
+                        } else {
+                            portraitLayout
+                        }
                     }
+                    .frame(width: geo.size.width, height: geo.size.height)
                 }
             }
             .navigationTitle("Ask")

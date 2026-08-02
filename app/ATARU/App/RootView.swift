@@ -15,9 +15,10 @@ struct RootView: View {
     /// Owned here so the app behind the launcher can be dimmed while its fan
     /// is open.
     @State private var isMenuOpen = false
-    /// The web page a tile opened, if any. Tiles without a native screen show
-    /// the real page rather than nothing.
-    @State private var webTile: URL?
+    /// The native tile screen currently presented, if any. Every tile is
+    /// native now - the grid and the radial dial are two ways of opening the
+    /// same set, and nothing routes to a web page.
+    @State private var presentedTile: HomeTile?
 
     // Borrowed from CallStack, never constructed here. A view's init re-runs
     // on any parent update, and constructing call machinery per-init is what
@@ -64,13 +65,9 @@ struct RootView: View {
                     .tabItem { Label("Ask", systemImage: "waveform") }
                     .tag(Tab.ask)
 
-                TilesView(
-                    openAsk: { selection = .ask },
-                    openLibrary: { selection = .library },
-                    openWeb: { webTile = $0 }
-                )
-                .tabItem { Label("Tiles", systemImage: "square.grid.2x2") }
-                .tag(Tab.tiles)
+                TilesView(onOpen: open(tile:))
+                    .tabItem { Label("Tiles", systemImage: "square.grid.2x2") }
+                    .tag(Tab.tiles)
 
                 DocumentsView()
                     .tabItem { Label("Library", systemImage: "tray.full") }
@@ -94,22 +91,21 @@ struct RootView: View {
                     }
             }
 
-            // Hidden during a call AND while the user is typing: the dial
-            // used to float over the keyboard and the composer, exactly where
-            // a thumb was working.
-            if !call.state.isLive && !isComposerActive {
+            // Hidden during a call, and faded out while the user is typing:
+            // the dial used to float over the keyboard and the composer.
+            // Faded rather than removed - a structural change to the
+            // hierarchy at the exact moment the text field is acquiring
+            // focus made SwiftUI drop first responder, and the keyboard
+            // never appeared at all.
+            if !call.state.isLive {
                 // Full-screen layer; the menu anchors itself to the bottom-right
                 // corner and paints no background, so it costs nothing when
                 // closed.
-                RadialTileMenu(isOpen: $isMenuOpen) { tile in
-                    switch tile.destination {
-                    case .ask: selection = .ask
-                    case .library: selection = .library
-                    case .web(let url): webTile = url
-                    }
-                }
+                RadialTileMenu(isOpen: $isMenuOpen, onSelect: open(tile:))
+                .opacity(isComposerActive ? 0 : 1)
+                .allowsHitTesting(!isComposerActive)
+                .animation(.easeOut(duration: 0.18), value: isComposerActive)
                 .zIndex(2)
-                .transition(.opacity)
             }
 
             if call.state.isLive {
@@ -184,10 +180,21 @@ struct RootView: View {
                 SpeechDictation.sharedVocabulary = names
             }
         }
-        .sheet(item: $webTile) { url in
-            WebTileView(url: url).ignoresSafeArea()
+        .sheet(item: $presentedTile) { tile in
+            TileScreenHost(tile: tile)
+                .environmentObject(state)
         }
         .environmentObject(call)
+    }
+
+    /// One routing table for both launchers: tabs for the two tab-native
+    /// screens, a presented native screen for everything else.
+    private func open(tile: HomeTile) {
+        switch tile {
+        case .assistant: selection = .ask
+        case .documents: selection = .library
+        default: presentedTile = tile
+        }
     }
 }
 

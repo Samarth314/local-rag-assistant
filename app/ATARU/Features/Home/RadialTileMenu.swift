@@ -1,84 +1,99 @@
 import SwiftUI
 
-/// One place ATARU can take you.
+/// Every surface ATARU has, as one routable set.
 ///
-/// Mirrors the tiles on the desktop home page, minus the ones that open native
-/// apps — an iPhone reaches Infuse or Bitwarden from its own Home Screen, and
-/// duplicating those here would be a menu of links to other icons.
+/// This is the single source of truth for destinations: the Tiles grid and
+/// the radial launcher are two ways of launching the SAME set - the grid for
+/// browsing, the dial for muscle memory. Every case opens a native screen;
+/// nothing routes to a web page.
 enum HomeTile: String, CaseIterable, Identifiable {
-    case assistant, documents, finances, health, personal, system, canvas, uikit
+    // Inner ring: the core daily surfaces.
+    case assistant, plan, finance, health, home, status, journal, workspaces
+    // Outer ring: the rest of the homelab.
+    case documents, whiteboard, media, music, passwords, containers,
+         notifications, remote
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .assistant: return "Ask"
-        case .documents: return "Documents"
-        case .finances:  return "Finances"
-        case .health:    return "Health"
-        case .personal:  return "Personal"
-        case .system:    return "System"
-        case .canvas:    return "Canvas"
-        case .uikit:     return "UI kit"
+        case .assistant:     return "Ask"
+        case .plan:          return "Plan"
+        case .finance:       return "Finance"
+        case .health:        return "Health"
+        case .home:          return "Home"
+        case .status:        return "Status"
+        case .journal:       return "Journal"
+        case .workspaces:    return "Spaces"
+        case .documents:     return "Docs"
+        case .whiteboard:    return "Canvas"
+        case .media:         return "Media"
+        case .music:         return "Music"
+        case .passwords:     return "Vault"
+        case .containers:    return "Docker"
+        case .notifications: return "Notify"
+        case .remote:        return "Remote"
         }
     }
 
     var symbol: String {
         switch self {
-        case .assistant: return "waveform"
-        case .documents: return "tray.full"
-        case .finances:  return "dollarsign.circle"
-        case .health:    return "heart.text.square"
-        case .personal:  return "person.crop.circle"
-        case .system:    return "cpu"
-        case .canvas:    return "scribble.variable"
-        case .uikit:     return "paintpalette"
+        case .assistant:     return "waveform"
+        case .plan:          return "checklist"
+        case .finance:       return "dollarsign.circle"
+        case .health:        return "heart.text.square"
+        case .home:          return "lightbulb"
+        case .status:        return "gauge.with.dots.needle.50percent"
+        case .journal:       return "book.closed"
+        case .workspaces:    return "square.stack.3d.up"
+        case .documents:     return "tray.full"
+        case .whiteboard:    return "scribble.variable"
+        case .media:         return "play.rectangle"
+        case .music:         return "music.note"
+        case .passwords:     return "key"
+        case .containers:    return "shippingbox"
+        case .notifications: return "bell.badge"
+        case .remote:        return "display"
         }
     }
 
-    /// Where the tile goes.
-    ///
-    /// Two kinds, because two kinds exist: Ask and Documents are native
-    /// screens; the rest are pages on the server with no native equivalent
-    /// yet. Opening the real page beats greying the tile out — it works today,
-    /// and swapping in a native screen later changes nothing here but this
-    /// one value.
-    enum Destination: Equatable {
-        case ask
-        case library
-        case web(URL)
-    }
-
-    var destination: Destination {
+    /// Subtitle shown on the grid tile.
+    var kind: String {
         switch self {
-        case .assistant: return .ask
-        case .documents: return .library
-        default:
-            // Force-unwrap is safe: these are compile-time literals, and a typo
-            // would fail on the first tap rather than silently doing nothing.
-            return .web(URL(string: Self.webRoot + path)!)
+        case .assistant:     return "Voice · chat"
+        case .plan:          return "Top 3 · todos"
+        case .finance:       return "Spending · net worth"
+        case .health:        return "Labs · meds"
+        case .home:          return "Devices · switches"
+        case .status:        return "System dashboard"
+        case .journal:       return "Write · reflect"
+        case .workspaces:    return "Projects · notes"
+        case .documents:     return "Browse · search"
+        case .whiteboard:    return "AI canvas"
+        case .media:         return "Jellyfin"
+        case .music:         return "Navidrome"
+        case .passwords:     return "Vaultwarden"
+        case .containers:    return "Portainer"
+        case .notifications: return "ntfy"
+        case .remote:        return "Screens"
         }
     }
 
-    private var path: String {
+    /// The launcher manifest key this tile corresponds to, for health dots.
+    var launcherKey: String {
         switch self {
-        case .finances: return "finance/dev/"
-        case .health:   return "health/dev/"
-        case .personal: return "journal/dev/"
-        case .system:   return "status/dev/"
-        case .canvas:   return "canvas/dev/"
-        case .uikit:    return "uikit/"
-        case .assistant, .documents: return ""
+        case .assistant:     return "chat"
+        case .status:        return "dashboard"
+        case .media:         return "jellyfin"
+        case .music:         return "navidrome"
+        case .passwords:     return "vaultwarden"
+        case .containers:    return "portainer"
+        case .notifications: return "ntfy"
+        case .whiteboard:    return "penecho"
+        case .documents:     return "ingest"
+        default:             return rawValue
         }
     }
-
-    /// The web app these pages live on.
-    ///
-    /// Hard-coded for now, and it should not stay that way — it is a different
-    /// host from the RAG server in Settings, so there is nowhere honest to put
-    /// it yet. When the web app moves or gains a Tailnet name, this is the one
-    /// line to change.
-    private static let webRoot = "https://dev.ataru.aryasasikumar.com/"
 }
 
 /// Hold, sweep a thumb, release to choose.
@@ -112,14 +127,11 @@ struct RadialTileMenu: View {
     @State private var didSweep = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// How far the tiles sit from the centre of the button.
-    // Double, not CGFloat: it only ever multiplies `cos`/`sin` of a Double
-    // angle, and mixing the two types makes that expression ambiguous.
-    //
-    // 152 rather than 200: a half circle of eight tiles at 200 runs off both
-    // screen edges. This is the largest radius that keeps the whole arc on a
-    // phone.
-    private let radius: Double = 152
+    /// Two rings now that every surface is present: eight core tiles close
+    /// in, the rest of the homelab on an outer arc. 128/198 is the largest
+    /// pair that keeps both arcs on a phone with the dial bottom-centre.
+    private let innerRadius: Double = 128
+    private let outerRadius: Double = 198
     /// Ignore travel this small: a press always wobbles a little, and a wobble
     /// is not a choice.
     private let deadZone: CGFloat = 34
@@ -196,48 +208,36 @@ struct RadialTileMenu: View {
 
     // MARK: - Geometry
 
-    /// A half circle above the dial.
-    ///
-    /// With the dial centred rather than cornered, the full 180 degrees is
-    /// usable: every tile clears the screen edges and the whole arc stays
-    /// inside one thumb's sweep. Nothing fans downward, where a hand would
-    /// cover it.
+    /// Two half-circle arcs above the dial: the first eight tiles on the
+    /// inner ring, the rest on the outer. Both use the full 180 degrees;
+    /// nothing fans downward, where a hand would cover it.
     private func offset(for index: Int) -> CGSize {
-        let count = max(tiles.count, 1)
-        // A quarter turn, from straight left to straight up. Wider would push
-        // tiles past the right edge — the launcher sits ~50pt from it — and
-        // narrower would overlap them: six 58pt bubbles need about 63pt of arc
-        // each, which is what 90 degrees at this radius buys.
+        let ring = index < 8 ? 0 : 1
+        let indexInRing = ring == 0 ? index : index - 8
+        let count = ring == 0 ? min(tiles.count, 8) : tiles.count - 8
+        let radius = ring == 0 ? innerRadius : outerRadius
         let spread = Double.pi                 // left, over the top, to right
         let start = -Double.pi                 // straight left
         let step = count > 1 ? spread / Double(count - 1) : 0
-        let angle = start + step * Double(index)
+        let angle = start + step * Double(indexInRing)
         return CGSize(width: radius * cos(angle), height: radius * sin(angle))
     }
 
+    /// Nearest bubble to the thumb, by straight-line distance - with two
+    /// rings, matching by angle alone cannot tell inner from outer.
     private func tile(nearest translation: CGSize) -> HomeTile? {
         let distance = hypot(translation.width, translation.height)
         guard distance > deadZone else { return nil }
 
-        // Angle of travel, matched to the nearest tile's angle. Chosen by
-        // direction rather than by proximity to a bubble's centre, so a short
-        // decisive flick selects as reliably as a long careful reach.
-        let angle = atan2(translation.height, translation.width)
-        return tiles.enumerated().min { lhs, rhs in
-            angularDistance(angle, angleFor: lhs.offset) <
-            angularDistance(angle, angleFor: rhs.offset)
-        }?.element
+        return tiles.indices.min { lhs, rhs in
+            bubbleDistance(translation, to: lhs) < bubbleDistance(translation, to: rhs)
+        }.map { tiles[$0] }
     }
 
-    private func angleFor(_ index: Int) -> Double {
-        let size = offset(for: index)
-        return atan2(size.height, size.width)
-    }
-
-    private func angularDistance(_ a: Double, angleFor index: Int) -> Double {
-        var delta = abs(a - angleFor(index))
-        if delta > .pi { delta = 2 * .pi - delta }
-        return delta
+    private func bubbleDistance(_ translation: CGSize, to index: Int) -> Double {
+        let target = offset(for: index)
+        return hypot(Double(translation.width) - Double(target.width),
+                     Double(translation.height) - Double(target.height))
     }
 
     // MARK: - Gesture
@@ -271,8 +271,6 @@ struct RadialTileMenu: View {
         }
 
         close()
-        // Unavailable tiles are shown but not selectable: seeing what is coming
-        // is useful, being dropped on an empty screen is not.
         guard let chosen else { return }
         Haptics.fire(.success)
         onSelect(chosen)
