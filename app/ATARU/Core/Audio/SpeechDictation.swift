@@ -40,12 +40,38 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// Rough input level, 0...1, for the orb.
     @Published private(set) var level: Double = 0
 
+    /// 16 kHz mono copy of this turn's audio, for WhisperKit.
+    ///
+    /// Deliberately NOT main-actor state. Appending each ~23 ms buffer through
+    /// `Task { @MainActor }` flooded the main actor, which starved
+    /// `SFSpeechRecognizer`'s partial updates - and the call loop reads a
+    /// stalled transcript as silence, so it ended turns mid-sentence
+    /// ("When was the last time I got an email from"). The audio thread now
+    /// appends under a lock and never hops.
+    private final class SampleBuffer: @unchecked Sendable {
+        private var samples: [Float] = []
+        private let lock = NSLock()
+
+        func append(_ new: [Float]) {
+            lock.lock(); defer { lock.unlock() }
+            samples.append(contentsOf: new)
+        }
+
+        func drain() -> [Float] {
+            lock.lock(); defer { lock.unlock() }
+            let out = samples
+            samples.removeAll(keepingCapacity: false)
+            return out
+        }
+
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            samples.removeAll(keepingCapacity: true)
+        }
+    }
+
     private let engine = AVAudioEngine()
-    /// 16 kHz mono copy of everything captured this turn, for WhisperKit.
-    /// Apple's recogniser gives instant partials; Whisper gives the accurate
-    /// final read, so both run off the same tap rather than the user speaking
-    /// twice.
-    private var captured: [Float] = []
+    private let captured = SampleBuffer()
     private var converter: AVAudioConverter?
     /// Proper nouns to expect - set from the backend's correspondent list.
     var vocabulary: [String] = []
@@ -98,7 +124,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
 
         transcript = ""
-        captured.removeAll(keepingCapacity: true)
+        captured.reset()
         // Loading is idempotent; the first call downloads, later ones no-op.
         Task { await WhisperTranscriber.shared.prepare() }
         let input = engine.inputNode
@@ -106,12 +132,9 @@ final class SpeechDictation: NSObject, ObservableObject {
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
             request.append(buffer)
+            if let mono = self?.downsample(buffer) { self?.captured.append(mono) }
             let peak = Self.peakLevel(of: buffer)
-            let mono = self?.downsample(buffer)
-            Task { @MainActor in
-                self?.level = peak
-                if let mono { self?.captured.append(contentsOf: mono) }
-            }
+            Task { @MainActor in self?.level = peak }
         }
 
         task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
@@ -153,8 +176,7 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// something use this, because this is where the proper nouns get fixed.
     func finish() async -> String {
         let apple = stop()
-        let samples = captured
-        captured.removeAll(keepingCapacity: false)
+        let samples = captured.drain()
         guard await WhisperTranscriber.shared.isReady else { return apple }
         guard let whisper = await WhisperTranscriber.shared.transcribe(
             samples: samples, vocabulary: vocabulary) else { return apple }
@@ -196,7 +218,7 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// Abandons the current capture without producing a transcript.
     func cancel() {
         _ = stop()
-        captured.removeAll(keepingCapacity: false)
+        captured.reset()
         transcript = ""
     }
 

@@ -23,6 +23,11 @@ struct ATARUApp: App {
                     // not the middle of the first call. iOS will not grant
                     // either without showing its dialog; asking here is the
                     // closest the platform allows to "assumed on install".
+                    // Whisper's model is a few hundred MB and only helps once
+                    // it is resident, so the fetch starts at launch rather than
+                    // when the first question is already being asked - that
+                    // first turn would otherwise always fall back to Apple.
+                    await WhisperTranscriber.shared.prepare()
                     guard !hasRequestedVoicePermissions else { return }
                     hasRequestedVoicePermissions = true
                     _ = await SpeechDictation.requestAuthorization()

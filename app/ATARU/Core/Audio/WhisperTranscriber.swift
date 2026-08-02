@@ -25,6 +25,25 @@ import WhisperKit
 /// model is local, and only the finished text is sent to ATARU.
 actor WhisperTranscriber {
 
+    /// What the engine is doing, for the Settings screen. Without this there
+    /// is no way to tell a Whisper transcript from an Apple fallback, which
+    /// made the first bad result impossible to diagnose from the outside.
+    enum State: Equatable {
+        case idle, loading, ready, failed(String)
+
+        var label: String {
+            switch self {
+            case .idle: return "Not loaded"
+            case .loading: return "Downloading model…"
+            case .ready: return "Whisper (on-device, name-aware)"
+            case .failed(let why): return "Apple dictation - Whisper unavailable (\(why))"
+            }
+        }
+    }
+
+    /// Readable from any actor; mirrors `state` for the UI.
+    @MainActor static private(set) var uiState: State = .idle
+
     static let shared = WhisperTranscriber()
 
     /// large-v3-turbo: the accuracy of large-v3 at a fraction of the decode
@@ -41,6 +60,7 @@ actor WhisperTranscriber {
     /// Starts the download/load if it has not begun. Safe to call repeatedly.
     func prepare() {
         guard kit == nil, loading == nil else { return }
+        Task { @MainActor in Self.uiState = .loading }
         loading = Task { [modelName = Self.modelName] in
             do {
                 let config = WhisperKitConfig(model: modelName, download: true)
@@ -58,6 +78,8 @@ actor WhisperTranscriber {
         self.kit = loaded
         self.loading = nil
         if loaded == nil { self.lastError = "WhisperKit model unavailable" }
+        let resolved: State = loaded == nil ? .failed("download failed") : .ready
+        await MainActor.run { Self.uiState = resolved }
     }
 
     /// Transcribes 16 kHz mono samples, biased toward `vocabulary`.

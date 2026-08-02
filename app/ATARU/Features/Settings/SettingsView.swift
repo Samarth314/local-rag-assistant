@@ -16,6 +16,8 @@ struct SettingsView: View {
     @State private var contactStatus: String?
     @State private var contactFailed = false
 
+    @State private var whisperState: WhisperTranscriber.State = .idle
+
     var body: some View {
         Form {
             Section {
@@ -58,6 +60,16 @@ struct SettingsView: View {
 
                     connectionRow
                 }
+            }
+
+            Section("Dictation") {
+                // Which engine actually produced the last transcript. Whisper
+                // is the one that can be told a name is likely; until its
+                // model has downloaded, Apple's recogniser is standing in, and
+                // without this row that difference is invisible.
+                Text(whisperState.label)
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textSecondary)
             }
 
             Section("On this device") {
@@ -128,6 +140,14 @@ struct SettingsView: View {
         }
         .scrollContentBackground(.hidden)
         .ataruBackdrop()
+        .task {
+            // Polls rather than observes: the transcriber is an actor and this
+            // row only has to be right while someone is looking at it.
+            while !Task.isCancelled {
+                whisperState = WhisperTranscriber.uiState
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear {
