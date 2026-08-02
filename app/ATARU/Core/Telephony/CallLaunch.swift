@@ -72,6 +72,13 @@ final class CallLaunchDelegate: NSObject, UIApplicationDelegate {
             .flatMap { $0["UIApplicationLaunchOptionsUserActivityKey"] as? NSUserActivity }?
             .activityType
         callLog.notice("launched with activity: \(activityType ?? "none", privacy: .public)")
+        // A VoIP push can cold launch the app in the background, and iOS
+        // requires the PKPushRegistry delegate to exist and report a call
+        // before this method returns to the run loop. RootView's init also
+        // touches CallStack, but a background launch may never evaluate a
+        // scene body - the app delegate is the only place guaranteed to run.
+        MainActor.assumeIsolated { _ = CallStack.shared }
+        callLog.notice("call stack initialized at launch")
         return true
     }
 }

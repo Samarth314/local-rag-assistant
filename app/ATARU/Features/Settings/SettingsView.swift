@@ -4,6 +4,10 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var call: CallService
+    // The push service publishes the token and the last registration error;
+    // without this row a phone that cannot be rung looks identical to one
+    // that can, right up until 8am when it doesn't ring.
+    @ObservedObject private var push = CallStack.shared.push
 
     @State private var baseURL: String = ""
     @State private var token: String = ""
@@ -99,6 +103,21 @@ struct SettingsView: View {
                 Button("Start a call (debug)") { call.call() }
                     .disabled(call.state.isLive)
                 #endif
+
+                if let error = push.registrationError {
+                    Label(error, systemImage: "bell.slash")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
+                } else if push.token != nil {
+                    Label("ATARU can ring this phone (\(VoIPPushService.environment) push registered).",
+                          systemImage: "bell.badge")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.green)
+                } else {
+                    Text("No push token yet - iOS hasn't issued one. The build needs the Push Notifications entitlement, and the server must be reachable once so the phone can register.")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.textTertiary)
+                }
             }
 
             Section("Privacy") {
