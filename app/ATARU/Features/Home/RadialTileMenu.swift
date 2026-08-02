@@ -113,7 +113,13 @@ struct RadialTileMenu: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// How far the tiles sit from the centre of the button.
-    private let radius: CGFloat = 152
+    // Double, not CGFloat: it only ever multiplies `cos`/`sin` of a Double
+    // angle, and mixing the two types makes that expression ambiguous.
+    //
+    // 152 rather than 200: a half circle of eight tiles at 200 runs off both
+    // screen edges. This is the largest radius that keeps the whole arc on a
+    // phone.
+    private let radius: Double = 152
     /// Ignore travel this small: a press always wobbles a little, and a wobble
     /// is not a choice.
     private let deadZone: CGFloat = 34

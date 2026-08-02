@@ -48,7 +48,11 @@ final class WhisperTranscriber: @unchecked Sendable {
             case .downloading(let fraction):
                 return "Downloading model… \(Int(fraction * 100))%"
             case .preparing: return "Preparing model…"
-            case .ready: return "Whisper (on-device, name-aware)"
+            case .ready:
+                if let seconds = WhisperTranscriber.shared.lastRunSeconds {
+                    return String(format: "Whisper (on-device, name-aware) - last %.1fs", seconds)
+                }
+                return "Whisper (on-device, name-aware)"
             case .failed(let why): return "Apple dictation - Whisper unavailable (\(why))"
             }
         }
@@ -76,6 +80,8 @@ final class WhisperTranscriber: @unchecked Sendable {
     private let lock = NSLock()
     private var kit: WhisperKit?
     private var isLoading = false
+    private var isDecoding = false
+    private var lastRun: Double?
 
     /// True once a model is resident. Non-blocking by construction - see the
     /// type's note about the hang this replaced.
@@ -131,15 +137,66 @@ final class WhisperTranscriber: @unchecked Sendable {
         }
     }
 
+    /// How long the last transcription took, so latency is visible instead of
+    /// guessed at.
+    var lastRunSeconds: Double? {
+        lock.lock(); defer { lock.unlock() }
+        return lastRun
+    }
+
+    /// Transcription with a hard ceiling that actually holds.
+    ///
+    /// The previous attempt raced `transcribe` against a sleep inside a task
+    /// group - which does nothing, because a task group awaits every child
+    /// before it returns and WhisperKit's inference never checks
+    /// cancellation. The deadline passed and the app kept waiting anyway.
+    /// Here the work runs detached and the continuation resumes on whichever
+    /// finishes first; a slow decode is simply abandoned to finish unheard.
+    func transcribe(samples: [Float], vocabulary: [String],
+                    timeout seconds: Double) async -> String? {
+        final class Gate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var done = false
+            func claim() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                if done { return false }
+                done = true
+                return true
+            }
+        }
+        let gate = Gate()
+        return await withCheckedContinuation { (cont: CheckedContinuation<String?, Never>) in
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let text = await self?.transcribe(samples: samples, vocabulary: vocabulary)
+                if gate.claim() { cont.resume(returning: text) }
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                if gate.claim() { cont.resume(returning: nil) }
+            }
+        }
+    }
+
     /// Transcribes 16 kHz mono samples, biased toward `vocabulary`.
     ///
     /// Returns nil when no model is loaded or the audio yields nothing, so the
     /// caller keeps whatever Apple heard rather than losing the question.
     func transcribe(samples: [Float], vocabulary: [String]) async -> String? {
+        // One decode at a time - and that is a hard rule, not tidiness. A
+        // timed-out decode is ABANDONED, not stopped: it keeps running on the
+        // Neural Engine. Starting a second decode on the same WhisperKit
+        // instance while it grinds means two inferences sharing one decoder
+        // state - they slow each other until every turn overruns, so one bad
+        // turn poisoned the whole session. If the engine is busy, this turn
+        // simply keeps Apple's transcript.
         lock.lock()
-        let kit = self.kit
+        guard let kit = self.kit, !isDecoding, samples.count > 1_600 else {
+            lock.unlock()
+            return nil   // no model, engine busy, or <0.1s of audio
+        }
+        isDecoding = true
         lock.unlock()
-        guard let kit, samples.count > 1_600 else { return nil }   // <0.1s is not speech
+        defer { lock.lock(); isDecoding = false; lock.unlock() }
 
         var options = DecodingOptions()
         options.language = "en"
@@ -147,18 +204,31 @@ final class WhisperTranscriber: @unchecked Sendable {
         options.usePrefillPrompt = true
         options.withoutTimestamps = true
         // The biasing itself. Whisper reads the prompt as "text that came
-        // just before", so a bare comma-separated roster is the shape that
-        // works; tokens beyond the model's prompt window are dropped by
-        // WhisperKit, hence the cap on how many names we send.
+        // just before" - it is context, not an instruction. So the prompt is
+        // the bare comma-separated roster and nothing else: a sentence like
+        // "Names likely in this audio:" is prose the model may happily
+        // continue into the transcript.
         if !vocabulary.isEmpty, let tokenizer = kit.tokenizer {
-            let roster = vocabulary.prefix(60).joined(separator: ", ")
-            let prompt = "Names and terms likely in this audio: \(roster)."
-            let tokens = tokenizer.encode(text: " " + prompt)
-                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+            // Whisper reserves about half its 448-token context for the
+            // prompt (~224 tokens). Budget by TOKENS, not by a name count: a
+            // fixed cap of 16 names silently dropped the very people this
+            // engine exists to hear (the roster is recency-ordered and ~200
+            // long). ~192 tokens fits comfortably and covers ~50 names.
+            let special = tokenizer.specialTokens.specialTokenBegin
+            var tokens: [Int] = []
+            for name in vocabulary {
+                let piece = (tokens.isEmpty ? " " : ", ") + name
+                let extra = tokenizer.encode(text: piece).filter { $0 < special }
+                if tokens.count + extra.count > 192 { break }
+                tokens.append(contentsOf: extra)
+            }
             if !tokens.isEmpty { options.promptTokens = tokens }
         }
+        let started = Date()
         do {
             let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
+            let elapsed = Date().timeIntervalSince(started)
+            lock.lock(); lastRun = elapsed; lock.unlock()
             let text = results.map(\.text).joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return text.isEmpty ? nil : text
