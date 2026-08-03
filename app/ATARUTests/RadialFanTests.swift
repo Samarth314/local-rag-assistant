@@ -160,14 +160,21 @@ final class RadialFanTests: XCTestCase {
     /// radius that brought it out — a thumb hovering on one threshold would
     /// flicker six bubbles in and out.
     func testTheRingRetractsInsideTheRadiusThatRevealedIt() {
-        let fan = fanAtRest()
-        XCTAssertLessThan(fan.hideRadius, fan.revealRadius,
-                          "reveal and hide at the same radius is a flicker")
-        XCTAssertGreaterThan(fan.revealRadius - fan.hideRadius, 8,
-                             "the gap is too narrow to absorb a wobble")
-        // Still outside the dead zone, or the ring could never be put away
-        // without cancelling the whole gesture.
-        XCTAssertGreaterThan(fan.hideRadius, RadialFan.deadZone)
+        for y in stride(from: 60.0, through: 780, by: 60) {
+            let fan = RadialFan.solve(at: CGPoint(x: 201, y: y), in: field,
+                                      count: HomeTile.allCases.count)
+            XCTAssertLessThan(fan.hideRadius, fan.revealRadius,
+                              "reveal and hide at one radius is a flicker (y=\(y))")
+            XCTAssertGreaterThan(fan.revealRadius - fan.hideRadius, 5,
+                                 "the gap is too narrow to absorb a wobble (y=\(y))")
+            // The one that bites: retracting must not mean pulling back
+            // through the first ring's own tiles. Easing off should be enough.
+            XCTAssertGreaterThan(fan.hideRadius, fan.stageOneRadius,
+                                 "changing your mind reaches inside stage one (y=\(y))")
+            // And never inside the dead zone, or the ring could not be put
+            // away without cancelling the whole gesture.
+            XCTAssertGreaterThan(fan.hideRadius, RadialFan.deadZone)
+        }
     }
 
     func testTheRevealHappensBeforeStageTwoCanBeAimedAt() {

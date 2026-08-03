@@ -259,6 +259,11 @@ struct RadialFan: Equatable {
     /// aimed at, rather than materialising under the finger.
     private static let revealFraction: Double = 0.20
 
+    /// Where the second ring goes away again, in the same unit. Close behind
+    /// the reveal: easing off should take it back almost as soon as the thumb
+    /// changes its mind.
+    private static let hideFraction: Double = 0.10
+
     /// Where aiming stops meaning stage one and starts meaning stage two.
     /// Nearer than halfway, so reaching the outer ring is a short push rather
     /// than a stretch to where its bubbles are actually drawn.
@@ -276,11 +281,16 @@ struct RadialFan: Equatable {
 
     /// Come back inside this and they go away again.
     ///
-    /// Nearer than the reveal rather than equal to it, so a thumb resting on
-    /// the threshold cannot flicker six bubbles in and out. Everything
-    /// between the two radii leaves the ring as it is.
+    /// Just inside the reveal, and — this is the part that matters — still
+    /// outside the first ring. A flat offset put it at 103 against an inner
+    /// ring of 104, which meant changing your mind required pulling all the
+    /// way back through the tiles instead of easing off. Sharing the reveal's
+    /// unit, the gap between the rings, keeps it proportional at every size.
+    /// The remaining gap exists only so a thumb resting on the threshold
+    /// cannot flicker six bubbles in and out.
     var hideRadius: Double {
-        max(Self.deadZone + 8, revealRadius - 18)
+        max(Self.deadZone + 8,
+            stageOneRadius + (stageTwoRadius - stageOneRadius) * Self.hideFraction)
     }
 
     /// The boundary between "aiming at stage one" and "aiming at stage two".
