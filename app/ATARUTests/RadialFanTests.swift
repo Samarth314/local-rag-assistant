@@ -166,23 +166,110 @@ final class RadialFanTests: XCTestCase {
 
     func testStageOneCarriesTheTilesWorthReachingForFirst() {
         let stageOne = Set(HomeTile.allCases.prefix(HomeTile.stageOneCount))
-        for tile in [HomeTile.plan, .finance, .passwords, .health, .journal] {
+        for tile in [HomeTile.plan, .finance, .health, .journal] {
             XCTAssertTrue(stageOne.contains(tile),
                           "\(tile.title) belongs in the first arc")
         }
-        // Media and a handwriting canvas are better on a bigger screen.
-        for tile in [HomeTile.media, .music, .whiteboard, .remote] {
+        // A machine dashboard and a password manager are places you go on
+        // purpose; media and a handwriting canvas want a bigger screen.
+        for tile in [HomeTile.status, .passwords, .media, .music, .whiteboard, .remote] {
             XCTAssertFalse(stageOne.contains(tile),
                            "\(tile.title) does not belong in the first arc")
         }
+        XCTAssertEqual(HomeTile.allCases.filter { $0.stage == .one }.count,
+                       HomeTile.stageOneCount,
+                       "the positional split and the stage property disagree")
     }
 
-    func testSweepingBehindTheFanSelectsNothing() {
-        // Pressed mid-screen, so the fan points up and nothing has been
-        // rotated: straight down is behind it.
-        let fan = RadialFan.solve(at: CGPoint(x: 201, y: 409), in: field, count: HomeTile.allCases.count)
-        XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.001)
-        XCTAssertNil(fan.index(at: CGPoint(x: fan.origin.x, y: fan.origin.y + 120), stageTwoVisible: true),
+    func testSweepingBehindAPartialArcSelectsNothing() {
+        // Pressed against the bottom edge, where a ring cannot close: the fan
+        // opens upward, so straight down is behind it.
+        let fan = RadialFan.solve(at: CGPoint(x: 201, y: 812), in: field,
+                                  count: HomeTile.allCases.count)
+        XCTAssertFalse(fan.isClosed, "an edge press has no room for a ring")
+        XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.2)
+        XCTAssertNil(fan.index(at: CGPoint(x: fan.origin.x, y: fan.origin.y + 120),
+                               stageTwoVisible: true),
                      "sweeping away from the fan should cancel, not clamp to an end tile")
+    }
+
+    // MARK: - Shape
+
+    func testAPressWithRoomAllRoundClosesTheRing() {
+        let fan = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
+                                  count: HomeTile.allCases.count)
+        XCTAssertTrue(fan.isClosed, "room in every direction should give a full circle")
+        XCTAssertEqual(fan.stageOneSweep, 2 * .pi, accuracy: 0.001)
+        // A ring starts at the top, where the eye already is.
+        XCTAssertEqual(fan.stageOne.angle(at: 0), -Double.pi / 2, accuracy: 0.001)
+    }
+
+    func testAClosedRingHasNoBehindAndNoSeam() {
+        let fan = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
+                                  count: HomeTile.allCases.count)
+        // Every direction points at something, including straight down.
+        XCTAssertNotNil(fan.index(at: CGPoint(x: fan.origin.x, y: fan.origin.y + 120),
+                                  stageTwoVisible: false))
+        // Last tile to first is one step like any other pair.
+        XCTAssertEqual(fan.stageOne.step, 2 * .pi / Double(fan.stageOneCount),
+                       accuracy: 0.001)
+    }
+
+    func testAnEdgePressKeepsAsMuchOfTheCircleAsFits() {
+        let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
+                                  count: HomeTile.allCases.count)
+        XCTAssertFalse(fan.isClosed)
+        // Half a turn is what a straight edge leaves. Much less than that means
+        // the solver gave up on the circle rather than trimming it.
+        XCTAssertGreaterThanOrEqual(fan.stageOneSweep, .pi - 0.1)
+    }
+
+    // MARK: - The current screen
+
+    func testDroppingTheCurrentScreenStillFitsAndStaysOnScreen() {
+        // Ask is showing, so it is not offered: thirteen tiles, seven of them
+        // on the first ring.
+        let count = HomeTile.allCases.count - 1
+        let stageOne = HomeTile.allCases.filter { $0 != .assistant && $0.stage == .one }.count
+        XCTAssertEqual(stageOne, HomeTile.stageOneCount - 1)
+
+        for x in stride(from: 0.0, through: 402, by: 33) {
+            for y in stride(from: 0.0, through: 818, by: 33) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: count, stageOneCount: stageOne)
+                XCTAssertEqual(fan.offsets.count, count)
+                for point in bubbles(fan) {
+                    XCTAssertTrue(isInside(point),
+                                  "a tile escaped for a press at (\(x), \(y))")
+                }
+            }
+        }
+    }
+
+    // MARK: - Reach
+
+    /// The gap between the rings has to hold the boundary clear of both, or
+    /// the tile under the thumb is not the tile that gets picked.
+    func testRestingOnAnInnerTileCannotSelectAnOuterOne() {
+        let bubbleRadius: Double = 22
+        for y in stride(from: 60.0, through: 780, by: 60) {
+            let fan = RadialFan.solve(at: CGPoint(x: 201, y: y), in: field,
+                                      count: HomeTile.allCases.count)
+            XCTAssertGreaterThan(fan.stageBoundary, fan.stageOneRadius + bubbleRadius,
+                                 "aiming at an inner tile crosses into stage two at y=\(y)")
+            XCTAssertLessThan(fan.stageBoundary, fan.stageTwoRadius - bubbleRadius,
+                              "stage two cannot be chosen without reaching it at y=\(y)")
+        }
+    }
+
+    func testTheSecondRingTriggersWellBeforeItsTilesAreReached() {
+        let fan = fanAtRest()
+        // The boundary is what a thumb has to cross, and it sits nearer than
+        // halfway to the bubbles it selects — reaching them is not the price
+        // of choosing them.
+        XCTAssertLessThan(fan.stageBoundary,
+                          (fan.stageOneRadius + fan.stageTwoRadius) / 2,
+                          "stage two should trigger before the halfway point")
+        XCTAssertGreaterThan(fan.stageBoundary, fan.stageOneRadius)
     }
 }

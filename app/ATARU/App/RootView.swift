@@ -95,6 +95,7 @@ struct RootView: View {
             RadialPressMenu(
                 isEnabled: !call.state.isLive && !isComposerActive && presentedTile == nil,
                 exclusions: pressExclusions,
+                current: currentTile,
                 onSelect: open(tile:)
             )
             .zIndex(2)
@@ -180,6 +181,16 @@ struct RootView: View {
         // Lets a navigation bar anywhere in the app route without being handed
         // a closure through three initialisers. See TileDestinationsMenu.
         .environment(\.openTile, open(tile:))
+    }
+
+    /// The tile the current screen already is, so the launcher can leave it
+    /// out. The grid is not a destination of its own, so it maps to nothing.
+    private var currentTile: HomeTile? {
+        switch selection {
+        case .ask:     return .assistant
+        case .library: return .documents
+        case .tiles:   return nil
+        }
     }
 
     /// One routing table for both launchers: tabs for the two tab-native

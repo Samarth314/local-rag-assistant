@@ -30,16 +30,24 @@ struct VoiceView: View {
             ZStack {
                 Ataru.backdrop.ignoresSafeArea()
 
-                // Exists only while the keyboard is up, so it can never
-                // interfere with the tap that ACQUIRES focus - a plain
-                // always-on backdrop tap handler turned out to race the
-                // field's own tap and the keyboard never appeared.
-                if composerFocused {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .ignoresSafeArea()
-                        .onTapGesture { composerFocused = false }
-                }
+                // Tap anywhere off the controls to put the keyboard away.
+                //
+                // Always in the hierarchy, switched on by hit-testing rather
+                // than by an `if`. Inserting a sibling into this ZStack at the
+                // moment the field takes focus is a structural change
+                // mid-first-responder, and SwiftUI answers it by dropping the
+                // responder: the keyboard rose and vanished in the same frame,
+                // which reads as a text field that simply does not work.
+                // Changing a modifier on a view that is already there does not
+                // touch the hierarchy, so focus survives.
+                //
+                // It sits under the content, so the orb and the composer keep
+                // taking their own taps; only what misses them lands here.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .ignoresSafeArea()
+                    .allowsHitTesting(composerFocused)
+                    .onTapGesture { composerFocused = false }
 
                 GeometryReader { geo in
                     Group {
