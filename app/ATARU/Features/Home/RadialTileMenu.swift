@@ -274,6 +274,15 @@ struct RadialFan: Equatable {
         stageOneRadius + (stageTwoRadius - stageOneRadius) * Self.revealFraction
     }
 
+    /// Come back inside this and they go away again.
+    ///
+    /// Nearer than the reveal rather than equal to it, so a thumb resting on
+    /// the threshold cannot flicker six bubbles in and out. Everything
+    /// between the two radii leaves the ring as it is.
+    var hideRadius: Double {
+        max(Self.deadZone + 8, revealRadius - 18)
+    }
+
     /// The boundary between "aiming at stage one" and "aiming at stage two".
     var stageBoundary: Double {
         max(stageOneRadius + Self.boundaryClearance,
@@ -519,11 +528,16 @@ struct RadialPressMenu: View {
 
     @State private var fan: RadialFan?
     @State private var highlighted: Int?
-    /// Latches once the thumb has pushed past the first arc, and stays latched
-    /// for the rest of the press. Sweeping back inside must not take the second
-    /// stage away again: tiles flickering in and out under a moving finger is
-    /// unreadable, and the whole point of the staging is that stage one is
-    /// uncluttered *until you ask for more*, not that it toggles.
+    /// Follows the thumb: out past `revealRadius` brings the second ring in,
+    /// back inside `hideRadius` takes it away again, and the gap between the
+    /// two is what stops it flickering on the threshold.
+    ///
+    /// This used to latch for the rest of the press, on the reasoning that
+    /// tiles appearing and disappearing under a moving finger are unreadable.
+    /// The hysteresis is the better answer to that: a sweep that went too far
+    /// can now be taken back without lifting, which matters much more now
+    /// that the reveal sits a fifth of the way out rather than most of a
+    /// sweep away.
     @State private var stageTwoRevealed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -640,23 +654,29 @@ struct RadialPressMenu: View {
         guard let fan else { return }
         let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
 
-        // Reaching past the first arc brings out the rest. A firmer haptic than
-        // a selection tick, because this is a change to what is on screen
-        // rather than a move within it — and the thumb is usually ahead of the
-        // eye by this point.
-        if !stageTwoRevealed,
-           fan.count > fan.stageOneCount,
-           fan.distance(to: local) > fan.revealRadius {
-            // Settled rather than sprung. The reveal used to need most of a
-            // sweep to reach and was a rare event; now it happens a fifth of
-            // the way out, on nearly every gesture, and a spring that
-            // overshoots six bubbles into place that often reads as the fan
-            // twitching rather than opening.
-            withAnimation(reduceMotion ? nil : .spring(response: 0.34,
-                                                       dampingFraction: 0.96)) {
-                stageTwoRevealed = true
+        // Reaching past the first ring brings out the rest, and coming back
+        // inside puts them away — the stage follows the thumb rather than
+        // latching, so a sweep that overshot can be taken back without
+        // lifting. A firmer haptic than a selection tick either way, because
+        // this changes what is on screen rather than moving within it, and by
+        // this point the thumb is usually ahead of the eye.
+        //
+        // Settled rather than sprung. The reveal used to need most of a sweep
+        // to reach and was a rare event; now it happens a fifth of the way
+        // out and can happen more than once in a gesture, and a spring that
+        // overshoots six bubbles into place that often reads as the fan
+        // twitching rather than opening.
+        if fan.count > fan.stageOneCount {
+            let reach = fan.distance(to: local)
+            let wanted = stageTwoRevealed ? reach > fan.hideRadius
+                                          : reach > fan.revealRadius
+            if wanted != stageTwoRevealed {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.34,
+                                                           dampingFraction: 0.96)) {
+                    stageTwoRevealed = wanted
+                }
+                Haptics.fire(.tap)
             }
-            Haptics.fire(.tap)
         }
 
         let next = fan.index(at: local, stageTwoVisible: stageTwoRevealed)

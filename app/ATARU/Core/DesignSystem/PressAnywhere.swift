@@ -144,6 +144,7 @@ struct PressAnywhere: UIViewRepresentable {
             switch press.state {
             case .began:
                 isTracking = true
+                suspendCompanions()
                 onBegan(point)
             case .changed:
                 guard isTracking else { return }
@@ -156,6 +157,9 @@ struct PressAnywhere: UIViewRepresentable {
         }
 
         private func finish() {
+            // Runs before the `isTracking` guard: a press that was suspended
+            // and then cancelled must still give the page its gestures back.
+            resumeCompanions()
             guard isTracking else { return }
             isTracking = false
             onEnded()
@@ -187,13 +191,48 @@ struct PressAnywhere: UIViewRepresentable {
             return false
         }
 
-        /// Never claims a gesture exclusively while it is still pending — lists
-        /// keep scrolling and buttons keep taking taps right up until the press
-        /// is actually recognised.
+        /// Shares the screen right up until the press is recognised, and not a
+        /// moment after.
+        ///
+        /// Returning `true` unconditionally is what let a sweep scroll the page
+        /// underneath the open fan: simultaneous recognition stays in force for
+        /// the life of the gesture, so the scroll view's pan kept following the
+        /// same finger that was choosing a destination. Before recognition the
+        /// answer must stay `true` — lists have to keep scrolling and buttons
+        /// have to keep taking taps during the 0.45s nobody has committed to
+        /// anything yet.
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
             shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
-        ) -> Bool { true }
+        ) -> Bool {
+            if isTracking { return false }
+            companions.add(other)
+            return true
+        }
+
+        /// Recognisers that asked to run alongside this one, held weakly: they
+        /// belong to screens that come and go, and this object outlives them.
+        private let companions = NSHashTable<UIGestureRecognizer>.weakObjects()
+        private var suspended: [UIGestureRecognizer] = []
+
+        /// Takes the other recognisers out of the gesture entirely.
+        ///
+        /// Declining simultaneous recognition stops one that has not started;
+        /// this is for one that already has. A scroll begun in the moment
+        /// before the press was recognised would otherwise carry on under the
+        /// fan, and toggling `isEnabled` is UIKit's own way of cancelling a
+        /// gesture in flight.
+        private func suspendCompanions() {
+            for other in companions.allObjects where other.isEnabled {
+                other.isEnabled = false
+                suspended.append(other)
+            }
+        }
+
+        private func resumeCompanions() {
+            for other in suspended { other.isEnabled = true }
+            suspended.removeAll()
+        }
     }
 }
 

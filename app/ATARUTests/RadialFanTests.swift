@@ -156,6 +156,20 @@ final class RadialFanTests: XCTestCase {
                           "an unrevealed stage two must never be selectable")
     }
 
+    /// Coming back inside puts the second ring away, but not at the same
+    /// radius that brought it out — a thumb hovering on one threshold would
+    /// flicker six bubbles in and out.
+    func testTheRingRetractsInsideTheRadiusThatRevealedIt() {
+        let fan = fanAtRest()
+        XCTAssertLessThan(fan.hideRadius, fan.revealRadius,
+                          "reveal and hide at the same radius is a flicker")
+        XCTAssertGreaterThan(fan.revealRadius - fan.hideRadius, 8,
+                             "the gap is too narrow to absorb a wobble")
+        // Still outside the dead zone, or the ring could never be put away
+        // without cancelling the whole gesture.
+        XCTAssertGreaterThan(fan.hideRadius, RadialFan.deadZone)
+    }
+
     func testTheRevealHappensBeforeStageTwoCanBeAimedAt() {
         let fan = fanAtRest()
         // Otherwise the second arc appears underneath a thumb already pointing
