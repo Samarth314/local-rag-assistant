@@ -135,6 +135,18 @@ final class SpeechDictation: NSObject, ObservableObject {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
 
+    /// Waiting for Apple's *final* transcript, while a turn is ending.
+    ///
+    /// Partial results arrive behind the speech that produced them, so the
+    /// value of `transcript` at the instant the microphone closes is missing
+    /// the last word or two of what was said. `stop()` used to end the audio
+    /// and cancel the recognition task in the same breath, discarding the
+    /// final result Apple was about to deliver - which is how "turn the lamp
+    /// on" reached the server as "Turn the lamp", a command with its one
+    /// decisive word removed, and as bare "Turn" on the worst turns.
+    private var finalWaiter: CheckedContinuation<String, Never>?
+    private var sawFinal = false
+
     /// Asks for microphone and speech permission.
     ///
     /// Static so onboarding can ask before any dictation object exists; the
@@ -180,6 +192,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
 
         transcript = ""
+        sawFinal = false
         if vocabulary.isEmpty { vocabulary = Self.sharedVocabulary }
         captured.reset()
         resampler.reset()
@@ -197,10 +210,16 @@ final class SpeechDictation: NSObject, ObservableObject {
             Task { @MainActor in self?.level = peak }
         }
 
-        task = recognizer.recognitionTask(with: request) { [weak self] result, _ in
-            guard let self, let result else { return }
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            let text = result?.bestTranscription.formattedString
+            // An error ends the turn as surely as a final result does, and a
+            // turn that ends without either would leave `finish()` waiting out
+            // its whole budget for a transcript that is never coming.
+            let ended = result?.isFinal ?? (error != nil)
             Task { @MainActor in
-                self.transcript = result.bestTranscription.formattedString
+                if let text { self.transcript = text }
+                if ended { self.deliverFinal() }
             }
         }
 
@@ -214,16 +233,63 @@ final class SpeechDictation: NSObject, ObservableObject {
         isRecording = true
     }
 
-    /// Stops capturing and returns the final transcript.
+    /// Stops capturing and returns whatever has been transcribed so far.
+    ///
+    /// Synchronous, so it cannot wait for Apple's final result - which makes
+    /// it right for abandoning audio (mute, cancel) and wrong for ending a
+    /// question. Anything about to be ASKED goes through `finish()`.
     @discardableResult
     func stop() -> String {
         guard isRecording else { return transcript }
+        closeMicrophone()
+        cleanUp()
+        deliverFinal()      // nothing is coming now; release any waiter
+        return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Everything `stop()` does except ending the recognition task, so the
+    /// recogniser is still alive to deliver its last result.
+    private func closeMicrophone() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         request?.endAudio()
-        cleanUp()
         isRecording = false
         level = 0
+    }
+
+    /// Hands Apple's finished transcript to whoever is waiting for it, once.
+    private func deliverFinal() {
+        sawFinal = true
+        guard let waiter = finalWaiter else { return }
+        finalWaiter = nil
+        waiter.resume(returning: transcript.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// Ends capture and gives Apple a moment to finish the sentence.
+    ///
+    /// The budget is small and it is a ceiling, not a delay: the final result
+    /// normally lands within a few hundred milliseconds of the audio ending,
+    /// and this returns the instant it does. It is longer when Whisper cannot
+    /// answer, because then this transcript is not a fallback - it is the
+    /// question.
+    private func endAudioAwaitingFinal() async -> String {
+        guard isRecording else {
+            return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        closeMicrophone()
+        if !sawFinal {
+            let budget: Double = WhisperTranscriber.shared.isReady ? 1.0 : 2.0
+            let text = await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
+                finalWaiter = cont
+                Task { @MainActor in
+                    try? await Task.sleep(for: .seconds(budget))
+                    self.deliverFinal()
+                }
+            }
+            cleanUp()
+            return text
+        }
+        cleanUp()
         return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -235,7 +301,7 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// (mute mid-sentence) keep using `stop()`; callers that are about to ASK
     /// something use this, because this is where the proper nouns get fixed.
     func finish() async -> String {
-        let apple = stop()
+        let apple = await endAudioAwaitingFinal()
         let samples = captured.drain()
         guard WhisperTranscriber.shared.isReady else { return apple }
         // Hard ceiling. A question that never comes back is worse than one
