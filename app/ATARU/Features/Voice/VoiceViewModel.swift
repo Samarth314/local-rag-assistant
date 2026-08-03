@@ -19,9 +19,12 @@ final class VoiceViewModel: ObservableObject {
 
     let dictation = SpeechDictation()
     let player = AnswerPlayer()
+    /// Speaks the answer while the model is still writing it. See `ask`.
+    let streamPlayer = StreamingAnswerPlayer()
 
     private var service: ATARUService
     private var askTask: Task<Void, Never>?
+    private var stream: VoiceStreamSession?
     /// Whether the orb is still held. `beginListening` has real async work
     /// before the mic opens (permission check, audio session, engine start),
     /// so a quick tap can RELEASE before `phase` ever reaches `.listening` -
@@ -47,7 +50,7 @@ final class VoiceViewModel: ObservableObject {
     var orbLevel: Double {
         switch phase {
         case .listening: return dictation.level
-        case .speaking: return player.level
+        case .speaking: return max(streamPlayer.level, player.level)
         default: return 0
         }
     }
@@ -130,6 +133,18 @@ final class VoiceViewModel: ObservableObject {
         askTask?.cancel()
         phase = .thinking
         askTask = Task { [service] in
+            // Streaming first, because the wait is the whole complaint.
+            //
+            // Asking and then speaking is two serial waits: the model writes
+            // the entire answer, and only then does anything get synthesized.
+            // Measured on the vault, a question that needs the agent is ~8s of
+            // model and several more of speech, and the phone is silent for
+            // all of it. The call path has streamed since it was built - the
+            // first sentence is spoken while the rest is still being written -
+            // and there was never a reason for a held-orb question to be any
+            // slower than the same question asked on a call.
+            if await self.streamAnswer(question) { return }
+            guard !Task.isCancelled else { return }
             do {
                 let answer = try await service.ask(question: question)
                 guard !Task.isCancelled else { return }
@@ -145,6 +160,69 @@ final class VoiceViewModel: ObservableObject {
         }
     }
 
+    /// Answers over the streaming session, returning false to fall back to the
+    /// blocking path - which stays exactly as it was, and is what Demo and any
+    /// server without a voice engine still use.
+    private func streamAnswer(_ question: String) async -> Bool {
+        if stream == nil { stream = service.voiceStream() }
+        guard let stream else { return false }
+
+        var text = ""
+        var spokenAnything = false
+        do {
+            for try await event in stream.ask(question) {
+                guard !Task.isCancelled else {
+                    streamPlayer.stop()
+                    return true
+                }
+                switch event {
+                case .accepted:
+                    break
+                case .delta(let piece):
+                    text += piece
+                case .reset:
+                    // What streamed so far was agent scaffolding, not answer.
+                    text = ""
+                case .audioBegin(let sampleRate, let channels, _, let isFiller):
+                    try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
+                    // A thinking cue is not the answer. If the turn dies after
+                    // only the cue played, the fallback still has to run or the
+                    // question ends at "Let me check."
+                    if !isFiller { spokenAnything = true }
+                    phase = .speaking
+                case .audioChunk(let chunk):
+                    streamPlayer.enqueue(chunk)
+                case .audioEnd, .ttsUnavailable:
+                    break
+                case .done(let spoken, let source):
+                    let final = spoken.isEmpty ? text : spoken
+                    record(question: question,
+                           answer: SpokenAnswer(text: final, source: source, audioURL: nil))
+                    if streamPlayer.isActive {
+                        await streamPlayer.finish()
+                        if phase == .speaking { phase = .idle }
+                    } else {
+                        // The server answered but could not speak it. The
+                        // phone can, in the same voice as every other
+                        // fallback.
+                        speak(SpokenAnswer(text: final, source: source, audioURL: nil))
+                    }
+                    return true
+                }
+            }
+            throw VoiceStreamError.protocolViolation("stream ended early")
+        } catch {
+            streamPlayer.stop()
+            // Once real answer audio has played, re-asking would repeat it
+            // aloud. Better a truncated answer than the first half twice.
+            if spokenAnything {
+                phase = .idle
+                return true
+            }
+            return false
+        }
+    }
+
     /// Replays an earlier answer without asking again.
     func replay(_ exchange: VoiceExchange) {
         guard phase.allowsNewQuestion else { return }
@@ -153,6 +231,7 @@ final class VoiceViewModel: ObservableObject {
 
     func stopSpeaking() {
         player.stop()
+        streamPlayer.stop()
         phase = .idle
     }
 
