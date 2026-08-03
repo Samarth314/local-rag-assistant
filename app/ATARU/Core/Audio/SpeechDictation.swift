@@ -147,6 +147,10 @@ final class SpeechDictation: NSObject, ObservableObject {
     private var finalWaiter: CheckedContinuation<String, Never>?
     private var sawFinal = false
 
+    /// Whether the audio session is up, and the pending job to give it back.
+    private var sessionActive = false
+    private var releaseSession: Task<Void, Never>?
+
     /// Asks for microphone and speech permission.
     ///
     /// Static so onboarding can ask before any dictation object exists; the
@@ -182,13 +186,26 @@ final class SpeechDictation: NSObject, ObservableObject {
         request.requiresOnDeviceRecognition = true   // see the type's doc comment
         self.request = request
 
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            try audioSession.setCategory(.playAndRecord, mode: .spokenAudio,
-                                         options: [.duckOthers, .defaultToSpeaker])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            throw Failure.engine(error.localizedDescription)
+        // A session already up is left alone. Activating one is not
+        // instantaneous, and the microphone only starts hearing once it
+        // finishes - so the opening word of a turn lands in the gap and is
+        // simply never captured. "What time is it in India" reached the
+        // server as "Time is it in India", a sentence the time shortcut's
+        // anchored patterns cannot match, so it fell through to the agent and
+        // came back wrong. In a call, where turns follow each other closely,
+        // that gap was being paid on every single one.
+        releaseSession?.cancel()
+        releaseSession = nil
+        if !sessionActive {
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playAndRecord, mode: .spokenAudio,
+                                             options: [.duckOthers, .defaultToSpeaker])
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+                sessionActive = true
+            } catch {
+                throw Failure.engine(error.localizedDescription)
+            }
         }
 
         transcript = ""
@@ -334,9 +351,27 @@ final class SpeechDictation: NSObject, ObservableObject {
         task?.cancel()
         task = nil
         request = nil
-        // Deactivating lets other audio resume; failing here is not worth
-        // surfacing to the user, whose question already succeeded or failed.
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        scheduleSessionRelease()
+    }
+
+    /// Gives the audio session back, but not straight away.
+    ///
+    /// Deactivating lets whatever was playing resume, so it has to happen -
+    /// but doing it the instant a turn ends means the next turn pays the
+    /// activation cost again, and the opening word is lost in it. During a
+    /// call the next turn is seconds away, so the session is held briefly and
+    /// released only if nothing else needs it.
+    private func scheduleSessionRelease() {
+        releaseSession?.cancel()
+        releaseSession = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled, !self.isRecording, self.sessionActive else { return }
+            self.sessionActive = false
+            // Failing here is not worth surfacing to the user, whose question
+            // already succeeded or failed.
+            try? AVAudioSession.sharedInstance()
+                .setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 
     /// Peak amplitude of a buffer, normalised to 0...1 for the orb.
