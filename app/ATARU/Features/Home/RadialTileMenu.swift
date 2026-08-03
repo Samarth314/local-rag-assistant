@@ -429,28 +429,50 @@ struct RadialFan: Equatable {
             return (2 * .pi, preferredAngle)
         }
 
-        // Walking from a known gap makes the longest run a plain linear scan
-        // rather than a wrap-around one.
-        var best = (start: 0, length: 0)
+        // Walking from a known gap makes the runs a plain linear scan rather
+        // than a wrap-around one.
+        var runs: [(start: Int, length: Int)] = []
         var run = (start: 0, length: 0)
         for step in 0..<samples {
             let index = (firstOutside + step) % samples
             if inside[index] {
                 if run.length == 0 { run.start = index }
                 run.length += 1
-                if run.length > best.length { best = run }
+            } else if run.length > 1 {
+                runs.append(run)
+                run.length = 0
             } else {
                 run.length = 0
             }
         }
-        guard best.length > 1 else { return (0, preferredAngle) }
+        if run.length > 1 { runs.append(run) }
 
-        let sweep = Double(best.length - 1) * stepAngle
-        // Wrapped into (-π, π]. The trigonometry does not care, but a centre
-        // angle that reads as 4.71 where every other angle in the file reads
-        // as -1.57 is a trap for the next person to compare two of them.
-        let middle = Double(best.start) * stepAngle + sweep / 2
-        return (sweep, atan2(sin(middle), cos(middle)))
+        // Longest is not the same as best. A radius wide enough to poke out
+        // both sides of the screen leaves two arcs of equal length — one over
+        // the top, one under the bottom — and picking by length alone is a
+        // coin toss that lands the fan under the hand holding the phone about
+        // half the time. Turning away from straight up is priced at roughly a
+        // radian of arc per radian of turn, so a sideways arc has to be
+        // genuinely much wider before it wins.
+        let scored = runs.map { run -> (sweep: Double, center: Double, score: Double) in
+            let sweep = Double(run.length - 1) * stepAngle
+            let middle = Double(run.start) * stepAngle + sweep / 2
+            // Wrapped into (-π, π]. The trigonometry does not care, but a
+            // centre angle that reads as 4.71 where every other angle in the
+            // file reads as -1.57 is a trap for the next person to compare
+            // two of them.
+            let center = atan2(sin(middle), cos(middle))
+            return (sweep, center, sweep - 1.05 * gap(center, preferredAngle))
+        }
+        guard let best = scored.max(by: { $0.score < $1.score }) else {
+            return (0, preferredAngle)
+        }
+        return (best.sweep, best.center)
+    }
+
+    /// Shortest angle between two directions, either way round.
+    private static func gap(_ a: Double, _ b: Double) -> Double {
+        abs(atan2(sin(a - b), cos(a - b)))
     }
 
     private static func slide(_ point: CGPoint, toward target: CGPoint,

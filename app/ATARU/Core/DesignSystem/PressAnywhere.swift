@@ -173,19 +173,24 @@ struct PressAnywhere: UIViewRepresentable {
             return !isOverTextInput(point, in: gesture.view)
         }
 
-        /// Text inputs are never the launcher's to take.
+        /// A field being *edited* is never the launcher's to take.
         ///
-        /// Holding one is how iOS offers the magnifier, selection and Paste,
-        /// and cancelling that touch is how you end up with a field that will
-        /// not take focus. The declared exclusion rects already cover the
-        /// composer; this is the backstop that does not depend on anyone
-        /// remembering to add one — which matters because the failure mode, a
-        /// keyboard that never appears, looks nothing like a launcher bug.
+        /// Holding one is how iOS offers the magnifier and selection, and
+        /// cancelling that touch is how you end up with a field that will not
+        /// take focus. But this used to stand aside for every text input on
+        /// screen, edited or not, and on a screen that is mostly input rows —
+        /// the daily plan, with its two "add" fields — that turned the
+        /// launcher off exactly where a thumb naturally lands. An idle field
+        /// has no selection to magnify and nothing to lose by the launcher
+        /// taking a long press; tapping it first still focuses it, and from
+        /// then on holding means what it means everywhere else in iOS.
         private func isOverTextInput(_ point: CGPoint, in view: UIView?) -> Bool {
             guard let hit = view?.hitTest(point, with: nil) else { return false }
             var responder: UIResponder? = hit
             while let current = responder {
-                if current is UITextView || current is UITextField { return true }
+                if current is UITextView || current is UITextField {
+                    return current.isFirstResponder
+                }
                 responder = current.next
             }
             return false

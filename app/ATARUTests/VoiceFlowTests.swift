@@ -35,6 +35,11 @@ private final class StubService: ATARUService, @unchecked Sendable {
     // No roster in tests: an empty vocabulary is the "bias nothing" case the
     // session already treats as normal.
     func vocabulary() async throws -> [String] { [] }
+
+    // Nothing to transcribe against here, which is the same answer a backend
+    // without the endpoint gives: hand back and let the caller keep whatever
+    // the phone heard.
+    func transcribe(samples: [Float]) async -> String? { nil }
 }
 
 @MainActor

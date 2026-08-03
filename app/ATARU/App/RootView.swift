@@ -114,7 +114,13 @@ struct RootView: View {
             // already reading.
             RadialPressMenu(
                 isEnabled: !call.state.isLive && !isComposerActive,
-                exclusions: pressExclusions,
+                // Only what is actually on top gets to claim a hold. These
+                // are published by the root screen, which stays mounted
+                // underneath a tile — so leaving them in place meant the Ask
+                // orb's rect, a 260pt band across the middle of the screen,
+                // silently killed the launcher on every tile page. A tile
+                // screen has nothing a hold means something else on.
+                exclusions: presentedTile == nil ? pressExclusions : [],
                 current: presentedTile ?? currentTile,
                 onSelect: open(tile:)
             )
