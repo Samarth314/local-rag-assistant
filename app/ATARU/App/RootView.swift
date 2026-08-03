@@ -4,9 +4,14 @@ import SwiftUI
 /// The app's one screen, and everything that can take it over.
 ///
 /// There is no tab bar and no visible launcher. Three root screens swap in
-/// place, every other destination arrives as a sheet, and the way between them
-/// is a thumb held anywhere on the glass — see `RadialPressMenu`. What is left
-/// is the content and nothing else.
+/// place, every other destination arrives as a layer over them, and the way
+/// between them is a thumb held anywhere on the glass — see `RadialPressMenu`.
+/// What is left is the content and nothing else.
+///
+/// The layering is load-bearing, bottom to top: the root screen, a tile
+/// screen, the launcher, the call. The launcher has to outrank the tile
+/// screen or it stops working on most of the app; the call outranks
+/// everything because a conversation in progress owns the surface.
 struct RootView: View {
     @EnvironmentObject private var state: AppState
     @State private var selection: Tab = .ask
@@ -79,23 +84,38 @@ struct RootView: View {
             .onPreferenceChange(PressExclusionKey.self) { pressExclusions = $0 }
             .ataruBackdrop()
 
+            // A tile screen, drawn in this stack rather than presented as a
+            // sheet.
+            //
+            // A sheet outranks every layer this view owns, the launcher
+            // included — which is why holding a thumb on Finance or Status
+            // used to do nothing at all, and why the launcher had to be
+            // switched off whenever one was up. A launcher that stops working
+            // on most of the app's pages is not the only way between them, so
+            // the presentation gave way instead. Here it is just a layer, the
+            // launcher stays above it, and every page behaves the same.
+            if let tile = presentedTile {
+                TileScreenHost(tile: tile) { close() }
+                    .environmentObject(state)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(1.5)
+            }
+
             // The launcher. Invisible and untouchable until a press is held,
             // which is why it can sit over the entire app: it takes its
             // touches from a recogniser on the window rather than from the
             // view hierarchy, so nothing underneath loses a tap to it.
             //
-            // Off during a call — the call screen owns the whole surface, and
-            // its own gestures are the ones that should answer — off while the
-            // keyboard is up, where a hold means text selection, and off
-            // behind a presented tile. That last one is not cosmetic: a sheet
-            // is a separate presentation but the same *window*, so the
-            // recogniser still fires under it while this layer draws behind
-            // it. The fan would be invisible and the release would silently
-            // change the screen the sheet is covering.
+            // Off during a call — the call screen owns the whole surface and
+            // its own gestures are the ones that should answer — and off while
+            // the keyboard is up, where a hold means text selection. On
+            // everywhere else, including on top of a tile screen, which passes
+            // itself as `current` so the fan never offers the page you are
+            // already reading.
             RadialPressMenu(
-                isEnabled: !call.state.isLive && !isComposerActive && presentedTile == nil,
+                isEnabled: !call.state.isLive && !isComposerActive,
                 exclusions: pressExclusions,
-                current: currentTile,
+                current: presentedTile ?? currentTile,
                 onSelect: open(tile:)
             )
             .zIndex(2)
@@ -119,7 +139,7 @@ struct RootView: View {
                         .padding(.bottom, Theme.Space.xs)
                     }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(1)
+                    .zIndex(3)
                     // Two fingers up restores the call from anywhere in the app.
                     .twoFingerSwipe(
                         up: {
@@ -133,7 +153,7 @@ struct RootView: View {
                     CallSessionView(call: call, session: session,
                                     isMinimized: $isCallMinimized)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(1)
+                        .zIndex(3)
                 }
             }
         }
@@ -173,10 +193,6 @@ struct RootView: View {
                 SpeechDictation.sharedVocabulary = names
             }
         }
-        .sheet(item: $presentedTile) { tile in
-            TileScreenHost(tile: tile)
-                .environmentObject(state)
-        }
         .environmentObject(call)
         // Lets a navigation bar anywhere in the app route without being handed
         // a closure through three initialisers. See TileDestinationsMenu.
@@ -193,14 +209,29 @@ struct RootView: View {
         }
     }
 
-    /// One routing table for both launchers: tabs for the two tab-native
-    /// screens, a presented native screen for everything else.
+    /// One routing table for both launchers: root screens for the two that
+    /// are one, a tile layer for everything else.
+    ///
+    /// Every path sets `presentedTile`, including to nil — the launcher works
+    /// from inside a tile screen now, so "go to Ask" arriving while Finance
+    /// is up has to take Finance down as well as change what is behind it.
     private func open(tile: HomeTile) {
-        switch tile {
-        case .assistant: selection = .ask
-        case .documents: selection = .library
-        default: presentedTile = tile
+        withAnimation(.easeInOut(duration: 0.24)) {
+            switch tile {
+            case .assistant:
+                presentedTile = nil
+                selection = .ask
+            case .documents:
+                presentedTile = nil
+                selection = .library
+            default:
+                presentedTile = tile
+            }
         }
+    }
+
+    private func close() {
+        withAnimation(.easeInOut(duration: 0.24)) { presentedTile = nil }
     }
 }
 

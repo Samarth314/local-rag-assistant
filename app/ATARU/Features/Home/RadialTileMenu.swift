@@ -566,13 +566,20 @@ struct RadialPressMenu: View {
                                        size: bubbleSize)
                                 .position(x: fan.origin.x + offset.width,
                                           y: fan.origin.y + offset.height)
-                                // Scaled about the pivot rather than about
-                                // itself, so the tiles read as thrown out from
-                                // under the thumb instead of fading in where
-                                // they land.
-                                .transition(
-                                    .scale(scale: 0.2, anchor: anchor(for: offset))
-                                        .combined(with: .opacity))
+                                // Out from under the thumb on the way in,
+                                // scaled about the pivot rather than about
+                                // itself so they read as thrown rather than
+                                // faded into place. On the way out, only a
+                                // fade: collapsing back to the pivot drags the
+                                // eye to where the thumb was at the exact
+                                // moment the chosen screen is arriving, and
+                                // what should happen then is the launcher
+                                // getting out of the way of the page.
+                                .transition(.asymmetric(
+                                    insertion: .scale(scale: 0.2,
+                                                      anchor: anchor(for: offset))
+                                        .combined(with: .opacity),
+                                    removal: .opacity))
                         }
                     }
                 }
@@ -645,7 +652,10 @@ struct RadialPressMenu: View {
         let chosen = highlighted.map { tiles[$0] }
         highlighted = nil
         stageTwoRevealed = false
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
+        // Long enough to read as the fan dissolving into the page rather than
+        // being cut, short enough that it is gone before the chosen screen
+        // has finished arriving.
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.24)) {
             fan = nil
         }
         guard let chosen else { return }

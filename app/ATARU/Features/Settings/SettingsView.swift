@@ -16,7 +16,12 @@ struct SettingsView: View {
     @State private var contactStatus: String?
     @State private var contactFailed = false
 
-    @State private var whisperState: WhisperTranscriber.State = .idle
+    // The rendered label rather than the state: the state stops changing while
+    // a load runs, but the label carries the load's elapsed seconds, and a row
+    // that only updates when the state changes would freeze at the moment it
+    // most needs to be moving.
+    @State private var whisperLabel = WhisperTranscriber.State.idle.label
+    @State private var whisperStuck = false
 
     var body: some View {
         Form {
@@ -67,9 +72,15 @@ struct SettingsView: View {
                 // is the one that can be told a name is likely; until its
                 // model has downloaded, Apple's recogniser is standing in, and
                 // without this row that difference is invisible.
-                Text(whisperState.label)
+                Text(whisperLabel)
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textSecondary)
+                if whisperStuck {
+                    Button("Load the model again") {
+                        WhisperTranscriber.shared.prepare(retry: true)
+                        Haptics.fire(.success)
+                    }
+                }
             }
 
             Section("On this device") {
@@ -141,10 +152,18 @@ struct SettingsView: View {
         .scrollContentBackground(.hidden)
         .ataruBackdrop()
         .task {
-            // Polls rather than observes: the transcriber is an actor and this
-            // row only has to be right while someone is looking at it.
+            // Polls rather than observes: the transcriber is lock-based, not
+            // observable, and this row only has to be right while someone is
+            // looking at it.
             while !Task.isCancelled {
-                whisperState = WhisperTranscriber.uiState
+                let current = WhisperTranscriber.uiState
+                whisperLabel = current.label
+                // Two minutes is well past a healthy load, so past it the
+                // offer to start over is more useful than watching the counter.
+                whisperStuck = {
+                    if case .failed = current { return true }
+                    return (WhisperTranscriber.shared.prepareElapsed ?? 0) > 120
+                }()
                 try? await Task.sleep(for: .seconds(1))
             }
         }

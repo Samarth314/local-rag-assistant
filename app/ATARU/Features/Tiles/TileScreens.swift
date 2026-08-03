@@ -75,20 +75,23 @@ enum TileFetch {
 
 // MARK: - Host
 
-/// Dispatches a tile to its native screen inside a presented navigation
-/// stack. Every tile is native; there is no web fallback.
+/// Dispatches a tile to its native screen.
+///
+/// A layer in the root stack rather than a sheet, so the launcher can stay
+/// above it: a sheet outranks every layer the root view owns, and a launcher
+/// the fan cannot be seen over is a launcher that does not work on that page.
+/// The opaque backdrop is what makes it a screen rather than an overlay —
+/// nothing behind shows through, and nothing behind takes a touch.
 struct TileScreenHost: View {
     let tile: HomeTile
-    @Environment(\.dismiss) private var dismiss
+    let onClose: () -> Void
 
     var body: some View {
         NavigationStack {
             screen
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            dismiss()
-                        } label: {
+                        Button(action: onClose) {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(Theme.textTertiary)
                         }
@@ -96,6 +99,7 @@ struct TileScreenHost: View {
                     }
                 }
         }
+        .background(Ataru.Palette.bg.ignoresSafeArea())
         .preferredColorScheme(.dark)
     }
 

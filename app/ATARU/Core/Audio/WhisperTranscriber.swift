@@ -38,7 +38,7 @@ final class WhisperTranscriber: @unchecked Sendable {
     enum State: Equatable {
         case idle
         case downloading(Double)      // 0...1
-        case preparing                // downloaded; compiling for the ANE
+        case preparing(String)        // on disk; loading + compiling for the ANE
         case ready
         case failed(String)
 
@@ -47,7 +47,16 @@ final class WhisperTranscriber: @unchecked Sendable {
             case .idle: return "Not loaded"
             case .downloading(let fraction):
                 return "Downloading model… \(Int(fraction * 100))%"
-            case .preparing: return "Preparing model…"
+            case .preparing(let stage):
+                // The elapsed count is not decoration. This step said only
+                // "Preparing model…" before, which is indistinguishable from
+                // being wedged - and it genuinely runs for minutes, because
+                // CoreML recompiles the encoder for the Neural Engine on
+                // launches it fails to serve from its own cache.
+                guard let seconds = WhisperTranscriber.shared.prepareElapsed else {
+                    return "\(stage)…"
+                }
+                return String(format: "%@… %.0fs", stage, seconds)
             case .ready:
                 if let seconds = WhisperTranscriber.shared.lastRunSeconds {
                     return String(format: "Whisper (on-device, name-aware) - last %.1fs", seconds)
@@ -77,11 +86,42 @@ final class WhisperTranscriber: @unchecked Sendable {
         return base
     }
 
+    /// Where the model folder itself ends up under `modelStore`. Knowing this
+    /// path is what lets a launch decide "already downloaded" without asking
+    /// Hugging Face - see `prepare()`.
+    private static var localModelFolder: URL {
+        modelStore.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml/\(modelName)", isDirectory: true)
+    }
+
+    /// True when every model this variant needs is on disk with real weights.
+    /// Checked rather than assumed: a download interrupted halfway leaves the
+    /// folder present but useless, and silently loading that fails in a way
+    /// that reads as "Whisper is broken".
+    private static func isDownloaded(_ folder: URL) -> Bool {
+        ["MelSpectrogram", "AudioEncoder", "TextDecoder"].allSatisfy { name in
+            let weights = folder
+                .appendingPathComponent("\(name).mlmodelc/weights/weight.bin")
+            let size = try? FileManager.default
+                .attributesOfItem(atPath: weights.path)[.size] as? Int
+            return (size ?? 0) > 0
+        }
+    }
+
     private let lock = NSLock()
     private var kit: WhisperKit?
     private var isLoading = false
     private var isDecoding = false
     private var lastRun: Double?
+    private var prepareStarted: Date?
+
+    /// How long the current load has been running, so "preparing" can show its
+    /// own age instead of looking identical whether it is 3 seconds or 300 in.
+    var prepareElapsed: Double? {
+        lock.lock(); defer { lock.unlock() }
+        guard let started = prepareStarted else { return nil }
+        return Date().timeIntervalSince(started)
+    }
 
     /// True once a model is resident. Non-blocking by construction - see the
     /// type's note about the hang this replaced.
@@ -91,39 +131,73 @@ final class WhisperTranscriber: @unchecked Sendable {
     }
 
     /// Starts the download/load if it has not begun. Safe to call repeatedly.
-    func prepare() {
+    ///
+    /// `retry` forces a second attempt over a load that has plainly stalled.
+    /// Without it `isLoading` is a one-way latch: a detached load that wedges
+    /// (or is suspended for long enough in the background) leaves the flag set
+    /// forever, and every later call returns immediately having done nothing,
+    /// so the app reports "preparing" for the rest of its life with no way out.
+    func prepare(retry: Bool = false) {
         lock.lock()
+        if retry, isLoading, let started = prepareStarted,
+           Date().timeIntervalSince(started) > 120 {
+            isLoading = false
+        }
         guard kit == nil, !isLoading else { lock.unlock(); return }
         isLoading = true
+        prepareStarted = Date()
         lock.unlock()
 
-        Task { @MainActor in Self.uiState = .downloading(0) }
         // Detached on purpose: this must not run on any caller's executor, or
-        // it blocks whatever asked it to start.
-        Task.detached(priority: .utility) { [weak self] in
+        // it blocks whatever asked it to start. userInitiated, not utility -
+        // this is the engine the next thing the user says depends on, and
+        // utility work is the first thing iOS throttles under Low Power Mode.
+        Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             var loaded: WhisperKit?
             var failure = "download failed"
+            var route = "download"
+            let started = Date()
             do {
                 let store = Self.modelStore
-                // Downloading explicitly (rather than letting init do it) is
-                // what makes a percentage possible - otherwise the UI can only
-                // say "downloading" for several silent minutes.
-                let folder = try await WhisperKit.download(
-                    variant: Self.modelName, downloadBase: store,
-                    useBackgroundSession: false
-                ) { progress in
-                    let fraction = progress.fractionCompleted
-                    Task { @MainActor in Self.uiState = .downloading(fraction) }
+                let local = Self.localModelFolder
+                let folder: URL
+                if Self.isDownloaded(local) {
+                    // The whole model is already here, so do not go near the
+                    // network. `WhisperKit.download` asks Hugging Face for the
+                    // file list on every call even when nothing needs fetching:
+                    // offline that throws and reads as "Whisper unavailable",
+                    // and on a slow connection it stalls the load behind a
+                    // request whose answer is already known.
+                    route = "cached"
+                    folder = local
+                    await MainActor.run { Self.uiState = .preparing("Loading model") }
+                } else {
+                    await MainActor.run { Self.uiState = .downloading(0) }
+                    // Downloading explicitly (rather than letting init do it) is
+                    // what makes a percentage possible - otherwise the UI can only
+                    // say "downloading" for several silent minutes.
+                    folder = try await WhisperKit.download(
+                        variant: Self.modelName, downloadBase: store,
+                        useBackgroundSession: false
+                    ) { progress in
+                        let fraction = progress.fractionCompleted
+                        Task { @MainActor in Self.uiState = .downloading(fraction) }
+                    }
+                    await MainActor.run { Self.uiState = .preparing("Preparing model") }
                 }
-                await MainActor.run { Self.uiState = .preparing }
-                // prewarm: compile into the Neural Engine now. Skipping it
-                // moves that cost onto the user's first question, which reads
-                // as the app hanging.
+                // prewarm is deliberately off. It compiles each model and
+                // throws the result away to cap peak memory, and `load` then
+                // does the same work again - two full passes over a 632MB
+                // model on every launch. CoreML's Neural Engine cache does not
+                // reliably serve these models across launches (a fresh
+                // compiled bundle appears in the app's cache almost every
+                // time), so that second pass is not free: it is minutes, and
+                // dictation silently falls back to Apple for all of them.
                 let config = WhisperKitConfig(model: Self.modelName,
                                               downloadBase: store,
                                               modelFolder: folder.path,
-                                              prewarm: true, load: true, download: false)
+                                              prewarm: false, load: true, download: false)
                 loaded = try await WhisperKit(config)
             } catch {
                 failure = error.localizedDescription
@@ -131,10 +205,43 @@ final class WhisperTranscriber: @unchecked Sendable {
             self.lock.lock()
             self.kit = loaded
             self.isLoading = false
+            if loaded != nil { self.prepareStarted = nil }
             self.lock.unlock()
             let resolved: State = loaded == nil ? .failed(failure) : .ready
             await MainActor.run { Self.uiState = resolved }
+            Self.record("\(route) \(loaded == nil ? "FAILED \(failure)" : "ok") "
+                        + String(format: "%.1fs", Date().timeIntervalSince(started)))
+            if loaded != nil { Self.discardStaleModels() }
         }
+    }
+
+    /// One line per load attempt in the app container, because the thing worth
+    /// knowing about this path - how long it takes, and whether it took the
+    /// cached route - is invisible from outside the phone otherwise.
+    private static func record(_ line: String) {
+        let log = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("whisper-load.log")
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        guard let data = "\(stamp) \(line)\n".data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: log) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: log)
+        }
+    }
+
+    /// Deletes the copy of the model left behind in Documents by builds that
+    /// predated `downloadBase`. It is over a gigabyte of the user's storage
+    /// that nothing reads, and it is only safe to remove once the copy we do
+    /// read has loaded - which is why this runs after a successful load.
+    private static func discardStaleModels() {
+        let stale = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("huggingface", isDirectory: true)
+        guard FileManager.default.fileExists(atPath: stale.path) else { return }
+        try? FileManager.default.removeItem(at: stale)
+        record("removed stale Documents/huggingface model copy")
     }
 
     /// How long the last transcription took, so latency is visible instead of
