@@ -330,14 +330,9 @@ struct RadialFan: Equatable {
             var bestHere: (score: Double, arc: RadialArc)?
 
             for radius in radiusLadder {
-                let (available, center) = widestArc(origin: origin, radius: radius,
-                                                    in: field)
-                guard available > 0 else { continue }
-                // Capped, so an open press fans rather than wrapping the thumb
-                // in a full circle. When the whole circle is available the
-                // widest-arc pass hands back the preferred angle, so the cap
-                // lands the arc pointing up — the shape this started as.
-                let sweep = min(available, stageOneMaxSweep)
+                let (sweep, center) = widestArc(origin: origin, radius: radius,
+                                                in: field, maxSweep: stageOneMaxSweep)
+                guard sweep > 0 else { continue }
                 let arc = RadialArc(radius: radius, sweep: sweep, center: center,
                                     count: oneCount)
                 // As much of the arc as this spot can hold, then the shorter
@@ -395,11 +390,10 @@ struct RadialFan: Equatable {
         var fallback: RadialArc?
         for ratio in outerRatios {
             let radius = inner.radius * ratio
-            let (available, center) = widestArc(origin: origin, radius: radius,
-                                                in: field)
-            guard available > 0 else { continue }
-            let arc = RadialArc(radius: radius,
-                                sweep: min(available, stageTwoMaxSweep),
+            let (sweep, center) = widestArc(origin: origin, radius: radius,
+                                            in: field, maxSweep: stageTwoMaxSweep)
+            guard sweep > 0 else { continue }
+            let arc = RadialArc(radius: radius, sweep: sweep,
                                 center: center, count: count)
             if arc.chord >= minChord { return arc }
             if fallback == nil || arc.chord > fallback!.chord { fallback = arc }
@@ -414,8 +408,8 @@ struct RadialFan: Equatable {
     /// each with their own degenerate ones, this runs once per press, and at a
     /// degree of resolution the error where a bubble lands is a hundredth of a
     /// point.
-    private static func widestArc(origin: CGPoint, radius: Double,
-                                  in field: CGRect) -> (sweep: Double, center: Double) {
+    private static func widestArc(origin: CGPoint, radius: Double, in field: CGRect,
+                                  maxSweep: Double) -> (sweep: Double, center: Double) {
         let samples = 360
         let stepAngle = 2 * Double.pi / Double(samples)
         let inside = (0..<samples).map { index -> Bool in
@@ -426,7 +420,7 @@ struct RadialFan: Equatable {
                 && y >= field.minY && y <= field.maxY
         }
         guard let firstOutside = inside.firstIndex(of: false) else {
-            return (2 * .pi, preferredAngle)
+            return (min(maxSweep, 2 * .pi), preferredAngle)
         }
 
         // Walking from a known gap makes the runs a plain linear scan rather
@@ -447,27 +441,49 @@ struct RadialFan: Equatable {
         }
         if run.length > 1 { runs.append(run) }
 
-        // Longest is not the same as best. A radius wide enough to poke out
-        // both sides of the screen leaves two arcs of equal length — one over
-        // the top, one under the bottom — and picking by length alone is a
-        // coin toss that lands the fan under the hand holding the phone about
-        // half the time. Turning away from straight up is priced at roughly a
-        // radian of arc per radian of turn, so a sideways arc has to be
-        // genuinely much wider before it wins.
+        // Longest is not the same as best, and the middle of a run is not
+        // where the arc belongs.
+        //
+        // Two failures live here. A radius wide enough to poke out both sides
+        // of the screen leaves two runs of equal length, one over the top and
+        // one under the bottom, so picking purely by length is a coin toss
+        // that lands the fan under the hand about half the time. And when a
+        // run is far wider than the arc that has to sit in it — the outer
+        // ring routinely has ~285° available for its 104° — centring on the
+        // run's midpoint aims at whatever direction happens to be opposite
+        // the obstruction, which is how six tiles ended up stacked down the
+        // left-hand edge. The arc slides *within* its run instead, as close
+        // to straight up as the room allows, and turning away from up is
+        // then priced so a sideways run must be much wider to win.
         let scored = runs.map { run -> (sweep: Double, center: Double, score: Double) in
-            let sweep = Double(run.length - 1) * stepAngle
-            let middle = Double(run.start) * stepAngle + sweep / 2
-            // Wrapped into (-π, π]. The trigonometry does not care, but a
-            // centre angle that reads as 4.71 where every other angle in the
-            // file reads as -1.57 is a trap for the next person to compare
-            // two of them.
-            let center = atan2(sin(middle), cos(middle))
+            let available = Double(run.length - 1) * stepAngle
+            let sweep = min(available, maxSweep)
+            let start = Double(run.start) * stepAngle
+            // Centres that keep the whole arc inside the run.
+            let center = clamped(preferredAngle,
+                                 between: start + sweep / 2,
+                                 and: start + available - sweep / 2)
             return (sweep, center, sweep - 1.05 * gap(center, preferredAngle))
         }
         guard let best = scored.max(by: { $0.score < $1.score }) else {
             return (0, preferredAngle)
         }
-        return (best.sweep, best.center)
+        // Wrapped into (-π, π]. The trigonometry does not care, but a centre
+        // angle that reads as 4.71 where every other angle in the file reads
+        // as -1.57 is a trap for the next person to compare two of them.
+        return (best.sweep, atan2(sin(best.center), cos(best.center)))
+    }
+
+    /// The angle between `lo` and `hi` nearest `target`, all of them mod 2π.
+    private static func clamped(_ target: Double,
+                                between lo: Double, and hi: Double) -> Double {
+        let span = hi - lo
+        guard span > 0 else { return lo }
+        let offset = (target - lo).truncatingRemainder(dividingBy: 2 * .pi)
+        let forward = offset < 0 ? offset + 2 * .pi : offset
+        if forward <= span { return lo + forward }
+        // Outside the interval, so the nearer end of it.
+        return gap(target, lo) <= gap(target, hi) ? lo : hi
     }
 
     /// Shortest angle between two directions, either way round.

@@ -242,6 +242,28 @@ final class RadialFanTests: XCTestCase {
         }
     }
 
+    /// The arc slides inside the room it has; it does not sit in the middle
+    /// of it.
+    ///
+    /// A press low and centre leaves the outer ring ~285° to play with,
+    /// because the only thing off screen at that radius is a wedge past the
+    /// right edge. Centring the 104° arc on that run's midpoint aims it
+    /// straight left, which is how six tiles ended up stacked down the
+    /// left-hand edge with the inner ring still pointing up.
+    func testAnArcWithRoomToSpareStillPointsUpward() {
+        let fan = RadialFan.solve(at: CGPoint(x: 223, y: 576), in: field,
+                                  count: HomeTile.allCases.count)
+        XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.3,
+                       "the first arc drifted off straight up")
+        let outer = try? XCTUnwrap(fan.stageTwo)
+        XCTAssertEqual(outer?.center ?? 0, -Double.pi / 2, accuracy: 0.3,
+                       "the second arc is not over the top with the first")
+        // Which is to say: both arcs stay above the press, not beside it.
+        for point in bubbles(fan) {
+            XCTAssertLessThan(point.y, 576, "a tile fanned level with or below the thumb")
+        }
+    }
+
     func testAnEdgePressKeepsAsMuchOfTheArcAsFits() {
         let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
                                   count: HomeTile.allCases.count)
