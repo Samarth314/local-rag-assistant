@@ -194,9 +194,25 @@ final class WhisperTranscriber: @unchecked Sendable {
                 // compiled bundle appears in the app's cache almost every
                 // time), so that second pass is not free: it is minutes, and
                 // dictation silently falls back to Apple for all of them.
+                // The audio encoder runs on the GPU, not the Neural Engine.
+                //
+                // Measured: the cached single-pass load took 193 seconds, and
+                // nearly all of it is CoreML compiling the 402MB encoder for
+                // the ANE - work it redoes on almost every launch, because its
+                // own cache does not serve these models reliably across
+                // processes. Three minutes of every launch with the engine
+                // unavailable is a worse trade than a slower decode, and the
+                // GPU path needs no such compilation. The decoder stays on the
+                // ANE: it is 194MB and it is the part that runs per token.
+                //
+                // This costs nothing in accuracy. Same model, same weights,
+                // different silicon. If turns feel slow, Settings shows the
+                // last transcription time and that is the number to judge on.
                 let config = WhisperKitConfig(model: Self.modelName,
                                               downloadBase: store,
                                               modelFolder: folder.path,
+                                              computeOptions: ModelComputeOptions(
+                                                  audioEncoderCompute: .cpuAndGPU),
                                               prewarm: false, load: true, download: false)
                 loaded = try await WhisperKit(config)
             } catch {
