@@ -163,8 +163,6 @@ struct ServiceCardScreen: View {
         case .media:         return "Jellyfin runs on the mini. Use the Jellyfin app or a browser on the tailnet for playback - a video server deserves its own player."
         case .music:         return "Navidrome on the mini. Any Subsonic-compatible player on the tailnet connects to it."
         case .passwords:     return "Vaultwarden on the mini. Pair it with the Bitwarden app pointed at the tailnet URL."
-        case .containers:    return "Portainer manages the mini's Docker services."
-        case .notifications: return "ntfy pushes ATARU's alerts to this phone. Nothing to configure here."
         case .remote:        return "noVNC screens for the mini, Orin and NAS - a desktop-sized surface, best used from a desktop."
         case .whiteboard:    return "The PenEcho AI canvas - handwriting first, so it lives best on the iPad or a desktop."
         default:             return ""

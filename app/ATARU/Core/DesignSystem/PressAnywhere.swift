@@ -161,11 +161,30 @@ struct PressAnywhere: UIViewRepresentable {
             onEnded()
         }
 
-        /// The one place a press is turned down: inside a rect that has its own
-        /// meaning for being held.
+        /// Where a press is turned down: inside a rect that has its own meaning
+        /// for being held, or anywhere over a text input.
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
             let point = gesture.location(in: gesture.view)
-            return !exclusions.contains { $0.contains(point) }
+            if exclusions.contains(where: { $0.contains(point) }) { return false }
+            return !isOverTextInput(point, in: gesture.view)
+        }
+
+        /// Text inputs are never the launcher's to take.
+        ///
+        /// Holding one is how iOS offers the magnifier, selection and Paste,
+        /// and cancelling that touch is how you end up with a field that will
+        /// not take focus. The declared exclusion rects already cover the
+        /// composer; this is the backstop that does not depend on anyone
+        /// remembering to add one — which matters because the failure mode, a
+        /// keyboard that never appears, looks nothing like a launcher bug.
+        private func isOverTextInput(_ point: CGPoint, in view: UIView?) -> Bool {
+            guard let hit = view?.hitTest(point, with: nil) else { return false }
+            var responder: UIResponder? = hit
+            while let current = responder {
+                if current is UITextView || current is UITextField { return true }
+                responder = current.next
+            }
+            return false
         }
 
         /// Never claims a gesture exclusively while it is still pending — lists

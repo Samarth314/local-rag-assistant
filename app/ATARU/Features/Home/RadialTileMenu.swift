@@ -6,12 +6,26 @@ import SwiftUI
 /// the radial launcher are two ways of launching the SAME set - the grid for
 /// browsing, the dial for muscle memory. Every case opens a native screen;
 /// nothing routes to a web page.
+/// The declaration order IS the launcher's order, and the first
+/// `stageOneCount` of them are the ones a thumb reaches without looking.
+///
+/// Stage one is chosen by how often a phone is the right device for the job:
+/// the surfaces holding your own data, and the ones that change day to day.
+/// Stage two is what is genuinely better on a bigger screen — a video server,
+/// a music server, a handwriting canvas, and remote desktops.
+///
+/// Docker and Notify were removed outright. Portainer is a management console
+/// for a machine, not something to poke at from a phone, and ntfy has nothing
+/// to show: it pushes notifications, which arrive as notifications.
 enum HomeTile: String, CaseIterable, Identifiable {
-    // Inner ring: the core daily surfaces.
-    case assistant, plan, finance, health, home, status, journal, workspaces
-    // Outer ring: the rest of the homelab.
-    case documents, whiteboard, media, music, passwords, containers,
-         notifications, remote
+    // Stage one, in reach order.
+    case assistant, plan, finance, health, journal, documents, passwords,
+         home, status, workspaces
+    // Stage two, revealed by pushing further out.
+    case media, music, whiteboard, remote
+
+    /// How many tiles the first arc carries. The rest wait on the second.
+    static let stageOneCount = 10
 
     var id: String { rawValue }
 
@@ -30,8 +44,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .media:         return "Media"
         case .music:         return "Music"
         case .passwords:     return "Vault"
-        case .containers:    return "Docker"
-        case .notifications: return "Notify"
         case .remote:        return "Remote"
         }
     }
@@ -51,8 +63,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .media:         return "play.rectangle"
         case .music:         return "music.note"
         case .passwords:     return "key"
-        case .containers:    return "shippingbox"
-        case .notifications: return "bell.badge"
         case .remote:        return "display"
         }
     }
@@ -73,8 +83,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .media:         return "Jellyfin"
         case .music:         return "Navidrome"
         case .passwords:     return "Vaultwarden"
-        case .containers:    return "Portainer"
-        case .notifications: return "ntfy"
         case .remote:        return "Screens"
         }
     }
@@ -87,8 +95,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .media:         return "jellyfin"
         case .music:         return "navidrome"
         case .passwords:     return "vaultwarden"
-        case .containers:    return "portainer"
-        case .notifications: return "ntfy"
         case .whiteboard:    return "penecho"
         case .documents:     return "ingest"
         default:             return rawValue
@@ -113,13 +119,13 @@ struct RadialFan: Equatable {
     let origin: CGPoint
     let offsets: [CGSize]
 
-    let innerRadius: Double
-    let outerRadius: Double
-    let innerCount: Int
+    let stageOneRadius: Double
+    let stageTwoRadius: Double
+    let stageOneCount: Int
     let count: Int
     let centerAngle: Double
-    let innerSweep: Double
-    let outerSweep: Double
+    let stageOneSweep: Double
+    let stageTwoSweep: Double
 
     /// Travel below this is a wobble, not a choice — and releasing inside it
     /// is how you cancel.
@@ -128,12 +134,31 @@ struct RadialFan: Equatable {
     /// Radius of one bubble plus the breathing room it wants from the edge.
     static let clearance: Double = 30
 
-    // Two rings, because sixteen tiles on one arc either overlap or need a
-    // radius no thumb can reach. The outer arc is the narrower of the two:
-    // its ends are the points that run into the left and right edges first,
-    // so pulling them in is what buys the whole fan its room.
-    private static let innerSweepDefault = Double.pi * 176 / 180
-    private static let outerSweepDefault = Double.pi * 140 / 180
+    // The second arc is the narrower of the two: its ends are the points that
+    // run into the left and right edges first, so pulling them in is what buys
+    // the whole fan its room. It also carries far fewer tiles, so it can
+    // afford to.
+    private static let stageOneSweepDefault = Double.pi * 176 / 180
+    private static let stageTwoSweepDefault = Double.pi * 104 / 180
+
+    /// Ratio between the arcs. Wide enough that a 44pt bubble on one never
+    /// touches one on the other, and that crossing between them is a decision
+    /// rather than a slip.
+    private static let stageOneOverTwo: Double = 0.71
+
+    /// How far out the second stage appears, as a fraction of the gap between
+    /// the arcs. Deliberately short of halfway: the reveal should happen while
+    /// the thumb is still travelling, so stage two is already on screen by the
+    /// time it could be aimed at, rather than materialising under the finger.
+    private static let revealFraction: Double = 0.42
+
+    /// Push past this and the rest of the tiles appear.
+    var revealRadius: Double {
+        stageOneRadius + (stageTwoRadius - stageOneRadius) * Self.revealFraction
+    }
+
+    /// The boundary between "aiming at stage one" and "aiming at stage two".
+    var stageBoundary: Double { (stageOneRadius + stageTwoRadius) / 2 }
 
     /// Straight up. The hand comes from the bottom of the phone, so anywhere
     /// else is a direction the palm covers.
@@ -153,28 +178,31 @@ struct RadialFan: Equatable {
     static func solve(at point: CGPoint, in field: CGRect, count: Int) -> RadialFan {
         let anchor = CGPoint(x: min(max(point.x, field.minX), field.maxX),
                              y: min(max(point.y, field.minY), field.maxY))
-        let innerCount = min(8, count)
-        let outerCount = count - innerCount
-        let innerSweep = innerSweepDefault
-        let outerSweep = outerSweepDefault
+        let stageOneCount = min(HomeTile.stageOneCount, count)
+        let stageTwoCount = count - stageOneCount
+        let stageOneSweep = stageOneSweepDefault
+        let stageTwoSweep = stageTwoSweepDefault
 
         // Scaled to the screen rather than fixed, so a narrow phone gets a
         // smaller fan instead of one that has to be shoved sideways to fit.
-        // The half-width of the outer arc is `radius * sin(sweep / 2)`, so
-        // inverting that gives the largest radius the field can hold.
-        let widthLimit = (field.width / 2) / sin(outerSweep / 2)
-        let outerRadius = max(96, min(172, widthLimit, field.height * 0.45))
-        let innerRadius = outerRadius * 0.665
+        // The half-width of an arc is `radius * sin(sweep / 2)`, so inverting
+        // that gives the largest radius the field can hold — computed for both
+        // arcs, since stage one is nearly a half circle and stage two is a
+        // narrow one much further out, and either can be the binding one.
+        let oneLimit = (field.width / 2) / sin(stageOneSweep / 2)
+        let twoLimit = ((field.width / 2) / sin(stageTwoSweep / 2)) * stageOneOverTwo
+        let stageOneRadius = max(92, min(150, oneLimit, twoLimit, field.height * 0.34))
+        let stageTwoRadius = stageOneRadius / stageOneOverTwo
 
         func offsets(_ centerAngle: Double) -> [CGSize] {
             (0..<count).map { index in
-                let isInner = index < innerCount
-                let indexInRing = isInner ? index : index - innerCount
-                let ringCount = isInner ? innerCount : outerCount
-                let radius = isInner ? innerRadius : outerRadius
-                let sweep = isInner ? innerSweep : outerSweep
-                let step = ringCount > 1 ? sweep / Double(ringCount - 1) : 0
-                let angle = centerAngle - sweep / 2 + step * Double(indexInRing)
+                let isStageOne = index < stageOneCount
+                let indexInStage = isStageOne ? index : index - stageOneCount
+                let stageCount = isStageOne ? stageOneCount : stageTwoCount
+                let radius = isStageOne ? stageOneRadius : stageTwoRadius
+                let sweep = isStageOne ? stageOneSweep : stageTwoSweep
+                let step = stageCount > 1 ? sweep / Double(stageCount - 1) : 0
+                let angle = centerAngle - sweep / 2 + step * Double(indexInStage)
                 return CGSize(width: radius * cos(angle), height: radius * sin(angle))
             }
         }
@@ -233,36 +261,48 @@ struct RadialFan: Equatable {
             origin: CGPoint(x: anchor.x + chosen.shift.width,
                             y: anchor.y + chosen.shift.height),
             offsets: chosen.offsets,
-            innerRadius: innerRadius,
-            outerRadius: outerRadius,
-            innerCount: innerCount,
+            stageOneRadius: stageOneRadius,
+            stageTwoRadius: stageTwoRadius,
+            stageOneCount: stageOneCount,
             count: count,
             centerAngle: chosen.angle,
-            innerSweep: innerSweep,
-            outerSweep: outerSweep
+            stageOneSweep: stageOneSweep,
+            stageTwoSweep: stageTwoSweep
         )
+    }
+
+    /// How far the thumb is from the pivot.
+    func distance(to point: CGPoint) -> Double {
+        hypot(Double(point.x - origin.x), Double(point.y - origin.y))
     }
 
     /// Which tile the thumb is currently pointing at, by index.
     ///
-    /// Matched by ring-then-angle rather than by nearest bubble. Nearest-bubble
-    /// makes the outer ring almost unreachable: it sits 172pt out, and a thumb
-    /// pivoting from the base of the hand rarely travels that far. Here the
-    /// distance only has to cross the halfway line to mean "outer", so both
-    /// rings are inside comfortable reach.
-    func index(at point: CGPoint) -> Int? {
+    /// Matched by stage-then-angle rather than by nearest bubble. Nearest-bubble
+    /// makes the second stage almost unreachable: it sits over 200pt out, and a
+    /// thumb pivoting from the base of the hand rarely travels that far. Here
+    /// the distance only has to cross the boundary between the arcs, so both
+    /// stages are inside comfortable reach.
+    ///
+    /// `stageTwoVisible` is passed in rather than inferred: until the thumb has
+    /// pushed far enough to reveal the second arc, aiming past the first one
+    /// must not silently select a tile that is not on screen yet.
+    func index(at point: CGPoint, stageTwoVisible: Bool) -> Int? {
         guard hypot(point.x - anchor.x, point.y - anchor.y) > Self.deadZone else { return nil }
 
         let dx = Double(point.x - origin.x)
         let dy = Double(point.y - origin.y)
-        let distance = hypot(dx, dy)
-        let outerCount = count - innerCount
-        let isInner = distance < (innerRadius + outerRadius) / 2 || outerCount == 0
+        let stageTwoCount = count - stageOneCount
+        let isStageOne = distance(to: point) < stageBoundary
+            || stageTwoCount == 0
+            || !stageTwoVisible
 
-        let ringCount = isInner ? innerCount : outerCount
-        let sweep = isInner ? innerSweep : outerSweep
-        guard ringCount > 1 else { return ringCount == 1 ? (isInner ? 0 : innerCount) : nil }
-        let step = sweep / Double(ringCount - 1)
+        let stageCount = isStageOne ? stageOneCount : stageTwoCount
+        let sweep = isStageOne ? stageOneSweep : stageTwoSweep
+        guard stageCount > 1 else {
+            return stageCount == 1 ? (isStageOne ? 0 : stageOneCount) : nil
+        }
+        let step = sweep / Double(stageCount - 1)
 
         // Angle relative to the arc's first tile, wrapped into (-π, π] so the
         // comparison works whichever way the fan is turned.
@@ -273,8 +313,8 @@ struct RadialFan: Equatable {
         // happens to be closest.
         guard relative >= -step / 2, relative <= sweep + step / 2 else { return nil }
 
-        let indexInRing = min(ringCount - 1, max(0, Int((relative / step).rounded())))
-        return isInner ? indexInRing : innerCount + indexInRing
+        let indexInStage = min(stageCount - 1, max(0, Int((relative / step).rounded())))
+        return isStageOne ? indexInStage : stageOneCount + indexInStage
     }
 }
 
@@ -316,6 +356,12 @@ struct RadialPressMenu: View {
 
     @State private var fan: RadialFan?
     @State private var highlighted: Int?
+    /// Latches once the thumb has pushed past the first arc, and stays latched
+    /// for the rest of the press. Sweeping back inside must not take the second
+    /// stage away again: tiles flickering in and out under a moving finger is
+    /// unreadable, and the whole point of the staging is that stage one is
+    /// uncluttered *until you ask for more*, not that it toggles.
+    @State private var stageTwoRevealed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let tiles = HomeTile.allCases
@@ -343,18 +389,24 @@ struct RadialPressMenu: View {
 
                     ForEach(Array(tiles.prefix(fan.offsets.count).enumerated()),
                             id: \.element.id) { index, tile in
-                        let offset = fan.offsets[index]
-                        TileBubble(tile: tile,
-                                   isHighlighted: highlighted == index,
-                                   size: bubbleSize)
-                            .position(x: fan.origin.x + offset.width,
-                                      y: fan.origin.y + offset.height)
-                            // Scaled about the pivot rather than about itself,
-                            // so the tiles read as thrown out from under the
-                            // thumb instead of simply fading in where they land.
-                            .transition(
-                                .scale(scale: 0.2, anchor: anchor(for: offset))
-                                    .combined(with: .opacity))
+                        // Stage two is not drawn until the thumb has asked for
+                        // it. Ten tiles is about as many as can be taken in at
+                        // a glance; fourteen is a wall.
+                        if index < fan.stageOneCount || stageTwoRevealed {
+                            let offset = fan.offsets[index]
+                            TileBubble(tile: tile,
+                                       isHighlighted: highlighted == index,
+                                       size: bubbleSize)
+                                .position(x: fan.origin.x + offset.width,
+                                          y: fan.origin.y + offset.height)
+                                // Scaled about the pivot rather than about
+                                // itself, so the tiles read as thrown out from
+                                // under the thumb instead of fading in where
+                                // they land.
+                                .transition(
+                                    .scale(scale: 0.2, anchor: anchor(for: offset))
+                                        .combined(with: .opacity))
+                        }
                     }
                 }
             }
@@ -391,6 +443,7 @@ struct RadialPressMenu: View {
         guard field.width > 0, field.height > 0 else { return }
 
         highlighted = nil
+        stageTwoRevealed = false
         withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.78)) {
             fan = RadialFan.solve(at: local, in: field, count: tiles.count)
         }
@@ -400,7 +453,21 @@ struct RadialPressMenu: View {
     private func move(to point: CGPoint, in frame: CGRect) {
         guard let fan else { return }
         let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
-        let next = fan.index(at: local)
+
+        // Reaching past the first arc brings out the rest. A firmer haptic than
+        // a selection tick, because this is a change to what is on screen
+        // rather than a move within it — and the thumb is usually ahead of the
+        // eye by this point.
+        if !stageTwoRevealed,
+           fan.count > fan.stageOneCount,
+           fan.distance(to: local) > fan.revealRadius {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
+                stageTwoRevealed = true
+            }
+            Haptics.fire(.tap)
+        }
+
+        let next = fan.index(at: local, stageTwoVisible: stageTwoRevealed)
         guard next != highlighted else { return }
         highlighted = next
         if next != nil { Haptics.fire(.selection) }
@@ -409,6 +476,7 @@ struct RadialPressMenu: View {
     private func commit() {
         let chosen = highlighted.map { tiles[$0] }
         highlighted = nil
+        stageTwoRevealed = false
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
             fan = nil
         }

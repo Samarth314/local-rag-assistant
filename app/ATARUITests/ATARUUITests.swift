@@ -57,7 +57,20 @@ final class ATARUUITests: XCTestCase {
         let field = app.descendants(matching: .any)
             .matching(identifier: "question-field").firstMatch
         XCTAssertTrue(field.waitForExistence(timeout: 5))
-        field.tap()
+        // A coordinate tap, not `field.tap()`.
+        //
+        // `tap()` resolves the element and synthesises against it, and against
+        // this one it never lands focus: a vertical-axis TextField reports a
+        // 19pt strip in the middle of a 52pt capsule. A coordinate tap is what
+        // a thumb does — a touch at a point — which the capsule's own tap
+        // handler turns into focus.
+        //
+        // `typeText` is the assertion that focus really happened: it fails
+        // with "Neither element nor any descendant has keyboard focus" if it
+        // did not. Checking `app.keyboards` instead would be wrong — a
+        // simulator with a hardware keyboard attached focuses the field and
+        // shows no software keyboard at all.
+        field.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         field.typeText("what is the backup policy")
         app.buttons["submit-question"].tap()
 

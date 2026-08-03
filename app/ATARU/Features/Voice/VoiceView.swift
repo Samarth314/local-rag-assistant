@@ -68,10 +68,22 @@ struct VoiceView: View {
                 }
                 // The vertical-axis field turns Return into newline, so the
                 // keyboard needs its own explicit way out.
+                //
+                // UIKit's own keyboard accessory bar, via SwiftUI's `.keyboard`
+                // placement — the same strip Mail and Notes put their controls
+                // on. It rides up with the keyboard and is the one place iOS
+                // users already look for a way out, which is worth more than
+                // anything custom floating over the composer.
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done") { composerFocused = false }
-                        .font(.ataruLabel())
+                    Button {
+                        composerFocused = false
+                    } label: {
+                        Label("Done", systemImage: "keyboard.chevron.compact.down")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .font(.ataruLabel())
+                    .accessibilityIdentifier("dismiss-keyboard")
                 }
             }
         }
@@ -241,6 +253,18 @@ struct VoiceView: View {
                 RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
                     .strokeBorder(Theme.border, lineWidth: 1)
             }
+            // The capsule focuses the field, not just the 19pt strip of text
+            // inside it.
+            //
+            // A vertical-axis TextField lays itself out to the height of its
+            // *content* — one line — so the element that takes taps was a
+            // sliver in the middle of a 52pt control, and most of what looks
+            // like the text box did nothing. That is why the keyboard would not
+            // come up: the taps were landing on padding. `contentShape` makes
+            // the whole capsule a target and the tap hands focus to the field.
+            .contentShape(RoundedRectangle(cornerRadius: Theme.Radius.large,
+                                           style: .continuous))
+            .onTapGesture { composerFocused = true }
             // A hold on a text field is how iOS offers the magnifier and
             // "Paste". The launcher must not take that away, even before the
             // field has focus.
