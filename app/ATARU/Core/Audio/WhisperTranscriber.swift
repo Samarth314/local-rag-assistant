@@ -130,6 +130,19 @@ final class WhisperTranscriber: @unchecked Sendable {
         return kit != nil
     }
 
+    /// Whether to carry the model on the phone at all.
+    ///
+    /// Off by default since the engine moved to the Orin (see
+    /// `RemoteTranscriber`). What it buys is transcription away from the
+    /// tailnet; what it costs is a minute of every cold start, during which
+    /// dictation is Apple's and unbiased anyway - which is the wrong trade
+    /// unless being off the network is the case being planned for.
+    static let offlineKey = "ataru.offlineTranscription"
+
+    static var offlineEnabled: Bool {
+        UserDefaults.standard.bool(forKey: offlineKey)
+    }
+
     /// Starts the download/load if it has not begun. Safe to call repeatedly.
     ///
     /// `retry` forces a second attempt over a load that has plainly stalled.
@@ -138,6 +151,7 @@ final class WhisperTranscriber: @unchecked Sendable {
     /// forever, and every later call returns immediately having done nothing,
     /// so the app reports "preparing" for the rest of its life with no way out.
     func prepare(retry: Bool = false) {
+        guard Self.offlineEnabled || retry else { return }
         lock.lock()
         if retry, isLoading, let started = prepareStarted,
            Date().timeIntervalSince(started) > 120 {

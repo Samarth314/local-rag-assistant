@@ -109,6 +109,11 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(Roster.self, from: data).names
     }
 
+    func transcribe(samples: [Float]) async -> String? {
+        await RemoteTranscriber.transcribe(samples: samples, endpoints: endpoints,
+                                           token: tokenProvider())
+    }
+
     func greeting() async throws -> SpokenAnswer {
         try await cannedLine(endpoints.greeting,
                              fallbackText: "ATARU here. What would you like to know?",

@@ -202,12 +202,11 @@ final class RadialFanTests: XCTestCase {
                        "the positional split and the stage property disagree")
     }
 
-    func testSweepingBehindAPartialArcSelectsNothing() {
-        // Pressed against the bottom edge, where a ring cannot close: the fan
-        // opens upward, so straight down is behind it.
+    func testSweepingBehindTheFanSelectsNothing() {
+        // Pressed against the bottom edge, so the fan opens upward and
+        // straight down is behind it.
         let fan = RadialFan.solve(at: CGPoint(x: 201, y: 812), in: field,
                                   count: HomeTile.allCases.count)
-        XCTAssertFalse(fan.isClosed, "an edge press has no room for a ring")
         XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.2)
         XCTAssertNil(fan.index(at: CGPoint(x: fan.origin.x, y: fan.origin.y + 120),
                                stageTwoVisible: true),
@@ -216,33 +215,41 @@ final class RadialFanTests: XCTestCase {
 
     // MARK: - Shape
 
-    func testAPressWithRoomAllRoundClosesTheRing() {
-        let fan = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
-                                  count: HomeTile.allCases.count)
-        XCTAssertTrue(fan.isClosed, "room in every direction should give a full circle")
-        XCTAssertEqual(fan.stageOneSweep, 2 * .pi, accuracy: 0.001)
-        // A ring starts at the top, where the eye already is.
-        XCTAssertEqual(fan.stageOne.angle(at: 0), -Double.pi / 2, accuracy: 0.001)
+    /// An arc, never a closed ring — a full circle was tried and reverted.
+    /// The bottom of the circle, where the hand is, stays empty from
+    /// anywhere on the screen.
+    func testTheFanIsAlwaysAnArcAndNeverWrapsTheThumb() {
+        for x in stride(from: 0.0, through: 402, by: 40) {
+            for y in stride(from: 0.0, through: 818, by: 40) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count)
+                XCTAssertLessThan(fan.stageOneSweep, 2 * .pi - 0.2,
+                                  "the fan closed into a ring at (\(x), \(y))")
+                XCTAssertLessThanOrEqual(fan.stageTwoSweep, 2 * .pi - 0.2)
+            }
+        }
     }
 
-    func testAClosedRingHasNoBehindAndNoSeam() {
+    func testAPressWithRoomAllRoundFansTheFullArcUpward() {
         let fan = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
                                   count: HomeTile.allCases.count)
-        // Every direction points at something, including straight down.
-        XCTAssertNotNil(fan.index(at: CGPoint(x: fan.origin.x, y: fan.origin.y + 120),
-                                  stageTwoVisible: false))
-        // Last tile to first is one step like any other pair.
-        XCTAssertEqual(fan.stageOne.step, 2 * .pi / Double(fan.stageOneCount),
-                       accuracy: 0.001)
+        // The original width, and pointing away from the hand.
+        XCTAssertEqual(fan.stageOneSweep, .pi * 176 / 180, accuracy: 0.02)
+        XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.05)
+        // Every tile above the press, none below.
+        for point in bubbles(fan) {
+            XCTAssertLessThan(point.y, 380 + 1)
+        }
     }
 
-    func testAnEdgePressKeepsAsMuchOfTheCircleAsFits() {
+    func testAnEdgePressKeepsAsMuchOfTheArcAsFits() {
         let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
                                   count: HomeTile.allCases.count)
-        XCTAssertFalse(fan.isClosed)
         // Half a turn is what a straight edge leaves. Much less than that means
-        // the solver gave up on the circle rather than trimming it.
+        // the solver gave up on the arc rather than trimming it.
         XCTAssertGreaterThanOrEqual(fan.stageOneSweep, .pi - 0.1)
+        XCTAssertGreaterThan(cos(fan.centerAngle), 0.5,
+                             "it should turn toward the open side")
     }
 
     // MARK: - The current screen

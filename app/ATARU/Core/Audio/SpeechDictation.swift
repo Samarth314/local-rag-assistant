@@ -131,6 +131,10 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// Roster shared by every dictation instance, refreshed in the background
     /// when the backend changes. Empty just means unbiased transcription.
     static var sharedVocabulary: [String] = []
+
+    /// The backend that transcribes a finished turn, set wherever the roster
+    /// is warmed. Nil in Demo, and nil is simply the on-device path.
+    static var sharedService: ATARUService?
     private var recognizer: SFSpeechRecognizer?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
@@ -184,6 +188,14 @@ final class SpeechDictation: NSObject, ObservableObject {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         request.requiresOnDeviceRecognition = true   // see the type's doc comment
+        // Apple's own proper-noun biasing, which this app never used. It is a
+        // weaker lever than Whisper's prompt, but it is free and it applies to
+        // the live partials the user watches AND to the transcript that stands
+        // in whenever ATARU's own engine cannot be reached.
+        if !vocabulary.isEmpty || !Self.sharedVocabulary.isEmpty {
+            let roster = vocabulary.isEmpty ? Self.sharedVocabulary : vocabulary
+            request.contextualStrings = Array(roster.prefix(100))
+        }
         self.request = request
 
         // A session already up is left alone. Activating one is not
@@ -320,6 +332,15 @@ final class SpeechDictation: NSObject, ObservableObject {
     func finish() async -> String {
         let apple = await endAudioAwaitingFinal()
         let samples = captured.drain()
+        // ATARU's own Whisper first. It is the same engine the phone used to
+        // carry, with the same name biasing, except it is already loaded and
+        // the roster is attached at the server - so there is no cold start to
+        // wait out and no 632MB to hold. See RemoteTranscriber.
+        if let service = Self.sharedService,
+           let remote = await service.transcribe(samples: samples) {
+            transcript = remote
+            return remote
+        }
         guard WhisperTranscriber.shared.isReady else { return apple }
         // Hard ceiling. A question that never comes back is worse than one
         // transcribed slightly worse: the app sat on "Thinking" forever the

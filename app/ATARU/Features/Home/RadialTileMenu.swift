@@ -116,26 +116,25 @@ enum HomeTile: String, CaseIterable, Identifiable {
 
 // MARK: - Layout
 
-/// One ring of the fan: where its tiles sit, and which one an angle points at.
+/// One arc of the fan: where its tiles sit, and which one an angle points at.
 ///
-/// A ring closes into a full circle whenever the press has room for one, and
-/// otherwise carries as much of a circle as fits — the two cases differ only
-/// in how the tiles are spaced (a closed ring's last tile neighbours its
-/// first, so it divides by the count rather than the gaps between them) and
-/// in whether there is a "behind the arc" at all.
+/// An arc, never a closed ring. A full circle was tried and reverted: it reads
+/// as a menu the thumb is standing inside rather than one it is aiming at, it
+/// puts a third of the tiles under the hand that opened it, and it takes away
+/// the "behind the fan" that makes sweeping backwards a cancel. What the arc
+/// keeps from that work is the fitting — the sweep still narrows and turns to
+/// whatever the press leaves room for, rather than assuming a whole screen.
 struct RadialArc: Equatable {
     let radius: Double
-    /// How much of the circle the tiles occupy. `2π` is a closed ring.
+    /// How much of the circle the tiles occupy.
     let sweep: Double
-    /// The middle of the arc — or, for a closed ring, where its first tile sits.
+    /// The middle of the arc.
     let center: Double
     let count: Int
 
-    var isClosed: Bool { sweep >= 2 * .pi - 0.0001 }
-
     var step: Double {
         guard count > 1 else { return 0 }
-        return isClosed ? sweep / Double(count) : sweep / Double(count - 1)
+        return sweep / Double(count - 1)
     }
 
     /// Centre-to-centre distance between neighbours, which is what decides
@@ -146,9 +145,7 @@ struct RadialArc: Equatable {
 
     func angle(at index: Int) -> Double {
         guard count > 1 else { return center }
-        return isClosed
-            ? center + step * Double(index)
-            : center - sweep / 2 + step * Double(index)
+        return center - sweep / 2 + step * Double(index)
     }
 
     func offset(at index: Int) -> CGSize {
@@ -160,11 +157,6 @@ struct RadialArc: Equatable {
     func index(atAngle angle: Double) -> Int? {
         guard count > 0 else { return nil }
         guard count > 1 else { return 0 }
-        if isClosed {
-            // A ring has no behind: every direction points at something.
-            let turns = (wrapped(angle - center) / step).rounded()
-            return ((Int(turns) % count) + count) % count
-        }
         // Measured from the arc's first tile and normalised into a full turn,
         // rather than into (-π, π]: an arc can be wider than a half circle,
         // and its far end would wrap to a negative number and read as behind.
@@ -176,10 +168,6 @@ struct RadialArc: Equatable {
             return min(count - 1, Int((relative / step).rounded()))
         }
         return relative >= 2 * .pi - step / 2 ? 0 : nil
-    }
-
-    private func wrapped(_ angle: Double) -> Double {
-        atan2(sin(angle), cos(angle))
     }
 
     private func normalized(_ angle: Double) -> Double {
@@ -216,8 +204,6 @@ struct RadialFan: Equatable {
     var centerAngle: Double { stageOne.center }
     var stageOneSweep: Double { stageOne.sweep }
     var stageTwoSweep: Double { stageTwo?.sweep ?? 0 }
-    /// Whether the first ring closed the loop.
-    var isClosed: Bool { stageOne.isClosed }
 
     /// Travel below this is a wobble, not a choice — and releasing inside it
     /// is how you cancel.
@@ -239,6 +225,16 @@ struct RadialFan: Equatable {
     /// like they snap into place rather than fan out. 104 is the tightest
     /// ring that still breathes.
     private static let radiusLadder: [Double] = [104, 120, 136, 152, 168]
+
+    /// How wide each arc opens when the press has room for all of it.
+    ///
+    /// The original widths, restored. Anything approaching a full turn wraps
+    /// the fan around the thumb instead of in front of it; these leave the
+    /// bottom of the circle — where the hand is — empty. The second arc is
+    /// the narrower of the two because it sits much further out, so its ends
+    /// are what run into the screen edges first.
+    private static let stageOneMaxSweep = Double.pi * 176 / 180
+    private static let stageTwoMaxSweep = Double.pi * 104 / 180
 
     /// Ratios of the outer ring to the inner, tried in order.
     ///
@@ -299,9 +295,8 @@ struct RadialFan: Equatable {
             stageOneRadius + (stageTwoRadius - stageOneRadius) * Self.boundaryFraction)
     }
 
-    /// Straight up. The hand comes from the bottom of the phone, so a partial
-    /// arc opens away from the palm — and a closed ring starts its first tile
-    /// there, where the eye already is.
+    /// Straight up. The hand comes from the bottom of the phone, so the arc
+    /// opens away from the palm.
     private static let preferredAngle = -Double.pi / 2
 
     /// Fits the fan around `point`, keeping every bubble inside `field`.
@@ -310,13 +305,14 @@ struct RadialFan: Equatable {
     /// `clearance` — so containment here means visibly clear of the edge, not
     /// merely touching it.
     ///
-    /// The shape is chosen, not fixed: a press with room in every direction
-    /// gets a closed ring, and one against an edge gets as much of a circle as
-    /// that edge leaves. Three knobs, in order of preference — ring size
-    /// first, since a slightly wider ring often turns a three-quarter arc into
-    /// a whole circle; then how much of the circle survives; and only when no
-    /// size fits the tiles at all, sliding the whole cluster inward, which is
-    /// a last resort because it moves the tiles away from the thumb.
+    /// A press with room all round gets the full arc, pointing up. One against
+    /// an edge gets a narrower arc turned toward the open side, which is the
+    /// part worth keeping from the ring experiment: the sweep is measured
+    /// against the screen rather than assumed, so the fan never has to be
+    /// dragged bodily inland to fit. Two knobs, in order of preference — arc
+    /// size, then how much of the arc survives — and only when no size fits
+    /// the tiles at all, sliding the whole cluster inward, which is a last
+    /// resort because it moves the tiles away from the thumb.
     static func solve(at point: CGPoint, in field: CGRect, count: Int,
                       stageOneCount requestedStageOne: Int = HomeTile.stageOneCount) -> RadialFan {
         let anchor = CGPoint(x: min(max(point.x, field.minX), field.maxX),
@@ -334,16 +330,19 @@ struct RadialFan: Equatable {
             var bestHere: (score: Double, arc: RadialArc)?
 
             for radius in radiusLadder {
-                let (sweep, center) = widestArc(origin: origin, radius: radius, in: field)
-                guard sweep > 0 else { continue }
-                let closed = sweep >= 2 * .pi - 0.0001
-                let arc = RadialArc(radius: radius, sweep: sweep,
-                                    center: closed ? preferredAngle : center,
+                let (available, center) = widestArc(origin: origin, radius: radius,
+                                                    in: field)
+                guard available > 0 else { continue }
+                // Capped, so an open press fans rather than wrapping the thumb
+                // in a full circle. When the whole circle is available the
+                // widest-arc pass hands back the preferred angle, so the cap
+                // lands the arc pointing up — the shape this started as.
+                let sweep = min(available, stageOneMaxSweep)
+                let arc = RadialArc(radius: radius, sweep: sweep, center: center,
                                     count: oneCount)
-                // A ring is the ideal; failing that, the most circle this spot
-                // can hold. Both dominate the mild preference for a short
-                // reach, which only breaks ties between equal shapes.
-                let score = (closed ? 0 : 260) - sweep * 26 + radius * 0.35
+                // As much of the arc as this spot can hold, then the shorter
+                // reach — the latter only breaking ties between equal shapes.
+                let score = -sweep * 26 + radius * 0.35
 
                 if arc.chord >= minChord {
                     if bestHere == nil || score < bestHere!.score {
@@ -396,12 +395,12 @@ struct RadialFan: Equatable {
         var fallback: RadialArc?
         for ratio in outerRatios {
             let radius = inner.radius * ratio
-            let (sweep, center) = widestArc(origin: origin, radius: radius, in: field)
-            guard sweep > 0 else { continue }
-            let closed = sweep >= 2 * .pi - 0.0001
-            let arc = RadialArc(radius: radius, sweep: sweep,
-                                center: closed ? preferredAngle : center,
-                                count: count)
+            let (available, center) = widestArc(origin: origin, radius: radius,
+                                                in: field)
+            guard available > 0 else { continue }
+            let arc = RadialArc(radius: radius,
+                                sweep: min(available, stageTwoMaxSweep),
+                                center: center, count: count)
             if arc.chord >= minChord { return arc }
             if fallback == nil || arc.chord > fallback!.chord { fallback = arc }
         }

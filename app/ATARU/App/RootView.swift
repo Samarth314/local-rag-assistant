@@ -186,6 +186,9 @@ struct RootView: View {
         // a token registered with Demo reaches nothing.
         .task(id: ObjectIdentifier(state.service)) {
             CallStack.shared.configure(service: state.service)
+            // Transcription goes to this server too, so it has to follow a
+            // Demo/Live flip along with everything else in here.
+            SpeechDictation.sharedService = state.service
             // Warm the name roster here, where waiting costs nothing. Fetching
             // it when the talk button goes down delayed the microphone past
             // the user's release.

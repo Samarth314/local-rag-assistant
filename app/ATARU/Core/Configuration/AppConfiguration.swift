@@ -160,6 +160,13 @@ struct EndpointBuilder {
     /// knows Arya corresponds with. Only the server can know them.
     var vocabulary: URL? { url("voice/vocabulary") }
 
+    /// A turn's audio, transcribed on the Orin against that same roster.
+    ///
+    /// The roster is attached server-side, so nothing about the names travels
+    /// with the audio - and the phone gets name-aware transcription without
+    /// holding a model to do it.
+    var transcribe: URL? { url("voice/transcribe") }
+
     static func escape(_ component: String) -> String {
         component.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? component
     }

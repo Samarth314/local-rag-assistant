@@ -45,6 +45,13 @@ protocol ATARUService: AnyObject, Sendable {
     /// unbiased transcription, which is where this started.
     func vocabulary() async throws -> [String]
 
+    /// A turn's audio, transcribed server-side against that same roster.
+    ///
+    /// Returns nil rather than throwing: every caller has a working local
+    /// fallback behind this, and a transcription path that can fail loudly
+    /// mid-call is worse than one that quietly hands back.
+    func transcribe(samples: [Float]) async -> String?
+
     /// The call's opening line, ideally in the server's voice.
     ///
     /// A call that greets in an iOS voice and answers in the server's sounds

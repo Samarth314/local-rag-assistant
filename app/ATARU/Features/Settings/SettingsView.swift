@@ -22,6 +22,7 @@ struct SettingsView: View {
     // most needs to be moving.
     @State private var whisperLabel = WhisperTranscriber.State.idle.label
     @State private var whisperStuck = false
+    @AppStorage(WhisperTranscriber.offlineKey) private var offlineTranscription = false
 
     var body: some View {
         Form {
@@ -72,10 +73,18 @@ struct SettingsView: View {
                 // is the one that can be told a name is likely; until its
                 // model has downloaded, Apple's recogniser is standing in, and
                 // without this row that difference is invisible.
-                Text(whisperLabel)
+                Text(offlineTranscription
+                     ? whisperLabel
+                     : "ATARU transcribes on your own server, biased toward the names it knows.")
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textSecondary)
-                if whisperStuck {
+
+                Toggle("Also transcribe on this phone", isOn: $offlineTranscription)
+                Text("Off, dictation goes to ATARU's server, which already has the model loaded and knows who you talk to. On, the phone downloads its own copy so dictation still works away from your network - it is ~630MB and takes about a minute to load every time the app starts cold.")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+
+                if offlineTranscription && whisperStuck {
                     Button("Load the model again") {
                         WhisperTranscriber.shared.prepare(retry: true)
                         Haptics.fire(.success)
@@ -156,6 +165,10 @@ struct SettingsView: View {
             // observable, and this row only has to be right while someone is
             // looking at it.
             while !Task.isCancelled {
+                // Turning it on here is the one place a load should start
+                // mid-session, so the row means something immediately rather
+                // than at the next launch.
+                if offlineTranscription { WhisperTranscriber.shared.prepare() }
                 let current = WhisperTranscriber.uiState
                 whisperLabel = current.label
                 // Two minutes is well past a healthy load, so past it the

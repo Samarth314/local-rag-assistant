@@ -75,6 +75,10 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
     /// inventing one would train the recogniser on names that do not exist.
     func vocabulary() async throws -> [String] { [] }
 
+    /// Demo has no server to transcribe on, so the caller keeps whatever the
+    /// phone heard by itself.
+    func transcribe(samples: [Float]) async -> String? { nil }
+
     func registerVoIPToken(_ token: String, environment: String) async throws {}
 
     // MARK: Plan (in-memory)
