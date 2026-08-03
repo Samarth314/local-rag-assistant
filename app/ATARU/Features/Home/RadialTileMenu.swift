@@ -230,10 +230,15 @@ struct RadialFan: Equatable {
     /// of a gap to read as two things rather than a blob.
     private static let minChord: Double = 52
 
-    /// Ring sizes tried, nearest the thumb first. The smallest is deliberately
-    /// tight: a ring only closes when the whole circle clears the edges, so a
-    /// small one is often the difference between a circle and an arc.
-    private static let radiusLadder: [Double] = [88, 104, 120, 136, 152, 168]
+    /// Ring sizes tried, nearest the thumb first.
+    ///
+    /// A ring only closes when the whole circle clears the edges, so a small
+    /// one is often the difference between a circle and an arc — but 88 was
+    /// too small to be comfortable: eight 44pt bubbles on that circumference
+    /// leave 25pt of gap, which reads as cramped and makes the tiles look
+    /// like they snap into place rather than fan out. 104 is the tightest
+    /// ring that still breathes.
+    private static let radiusLadder: [Double] = [104, 120, 136, 152, 168]
 
     /// Ratios of the outer ring to the inner, tried in order.
     ///
@@ -569,17 +574,23 @@ struct RadialPressMenu: View {
                                 // Out from under the thumb on the way in,
                                 // scaled about the pivot rather than about
                                 // itself so they read as thrown rather than
-                                // faded into place. On the way out, only a
-                                // fade: collapsing back to the pivot drags the
-                                // eye to where the thumb was at the exact
-                                // moment the chosen screen is arriving, and
-                                // what should happen then is the launcher
-                                // getting out of the way of the page.
+                                // faded into place.
+                                //
+                                // Out of focus on the way out. A plain
+                                // opacity fade holds every edge crisp all the
+                                // way to invisible, which on glass reads as
+                                // the tiles being switched off; blurring as
+                                // they go reads as them dissolving into the
+                                // page, which is what is actually happening
+                                // to them. Collapsing back to the pivot was
+                                // the other option and is worse: it drags the
+                                // eye back to where the thumb was at the
+                                // exact moment the chosen screen arrives.
                                 .transition(.asymmetric(
                                     insertion: .scale(scale: 0.2,
                                                       anchor: anchor(for: offset))
                                         .combined(with: .opacity),
-                                    removal: .opacity))
+                                    removal: .dissolve))
                         }
                     }
                 }
@@ -636,7 +647,13 @@ struct RadialPressMenu: View {
         if !stageTwoRevealed,
            fan.count > fan.stageOneCount,
            fan.distance(to: local) > fan.revealRadius {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) {
+            // Settled rather than sprung. The reveal used to need most of a
+            // sweep to reach and was a rare event; now it happens a fifth of
+            // the way out, on nearly every gesture, and a spring that
+            // overshoots six bubbles into place that often reads as the fan
+            // twitching rather than opening.
+            withAnimation(reduceMotion ? nil : .spring(response: 0.34,
+                                                       dampingFraction: 0.96)) {
                 stageTwoRevealed = true
             }
             Haptics.fire(.tap)
@@ -661,6 +678,31 @@ struct RadialPressMenu: View {
         guard let chosen else { return }
         Haptics.fire(.success)
         onSelect(chosen)
+    }
+}
+
+/// Softening, swelling and fading at once.
+///
+/// A plain opacity fade keeps every edge crisp the whole way to invisible,
+/// which on glass reads as the tiles being switched off. Losing focus and
+/// growing a little as they go reads as them dissolving into the page —
+/// the same thing steam does leaving a mirror, and what is actually
+/// happening to them.
+private struct Dissolve: ViewModifier {
+    /// 0 is the tile as drawn, 1 is gone.
+    let amount: Double
+
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: amount * 9)
+            .opacity(1 - amount)
+            .scaleEffect(1 + amount * 0.12)
+    }
+}
+
+extension AnyTransition {
+    static var dissolve: AnyTransition {
+        .modifier(active: Dissolve(amount: 1), identity: Dissolve(amount: 0))
     }
 }
 
