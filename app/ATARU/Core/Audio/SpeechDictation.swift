@@ -387,6 +387,18 @@ final class SpeechDictation: NSObject, ObservableObject {
         releaseSession = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled, !self.isRecording, self.sessionActive else { return }
+            // ... and NOT while something else is still using the session.
+            // This guard was missing, and it is the whole "went quiet
+            // mid-sentence" bug: dictation ending armed a 5s timer that
+            // deactivated the SHARED session, and since the answer started
+            // streaming, playback begins around T+3.3s - so the timer landed
+            // in the middle of the sentence. It had no idea the player
+            // existed. AudioSessionOwner knows about every user.
+            guard !AudioSessionOwner.shared.inUse else {
+                // Someone else still needs it; whoever lets go last releases.
+                self.sessionActive = false
+                return
+            }
             self.sessionActive = false
             // Failing here is not worth surfacing to the user, whose question
             // already succeeded or failed.

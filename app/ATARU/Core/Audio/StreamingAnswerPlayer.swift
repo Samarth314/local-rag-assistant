@@ -30,6 +30,22 @@ final class StreamingAnswerPlayer {
     private var scheduled = 0
     private var inputEnded = false
     private var onDrained: (() -> Void)?
+    /// Whether this player is currently counted as a user of the shared
+    /// audio session. Tracked so teardown releases exactly once.
+    private var sessionHeld = false
+
+    /// Resume whoever is waiting in `finish()`, exactly once.
+    ///
+    /// `teardown()` used to nil `onDrained` WITHOUT resuming it, so any
+    /// teardown while `finish()` was suspended stranded the continuation
+    /// forever and the ask task could never be reclaimed - the phone stayed
+    /// on "Answering" with nothing playing and no way back. Nil-then-call is
+    /// the order that matters: a CheckedContinuation resumed twice traps.
+    private func resumeDrain() {
+        let drained = onDrained
+        onDrained = nil
+        drained?()
+    }
 
     private(set) var isActive = false
 
@@ -42,10 +58,18 @@ final class StreamingAnswerPlayer {
         }
         stop()
 
+        // Retain BEFORE activating. Dictation arms a 5s timer that deactivates
+        // this same shared session when a turn ends, and answer audio now
+        // starts around T+3.3s - so without a retain the session is pulled out
+        // from under playback mid-sentence. Retaining also cancels a release
+        // that is already armed but has not fired.
+        AudioSessionOwner.shared.retain()
+        sessionHeld = true
         if managesAudioSession {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true)
+            AudioSessionOwner.shared.markActive()
         }
 
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -115,9 +139,21 @@ final class StreamingAnswerPlayer {
             teardown()
             return
         }
+        // Bounded. If the last buffer never reports finished - the session
+        // was yanked, the route changed, CoreAudio reset - this would suspend
+        // forever, and the turn above it could never end. A detached watchdog
+        // rather than a task group: a group AWAITS every child, so racing a
+        // sleep inside one does not time anything out (learned the hard way,
+        // 2026-08-01).
+        let watchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, let self, self.isActive else { return }
+            self.teardown()
+        }
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             onDrained = { continuation.resume() }
         }
+        watchdog.cancel()
     }
 
     /// Stops immediately, discarding anything still queued. For hang-ups.
@@ -129,9 +165,9 @@ final class StreamingAnswerPlayer {
     private func bufferFinished() {
         scheduled -= 1
         if inputEnded && scheduled <= 0 {
-            let drained = onDrained
+            // teardown() resumes the drain itself now, so this must NOT also
+            // call it - resuming a CheckedContinuation twice is a crash.
             teardown()
-            drained?()
         }
     }
 
@@ -145,9 +181,16 @@ final class StreamingAnswerPlayer {
         isActive = false
         inputEnded = false
         scheduled = 0
-        onDrained = nil
-        if managesAudioSession {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // Resume before dropping it. `finish()` suspends on this continuation
+        // with no timeout, so nil-ing it here without resuming stranded the
+        // ask task forever - the second half of the wedge, and why the phone
+        // sat on "Answering" with nothing playing.
+        resumeDrain()
+        // Let go rather than deactivating directly: if dictation (or the next
+        // turn) still holds the session, tearing it down here would break it.
+        if sessionHeld {
+            sessionHeld = false
+            AudioSessionOwner.shared.release()
         }
     }
 }

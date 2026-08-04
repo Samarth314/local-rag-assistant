@@ -24,6 +24,8 @@ final class VoiceViewModel: ObservableObject {
 
     private var service: ATARUService
     private var askTask: Task<Void, Never>?
+    /// Guarantees the turn leaves .speaking - see armPhaseWatchdog().
+    private var phaseWatchdog: Task<Void, Never>?
     private var stream: VoiceStreamSession?
     /// Whether the orb is still held. `beginListening` has real async work
     /// before the mic opens (permission check, audio session, engine start),
@@ -190,7 +192,9 @@ final class VoiceViewModel: ObservableObject {
                     // question ends at "Let me check."
                     if !isFiller { spokenAnything = true }
                     phase = .speaking
+                    armPhaseWatchdog()
                 case .audioChunk(let chunk):
+                    armPhaseWatchdog()   // audio is flowing; push the deadline out
                     streamPlayer.enqueue(chunk)
                 case .audioEnd, .ttsUnavailable:
                     break
@@ -229,10 +233,41 @@ final class VoiceViewModel: ObservableObject {
         speak(SpokenAnswer(text: exchange.answer, source: exchange.source, audioURL: nil))
     }
 
+    /// Ends the turn - properly.
+    ///
+    /// This used to stop the two players and set `phase = .idle`, which is
+    /// cosmetic: the ask task kept running and the websocket stayed open (the
+    /// server logged code=1005 when the OS eventually reaped it). So on a
+    /// wedged turn, tapping Stop changed nothing the user could see and there
+    /// was no way back short of force-quitting the app. Everything that makes
+    /// up the turn is now torn down.
     func stopSpeaking() {
+        phaseWatchdog?.cancel()
+        phaseWatchdog = nil
+        askTask?.cancel()
+        askTask = nil
+        stream?.close()
+        stream = nil
         player.stop()
         streamPlayer.stop()
         phase = .idle
+    }
+
+    /// Last resort: leave the speaking phase even if socket, server and audio
+    /// all vanish at once.
+    ///
+    /// Re-armed on entering `.speaking` and on every audio chunk, so a healthy
+    /// answer keeps pushing it out and it only fires when genuinely nothing
+    /// has arrived. Without it, one stalled turn left the app reading
+    /// "Answering" forever with no route back.
+    private func armPhaseWatchdog() {
+        phaseWatchdog?.cancel()
+        phaseWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, let self, self.phase == .speaking else { return }
+            print("VOICE phase watchdog fired - tearing down a stalled turn")
+            self.stopSpeaking()
+        }
     }
 
     private func record(question: String, answer: SpokenAnswer) {
@@ -244,6 +279,7 @@ final class VoiceViewModel: ObservableObject {
 
     private func speak(_ answer: SpokenAnswer) {
         phase = .speaking
+        armPhaseWatchdog()
         player.play(answer) { [weak self] in
             guard let self else { return }
             // Only return to idle if nothing else has taken over in the
