@@ -22,6 +22,9 @@ final class CallSessionModel: ObservableObject {
     /// Mic level above this counts as someone speaking. `level` is a peak
     /// amplitude scaled to 0...1, where room tone sits near zero.
     static let voiceLevel: Double = 0.12
+    /// Consecutive turns that may produce nothing before the call hangs up.
+    /// Three covers a cough or a mid-sentence mute; past that nobody is there.
+    static let emptyTurnLimit = 3
 
     @Published private(set) var phase: VoicePhase = .idle
     /// What the caller is saying right now.
@@ -127,11 +130,21 @@ final class CallSessionModel: ObservableObject {
         // permanently. Now the loop simply listens again, and only gives up
         // after several empty turns in a row - a caller who has genuinely
         // walked away.
+        //
+        // Giving up now HANGS UP. Breaking the loop alone left exactly the
+        // dead line described above - and the morning brief redials when a
+        // call is answered but never spoken into (Arya may have fallen back
+        // asleep), which it cannot do while the phone is still nominally on a
+        // call. `onFarewell` is the same hook the spoken goodbye uses; it ends
+        // the CallKit call rather than only this loop.
         var emptyTurns = 0
         while !Task.isCancelled {
             guard let question = await listenForOneTurn() else {
                 emptyTurns += 1
-                if emptyTurns >= 3 { break }
+                if emptyTurns >= Self.emptyTurnLimit {
+                    onFarewell?()
+                    break
+                }
                 continue
             }
             emptyTurns = 0
