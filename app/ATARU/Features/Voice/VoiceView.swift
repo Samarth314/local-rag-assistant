@@ -41,8 +41,13 @@ struct VoiceView: View {
                 // Changing a modifier on a view that is already there does not
                 // touch the hierarchy, so focus survives.
                 //
-                // It sits under the content, so the orb and the composer keep
-                // taking their own taps; only what misses them lands here.
+                // It sits UNDER the content, which is why it was never enough
+                // on its own: the orb, the status line and the answer cards
+                // are all hit-testable, so every tap "above the keyboard"
+                // landed on one of them and never reached this layer. It now
+                // only catches taps that miss everything - margins and gutters
+                // - while `.dismissesKeyboard(when:)` handles the content
+                // itself. Kept because those margins are real.
                 Color.clear
                     .contentShape(Rectangle())
                     .ignoresSafeArea()
@@ -74,34 +79,13 @@ struct VoiceView: View {
                     }
                     .accessibilityLabel("Settings")
                 }
-                // The vertical-axis field turns Return into newline, so the
-                // keyboard needs its own explicit way out.
-                //
-                // UIKit's own keyboard accessory bar, via SwiftUI's `.keyboard`
-                // placement — the same strip Mail and Notes put their controls
-                // on. It rides up with the keyboard and is the one place iOS
-                // users already look for a way out, which is worth more than
-                // anything custom floating over the composer.
-                // A Label with .titleAndIcon does NOT draw as that strip on
-                // iOS 26 - it renders as a bare unlabelled circular glyph
-                // pinned bottom-right, floating over whatever is underneath
-                // (it was covering the answer card). Plain text buttons draw
-                // as a real accessory bar, and match PlanView's, which was
-                // already doing it this way.
-                ToolbarItemGroup(placement: .keyboard) {
-                    Button("Done") { composerFocused = false }
-                        .font(.ataruLabel())
-                        .accessibilityIdentifier("dismiss-keyboard")
-                    Spacer()
-                    // Return inserts a newline on a vertical-axis field, so
-                    // the bar carries the send affordance rather than making
-                    // the user reach for the small circle in the composer.
-                    Button("Ask") { submit() }
-                        .font(.ataruLabel())
-                        .fontWeight(.semibold)
-                        .disabled(!canSubmitTyped)
-                        .accessibilityIdentifier("submit-question-keyboard")
-                }
+                // NO keyboard accessory bar. "Ask" duplicated the send arrow
+                // sitting inches away in the composer, and "Done" is a control
+                // nobody needs on a phone - tapping away from a field is what
+                // people already do. Both are replaced by
+                // `.dismissesKeyboard(when:)` on everything above the composer;
+                // see DismissesKeyboard.swift for why the old under-the-content
+                // catcher never fired.
             }
         }
         .task(id: ObjectIdentifier(state.service)) {
@@ -117,16 +101,19 @@ struct VoiceView: View {
     /// The original single-column screen.
     private var portraitLayout: some View {
         VStack(spacing: Theme.Space.l) {
-            FreshnessBanner(state: state.freshness)
-                .padding(.horizontal, Theme.Space.screen)
+            VStack(spacing: Theme.Space.l) {
+                FreshnessBanner(state: state.freshness)
+                    .padding(.horizontal, Theme.Space.screen)
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-            orbControl
+                orbControl
 
-            statusLine
+                statusLine
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
+            .dismissesKeyboard(when: composerFocused) { composerFocused = false }
 
             typeField
                 .padding(.bottom, Theme.Space.xs)
@@ -140,6 +127,7 @@ struct VoiceView: View {
             // keyboard is attached to is actually visible.
             if !(composerFocused && model.exchanges.isEmpty) {
                 transcript(maxHeight: composerFocused ? 140 : 260)
+                    .dismissesKeyboard(when: composerFocused) { composerFocused = false }
             }
         }
         .padding(.top, Theme.Space.s)
