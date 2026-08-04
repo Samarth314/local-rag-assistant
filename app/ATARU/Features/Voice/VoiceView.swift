@@ -82,16 +82,25 @@ struct VoiceView: View {
                 // on. It rides up with the keyboard and is the one place iOS
                 // users already look for a way out, which is worth more than
                 // anything custom floating over the composer.
+                // A Label with .titleAndIcon does NOT draw as that strip on
+                // iOS 26 - it renders as a bare unlabelled circular glyph
+                // pinned bottom-right, floating over whatever is underneath
+                // (it was covering the answer card). Plain text buttons draw
+                // as a real accessory bar, and match PlanView's, which was
+                // already doing it this way.
                 ToolbarItemGroup(placement: .keyboard) {
+                    Button("Done") { composerFocused = false }
+                        .font(.ataruLabel())
+                        .accessibilityIdentifier("dismiss-keyboard")
                     Spacer()
-                    Button {
-                        composerFocused = false
-                    } label: {
-                        Label("Done", systemImage: "keyboard.chevron.compact.down")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .font(.ataruLabel())
-                    .accessibilityIdentifier("dismiss-keyboard")
+                    // Return inserts a newline on a vertical-axis field, so
+                    // the bar carries the send affordance rather than making
+                    // the user reach for the small circle in the composer.
+                    Button("Ask") { submit() }
+                        .font(.ataruLabel())
+                        .fontWeight(.semibold)
+                        .disabled(!canSubmitTyped)
+                        .accessibilityIdentifier("submit-question-keyboard")
                 }
             }
         }
@@ -122,9 +131,19 @@ struct VoiceView: View {
             typeField
                 .padding(.bottom, Theme.Space.xs)
 
-            transcript(maxHeight: 260)
+            // With the keyboard up there is no room for this AND the composer.
+            // The fixed costs above - a 260pt orb, a 54pt status line, a 52pt
+            // composer - already overflow the screen before any keyboard
+            // exists, and a 120pt BLANK placeholder sitting under the composer
+            // pushed the field itself below the fold. Drop the placeholder
+            // while typing and cap a real transcript, so the field the
+            // keyboard is attached to is actually visible.
+            if !(composerFocused && model.exchanges.isEmpty) {
+                transcript(maxHeight: composerFocused ? 140 : 260)
+            }
         }
         .padding(.top, Theme.Space.s)
+        .animation(.easeOut(duration: 0.18), value: composerFocused)
     }
 
     /// Landscape: orb and status on the left, conversation on the right. The
@@ -236,7 +255,14 @@ struct VoiceView: View {
                     .foregroundStyle(Theme.textPrimary)
                     .lineLimit(1...4)
                     .focused($composerFocused)
-                    .submitLabel(.send)
+                    // NOT .send: this field has a vertical axis, so the
+                    // software Return inserts a newline and never fires
+                    // onSubmit - a key labelled "send" that types a blank
+                    // line instead. (A hardware Return does submit, which is
+                    // why it survives testing with a Mac keyboard attached.)
+                    // onSubmit stays for that hardware path; the keyboard bar
+                    // carries the real send affordance.
+                    .submitLabel(.return)
                     .onSubmit { submit() }
                     .accessibilityIdentifier("question-field")
 

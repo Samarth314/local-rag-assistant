@@ -225,6 +225,15 @@ struct RootView: View {
     /// from inside a tile screen now, so "go to Ask" arriving while Finance
     /// is up has to take Finance down as well as change what is behind it.
     private func open(tile: HomeTile) {
+        // A tile screen is a LAYER over the root, not a presentation, so
+        // VoiceView stays mounted underneath with its focus intact. Nothing
+        // resigned it, so navigating away from a focused composer left the
+        // keyboard drawn over the destination page - and, because the radial
+        // launcher is disabled while the composer is active, left the app's
+        // primary navigation dead on the page you had just opened.
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                        to: nil, from: nil, for: nil)
+        isComposerActive = false
         withAnimation(.easeInOut(duration: 0.24)) {
             switch tile {
             case .assistant:

@@ -113,6 +113,7 @@ struct TileScreenHost: View {
         case .status:     StatusScreen()
         case .journal:    JournalScreen()
         case .workspaces: WorkspacesScreen()
+        case .remote:     RemoteScreen()
         default:          ServiceCardScreen(tile: tile)
         }
     }
