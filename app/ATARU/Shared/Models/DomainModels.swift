@@ -168,22 +168,38 @@ struct DocumentPayload: Equatable {
 // MARK: - Voice
 
 /// One spoken exchange, kept for the session's transcript.
+/// A document an answer pulled up, resolvable on the phone.
+///
+/// The id is the server's stable sha1(path) handle - a vault path is NOT
+/// fetchable, because /documents/{id} resolves by that hash and nothing else.
+struct DocumentRef: Equatable, Identifiable {
+    let id: String
+    let title: String
+    let fileType: String
+    let previewable: Bool
+}
+
 struct VoiceExchange: Identifiable, Equatable {
     let id: String
     let question: String
     let answer: String
     let source: String?
+    /// Set when the turn pulled a file up, so it can be opened here rather
+    /// than only on the wall display.
+    let document: DocumentRef?
     let askedAt: Date
 
     init(id: String = UUID().uuidString,
          question: String,
          answer: String,
          source: String?,
+         document: DocumentRef? = nil,
          askedAt: Date = Date()) {
         self.id = id
         self.question = question
         self.answer = answer
         self.source = source
+        self.document = document
         self.askedAt = askedAt
     }
 }

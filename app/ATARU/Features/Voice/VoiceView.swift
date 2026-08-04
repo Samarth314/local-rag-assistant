@@ -94,6 +94,12 @@ struct VoiceView: View {
         .onChange(of: composerFocused) { _, focused in
             withAnimation(.easeOut(duration: 0.18)) { composerActive = focused }
         }
+        // "Pull up my Haas MBA letter" now opens it HERE too, not only on the
+        // wall display - the answer card keeps a way back in, so dismissing
+        // this costs nothing.
+        .sheet(item: $model.presentedDocument) { doc in
+            DocumentPopup(document: doc, service: state.service)
+        }
     }
 
     // MARK: - Layouts
@@ -149,10 +155,12 @@ struct VoiceView: View {
             }
             .frame(maxWidth: 250)
             .padding(.leading, Theme.Space.m)
+            .dismissesKeyboard(when: composerFocused) { composerFocused = false }
 
             VStack(spacing: Theme.Space.s) {
                 FreshnessBanner(state: state.freshness)
                 transcript(maxHeight: .infinity)
+                    .dismissesKeyboard(when: composerFocused) { composerFocused = false }
                 Spacer(minLength: 0)
                 typeField
                     .padding(.bottom, Theme.Space.xs)
@@ -321,7 +329,11 @@ struct VoiceView: View {
             ScrollView {
                 LazyVStack(spacing: Theme.Space.s) {
                     ForEach(model.exchanges) { exchange in
-                        ExchangeCard(exchange: exchange) { model.replay(exchange) }
+                        ExchangeCard(exchange: exchange,
+                                     replay: { model.replay(exchange) },
+                                     reopen: exchange.document.map { doc in
+                                         { model.presentedDocument = doc }
+                                     })
                     }
                 }
                 .padding(.horizontal, Theme.Space.screen)
@@ -337,6 +349,9 @@ struct VoiceView: View {
 private struct ExchangeCard: View {
     let exchange: VoiceExchange
     let replay: () -> Void
+    /// Re-opens the document this answer pulled up. Dismissing the popup has
+    /// to be cheap, which means getting back in has to be cheap too.
+    var reopen: (() -> Void)?
 
     var body: some View {
         ATCard {
@@ -350,7 +365,16 @@ private struct ExchangeCard: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: Theme.Space.s) {
-                    if let source = exchange.source {
+                    if let document = exchange.document, let reopen {
+                        Button(action: reopen) {
+                            Label(document.title, systemImage: "doc.richtext")
+                                .font(.ataruCaption())
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Theme.cyan)
+                        .accessibilityLabel("Open \(document.title)")
+                    } else if let source = exchange.source {
                         // The filename only: the full vault path is a
                         // directory tree the user does not need read back.
                         Label(URL(fileURLWithPath: source).lastPathComponent,

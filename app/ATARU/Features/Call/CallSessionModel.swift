@@ -309,11 +309,16 @@ final class CallSessionModel: ObservableObject {
                     break
                 case .ttsUnavailable:
                     ttsLost = true
-                case .done(let spoken, let source):
+                case .done(let spoken, let source, let document):
                     let final = spoken.isEmpty ? text : spoken
                     answer = final
+                    // Recorded, but NOT presented: on a call the phone is at
+                    // his ear, and throwing a document viewer up mid-call
+                    // would be the wrong moment for it. The wall display
+                    // already has it.
                     exchanges.insert(
-                        VoiceExchange(question: question, answer: final, source: source),
+                        VoiceExchange(question: question, answer: final,
+                                      source: source, document: document),
                         at: 0
                     )
                     if streamPlayer.isActive {

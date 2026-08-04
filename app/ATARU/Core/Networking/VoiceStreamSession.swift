@@ -11,7 +11,7 @@ enum VoiceStreamEvent: Sendable {
     case audioChunk(Data)
     case audioEnd
     case ttsUnavailable
-    case done(text: String, source: String?)
+    case done(text: String, source: String?, document: DocumentRef?)
 }
 
 enum VoiceStreamError: Error {
@@ -181,8 +181,19 @@ final class VoiceStreamSession: @unchecked Sendable {
                 return .ttsUnavailable
             case "done":
                 let source = dict["source"] as? String
+                // Present only on a turn that pulled a document up; absent
+                // everywhere else, and absent entirely on older servers.
+                var doc: DocumentRef?
+                if let d = dict["document"] as? [String: Any],
+                   let id = d["id"] as? String, !id.isEmpty {
+                    doc = DocumentRef(id: id,
+                                      title: d["title"] as? String ?? "Document",
+                                      fileType: d["file_type"] as? String ?? "",
+                                      previewable: d["previewable"] as? Bool ?? true)
+                }
                 return .done(text: dict["text"] as? String ?? "",
-                             source: (source?.isEmpty ?? true) ? nil : source)
+                             source: (source?.isEmpty ?? true) ? nil : source,
+                             document: doc)
             case "error":
                 throw VoiceStreamError.server(dict["message"] as? String ?? "unknown")
             default:

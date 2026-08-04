@@ -16,6 +16,9 @@ final class VoiceViewModel: ObservableObject {
     /// Set when dictation is unavailable, so the UI can offer typing.
     @Published var typedQuestion: String = ""
     @Published var isShowingTypeField = false
+    /// The document a pull-up turn opened. Setting it presents the viewer;
+    /// clearing it puts the viewer away and leaves the answer on screen.
+    @Published var presentedDocument: DocumentRef?
 
     let dictation = SpeechDictation()
     let player = AnswerPlayer()
@@ -198,10 +201,15 @@ final class VoiceViewModel: ObservableObject {
                     streamPlayer.enqueue(chunk)
                 case .audioEnd, .ttsUnavailable:
                     break
-                case .done(let spoken, let source):
+                case .done(let spoken, let source, let document):
                     let final = spoken.isEmpty ? text : spoken
                     record(question: question,
-                           answer: SpokenAnswer(text: final, source: source, audioURL: nil))
+                           answer: SpokenAnswer(text: final, source: source, audioURL: nil),
+                           document: document)
+                    // Opening it is the point of asking for it: a pull-up
+                    // turn puts the file on screen here as well as on the
+                    // wall, so he can zoom and scroll it in his hand.
+                    if let document { presentedDocument = document }
                     if streamPlayer.isActive {
                         await streamPlayer.finish()
                         if phase == .speaking { phase = .idle }
@@ -270,9 +278,11 @@ final class VoiceViewModel: ObservableObject {
         }
     }
 
-    private func record(question: String, answer: SpokenAnswer) {
+    private func record(question: String, answer: SpokenAnswer,
+                        document: DocumentRef? = nil) {
         exchanges.insert(
-            VoiceExchange(question: question, answer: answer.text, source: answer.source),
+            VoiceExchange(question: question, answer: answer.text,
+                          source: answer.source, document: document),
             at: 0
         )
     }

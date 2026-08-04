@@ -57,7 +57,20 @@ enum RemoteTranscriber {
                   let payload = try? JSONDecoder().decode(Payload.self, from: data)
             else { return nil }
             let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? nil : text
+            if !text.isEmpty { return text }
+            // An empty transcript used to mean "ask someone else", so the turn
+            // fell through to Apple's UNBIASED recogniser - in exactly the two
+            // cases where that is the wrong move. If the server heard silence,
+            // there is nothing for any engine to find. If the server REJECTED
+            // a hallucination, a less careful engine will happily return the
+            // same garbage. Both are real answers; report them as decided.
+            if payload.silence == true || payload.rejected != nil {
+                if let reason = payload.rejected {
+                    print("STT server rejected the transcript (\(reason)); not falling back")
+                }
+                return ""      // decided empty, distinct from nil = "no answer"
+            }
+            return nil
         } catch {
             return nil
         }
@@ -68,6 +81,12 @@ enum RemoteTranscriber {
         let engine: String?
         let biased: Bool?
         let latency_ms: Double?
+        /// The Orin never decoded: the audio had no speech in it.
+        let silence: Bool?
+        /// It decoded and the server THREW THE RESULT AWAY - a prompt echo or
+        /// a repetition loop. Distinct from silence, and the distinction is
+        /// what stops the phone reaching for a worse recogniser.
+        let rejected: String?
     }
 
     /// A 16 kHz mono PCM16 WAV around the captured samples.
