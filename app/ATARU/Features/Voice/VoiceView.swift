@@ -231,13 +231,17 @@ struct VoiceView: View {
         .animation(.easeInOut(duration: 0.2), value: model.phase)
     }
 
+    /// Demo mode says so; live mode says nothing.
+    ///
+    /// The live copy used to list what could be asked ("your schedule, mail,
+    /// records, or anything else"). That is onboarding text on a screen its
+    /// only user has seen thousands of times - and it sits directly under the
+    /// orb, which is exactly where the radial launcher fans out, so it was
+    /// permanent clutter showing through the tiles.
     private var hint: String {
         state.configuration.mode == .demo
             ? "Demo mode answers from sample files."
-            // Live ATARU is not a document search box. The same question can
-            // reach mail, the calendar, records or the live web, so the hint
-            // must not promise only files.
-            : "Ask about your schedule, mail, records, or anything else."
+            : ""
     }
 
     /// Typing lives inline, not behind a sheet. The orb above is the voice
