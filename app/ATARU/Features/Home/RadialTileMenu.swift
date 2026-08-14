@@ -21,9 +21,14 @@ import SwiftUI
 /// for a machine, not something to poke at from a phone, and ntfy has nothing
 /// to show: it pushes notifications, which arrive as notifications.
 enum HomeTile: String, CaseIterable, Identifiable {
-    // Stage one, in reach order.
+    // The surfaces holding his own data and the ones that change day to day,
+    // in reach order. `morning` sits at the end of them: it is his own daily
+    // routine rather than a machine or a media server, so it does not belong
+    // with the second group - but it is a setting, dialled the night before
+    // and then left alone, so it has no business in first reach either.
     case assistant, plan, finance, health, journal, documents, home, workspaces
-    // Stage two, revealed by pushing further out.
+    case morning
+    // Genuinely better on a bigger screen, revealed by pushing further out.
     case status, passwords, media, music, whiteboard, remote
 
     // NOTE: there is no `stageOneCount` any more, and no per-tile `stage`.
@@ -44,6 +49,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .status:        return "Status"
         case .journal:       return "Journal"
         case .workspaces:    return "Spaces"
+        case .morning:       return "Morning"
         case .documents:     return "Docs"
         case .whiteboard:    return "Canvas"
         case .media:         return "Media"
@@ -63,6 +69,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .status:        return "gauge.with.dots.needle.50percent"
         case .journal:       return "book.closed"
         case .workspaces:    return "square.stack.3d.up"
+        case .morning:       return "alarm"
         case .documents:     return "tray.full"
         case .whiteboard:    return "scribble.variable"
         case .media:         return "play.rectangle"
@@ -83,6 +90,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .status:        return "System dashboard"
         case .journal:       return "Write · reflect"
         case .workspaces:    return "Projects · notes"
+        case .morning:       return "Call time"
         case .documents:     return "Browse · search"
         case .whiteboard:    return "AI canvas"
         case .media:         return "Jellyfin"

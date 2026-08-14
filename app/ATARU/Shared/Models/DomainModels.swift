@@ -247,3 +247,34 @@ struct SpokenAnswer: Equatable {
     /// in which case the client falls back to on-device speech.
     let audioURL: URL?
 }
+
+// MARK: - Morning call
+
+/// When the morning call rings, and for which day.
+///
+/// Times stay as "HH:MM" strings end to end rather than becoming `Date`s. The
+/// server schedules against a wall clock in its own timezone, and a `Date`
+/// round-trip through this device's timezone is how 07:00 becomes 06:00 after
+/// a flight. The picker converts once, for display and for editing, and never
+/// stores the result.
+struct MorningSchedule: Equatable {
+    /// 24-hour "HH:MM", the time the call is currently set for.
+    let callTime: String
+    /// "YYYY-MM-DD" the override applies to, or nil when `callTime` is just
+    /// the standing default and no particular day has been overridden.
+    let date: String?
+    /// The standing time, so the screen can say when an override differs
+    /// from it and offer to go back.
+    let defaultTime: String
+
+    /// "7:30am" - what the confirmation says, in the form he reads a clock.
+    static func display(_ time: String) -> String {
+        let parts = time.split(separator: ":")
+        guard parts.count >= 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+              (0...23).contains(hour), (0...59).contains(minute) else { return time }
+        let suffix = hour < 12 ? "am" : "pm"
+        let twelve = hour % 12 == 0 ? 12 : hour % 12
+        return minute == 0 ? "\(twelve)\(suffix)"
+                           : String(format: "%d:%02d%@", twelve, minute, suffix)
+    }
+}

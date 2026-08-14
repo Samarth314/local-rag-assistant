@@ -188,6 +188,37 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         let done: Bool
     }
 
+    // MARK: - Morning call
+
+    func morningSchedule() async throws -> MorningSchedule {
+        guard let url = endpoints.url("api/morning/schedule") else {
+            throw APIError.invalidURL
+        }
+        let (data, _) = try await perform(request(for: url))
+        return try decode(DTO.MorningScheduleReply.self, from: data).domain
+    }
+
+    func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule {
+        guard let url = endpoints.url("api/morning/schedule") else {
+            throw APIError.invalidURL
+        }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // `date` is omitted rather than sent as null when it is nil: the
+        // contract reads an absent key as "tomorrow", and an explicit null is
+        // not the same claim.
+        request.httpBody = try JSONEncoder().encode(
+            MorningScheduleBody(call_time: callTime, date: date))
+        let (data, _) = try await perform(request)
+        return try decode(DTO.MorningScheduleReply.self, from: data).domain
+    }
+
+    private struct MorningScheduleBody: Encodable {
+        let call_time: String
+        let date: String?
+    }
+
     // MARK: - Calls
 
     func registerVoIPToken(_ token: String, environment: String) async throws {

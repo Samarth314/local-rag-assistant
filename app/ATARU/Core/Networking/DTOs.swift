@@ -100,6 +100,26 @@ enum DTO {
     struct Health: Decodable {
         let status: String
     }
+
+    // MARK: Morning call
+
+    /// `{"call_time":"HH:MM","date":"YYYY-MM-DD"|null,"default":"07:00"}`
+    ///
+    /// `default` is a Swift keyword, hence the backtick; `call_time` is snake
+    /// case like the rest of this API, hence the explicit keys.
+    struct MorningScheduleReply: Decodable {
+        let call_time: String
+        let date: String?
+        let `default`: String?
+
+        var domain: MorningSchedule {
+            // A server that omits `default` still has one; falling back to the
+            // time it just reported is better than showing an empty field, and
+            // it makes "this differs from your usual" simply not fire.
+            MorningSchedule(callTime: call_time, date: date,
+                            defaultTime: `default` ?? call_time)
+        }
+    }
 }
 
 /// JSON decoding for this API.

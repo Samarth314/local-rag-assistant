@@ -73,6 +73,23 @@ protocol ATARUService: AnyObject, Sendable {
     func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan
     func planRemove(section: String, index: Int) async throws -> DailyPlan
 
+    // MARK: Morning call
+
+    /// When tomorrow's first morning call is set to ring.
+    ///
+    /// The call itself is scheduled server-side; this is only the dial. See
+    /// `setMorningSchedule` for why the default throws rather than guessing.
+    func morningSchedule() async throws -> MorningSchedule
+
+    /// Sets the call time, for `date` or - when that is nil - for tomorrow.
+    ///
+    /// Deliberately has NO default implementation that pretends to succeed. A
+    /// backend without this endpoint must surface as an error the screen can
+    /// report honestly, because the failure mode of quietly accepting a time
+    /// that was never stored is a phone that does not ring in the morning and
+    /// nothing anywhere saying why.
+    func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -105,6 +122,18 @@ extension ATARUService {
     /// Backends without a voice engine say goodbye in the phone's voice.
     func goodbye() async throws -> SpokenAnswer {
         SpokenAnswer(text: "Alright, talk later.", source: nil, audioURL: nil)
+    }
+
+    /// Backends without the morning endpoint report it missing rather than
+    /// inventing a time. `notFound` is what the screen turns into "not
+    /// available yet", and it is also exactly what a server that has not
+    /// deployed the route yet returns on its own.
+    func morningSchedule() async throws -> MorningSchedule {
+        throw APIError.notFound
+    }
+
+    func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule {
+        throw APIError.notFound
     }
 }
 
