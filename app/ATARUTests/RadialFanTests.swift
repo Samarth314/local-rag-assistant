@@ -185,21 +185,42 @@ final class RadialFanTests: XCTestCase {
         XCTAssertGreaterThan(fan.revealRadius, fan.stageOneRadius)
     }
 
-    func testStageOneCarriesTheTilesWorthReachingForFirst() {
-        let stageOne = Set(HomeTile.allCases.prefix(HomeTile.stageOneCount))
-        for tile in [HomeTile.plan, .finance, .health, .journal] {
-            XCTAssertTrue(stageOne.contains(tile),
-                          "\(tile.title) belongs in the first arc")
+    /// The surviving half of the old `testStageOneCarriesTheTilesWorthReaching`
+    /// -ForFirst, re-expressed against the ring model that replaced it.
+    ///
+    /// That test asserted a fixed split: `HomeTile.stageOneCount` was 8, and
+    /// the first eight tiles were the first arc everywhere on the screen. Both
+    /// the constant and the per-tile `stage` are gone, because how many tiles
+    /// the inner ring holds now falls out of the room the press leaves - swept
+    /// across the whole screen it ranges from 3 to 7, so no assertion about
+    /// *which* tiles are on the inner ring can be true of every press.
+    ///
+    /// What survives is the intent, and it is a claim about the enum rather
+    /// than about geometry: reach order is declaration order (the inner ring
+    /// is filled first and in order - see the test below), so being early in
+    /// `allCases` is what "within first reach" now means.
+    func testDeclarationOrderPutsTheEverydayTilesWithinFirstReach() {
+        let order = HomeTile.allCases
+        func rank(_ tile: HomeTile) -> Int {
+            order.firstIndex(of: tile) ?? Int.max
         }
+
+        // The surfaces holding his own data, and the ones that change daily.
+        let everyday: [HomeTile] = [.plan, .finance, .health, .journal]
         // A machine dashboard and a password manager are places you go on
-        // purpose; media and a handwriting canvas want a bigger screen.
-        for tile in [HomeTile.status, .passwords, .media, .music, .whiteboard, .remote] {
-            XCTAssertFalse(stageOne.contains(tile),
-                           "\(tile.title) does not belong in the first arc")
+        // purpose; media, music and a handwriting canvas want a bigger screen.
+        let deliberate: [HomeTile] = [.status, .passwords, .media, .music,
+                                      .whiteboard, .remote]
+
+        for near in everyday {
+            for far in deliberate {
+                XCTAssertLessThan(
+                    rank(near), rank(far),
+                    "\(near.title) should be reached before \(far.title)")
+            }
         }
-        XCTAssertEqual(HomeTile.allCases.filter { $0.stage == .one }.count,
-                       HomeTile.stageOneCount,
-                       "the positional split and the stage property disagree")
+        // Ask is the screen the app opens on, so it leads the order.
+        XCTAssertEqual(order.first, .assistant)
     }
 
     func testSweepingBehindTheFanSelectsNothing() {
@@ -277,17 +298,19 @@ final class RadialFanTests: XCTestCase {
     // MARK: - The current screen
 
     func testDroppingTheCurrentScreenStillFitsAndStaysOnScreen() {
-        // Ask is showing, so it is not offered: thirteen tiles, seven of them
-        // on the first ring.
+        // Ask is showing, so it is not offered: thirteen tiles. How they split
+        // across the rings is the solver's business and no longer passed in -
+        // `solve` has no `stageOneCount:` parameter, because there is no fixed
+        // first-arc size to hand it.
         let count = HomeTile.allCases.count - 1
-        let stageOne = HomeTile.allCases.filter { $0 != .assistant && $0.stage == .one }.count
-        XCTAssertEqual(stageOne, HomeTile.stageOneCount - 1)
 
         for x in stride(from: 0.0, through: 402, by: 33) {
             for y in stride(from: 0.0, through: 818, by: 33) {
                 let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
-                                          count: count, stageOneCount: stageOne)
+                                          count: count)
                 XCTAssertEqual(fan.offsets.count, count)
+                XCTAssertEqual(fan.rings.reduce(0) { $0 + $1.count }, count,
+                               "the rings stopped accounting for every tile")
                 for point in bubbles(fan) {
                     XCTAssertTrue(isInside(point),
                                   "a tile escaped for a press at (\(x), \(y))")
@@ -321,5 +344,187 @@ final class RadialFanTests: XCTestCase {
                           (fan.stageOneRadius + fan.stageTwoRadius) / 2,
                           "stage two should trigger before the halfway point")
         XCTAssertGreaterThan(fan.stageBoundary, fan.stageOneRadius)
+    }
+
+    // MARK: - The ring model
+    //
+    // What replaced the hardcoded 8-then-6 split: one aim chosen first, then
+    // rings filled to whatever that direction affords. These are the
+    // invariants that survive a changed tile count, which the old fixed-split
+    // assertions could not.
+    //
+    // The bands are the ones `RadialPressMenu.open(at:in:size:)` actually
+    // hands to `solve` - the navigation bar at the top and the composer across
+    // the bottom 15%. Passing them here is the difference between "the fan
+    // fits the screen" and "the fan fits the screen someone is using".
+
+    private let screen = CGSize(width: 402, height: 818)
+
+    private var composerBand: CGRect {
+        CGRect(x: 0, y: screen.height * 0.85,
+               width: screen.width, height: screen.height * 0.15)
+    }
+
+    private var keepOut: [CGRect] {
+        [CGRect(x: 0, y: 0, width: screen.width, height: 59), composerBand]
+    }
+
+    /// Inner to outer, in order: the offsets are grouped ring by ring, so the
+    /// first `rings[0].count` tiles are the ones a thumb reaches first.
+    ///
+    /// This is what makes reach order and declaration order the same thing,
+    /// and it is the invariant the tile priority test above leans on.
+    func testTheInnerRingIsFilledFirstAndInDeclarationOrder() {
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                var cursor = 0
+                for (i, ring) in fan.rings.enumerated() {
+                    XCTAssertGreaterThan(ring.count, 0,
+                                         "an empty ring was built at (\(x), \(y))")
+                    if i > 0 {
+                        XCTAssertGreaterThan(
+                            ring.radius, fan.rings[i - 1].radius,
+                            "ring \(i) is not outside ring \(i - 1) at (\(x), \(y))")
+                    }
+                    for k in 0..<ring.count {
+                        let offset = fan.offsets[cursor + k]
+                        XCTAssertEqual(
+                            hypot(offset.width, offset.height), ring.radius,
+                            accuracy: 0.001,
+                            "tile \(cursor + k) is not on ring \(i) at (\(x), \(y))")
+                    }
+                    cursor += ring.count
+                }
+                XCTAssertEqual(cursor, fan.offsets.count)
+            }
+        }
+    }
+
+    /// Coaxial, which is the entire point of the rewrite: the aim is an INPUT
+    /// to the fit now, chosen once and shared. It used to be an output
+    /// computed per radius, which is how the two arcs ended up pointing in
+    /// different directions at 85% of presses.
+    func testEveryRingSharesTheOneChosenAim() {
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                guard let aim = fan.rings.first?.center else { continue }
+                for (i, ring) in fan.rings.enumerated() {
+                    XCTAssertEqual(ring.center, aim, accuracy: 1e-9,
+                                   "ring \(i) drifted off the shared aim at (\(x), \(y))")
+                }
+                XCTAssertEqual(fan.centerAngle, aim, accuracy: 1e-9)
+            }
+        }
+    }
+
+    /// A constant 72pt between rings, and every ring on that ladder. The gap
+    /// is what holds the selection boundary clear of both rings' bubbles, so a
+    /// ring landing between rungs would put the boundary inside a tile.
+    func testTheRingsSitOnALadderOfConstantGaps() {
+        for i in 0..<3 {
+            let fan = fanAtRest()
+            XCTAssertEqual(fan.radius(ofRing: i + 1) - fan.radius(ofRing: i), 72,
+                           accuracy: 1e-9, "the ring gap is not constant")
+        }
+        for y in stride(from: 0.0, through: 818, by: 22) {
+            let fan = RadialFan.solve(at: CGPoint(x: 201, y: y), in: field,
+                                      count: HomeTile.allCases.count,
+                                      keepOut: keepOut)
+            for (i, ring) in fan.rings.enumerated() {
+                let onLadder = (0..<4).contains {
+                    abs(fan.radius(ofRing: $0) - ring.radius) < 1e-9
+                }
+                XCTAssertTrue(onLadder,
+                              "ring \(i) at r=\(ring.radius) is off the ladder (y=\(y))")
+            }
+        }
+    }
+
+    /// 52pt centre to centre: a 44pt bubble plus enough gap to read as two
+    /// things rather than a blob. The solver has a give-up rung that would
+    /// spend this down to 46, and a phone-sized field never reaches it - swept
+    /// across the screen the closest two tiles come is exactly 52.
+    func testNoTwoTilesComeCloserThanFiftyTwoPoints() {
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                let points = bubbles(fan)
+                for i in points.indices {
+                    for j in points.indices where j > i {
+                        let gap = hypot(points[i].x - points[j].x,
+                                        points[i].y - points[j].y)
+                        XCTAssertGreaterThanOrEqual(
+                            gap, 52 - 0.001,
+                            "tiles \(i) and \(j) are \(gap)pt apart at (\(x), \(y))")
+                    }
+                }
+            }
+        }
+    }
+
+    /// On the field and off the composer, from anywhere.
+    ///
+    /// This is the shipped-twice bug: a fan sized for the middle of the
+    /// screen, clipped at the edges — and its sequel, a "Vault" tile coming
+    /// down on top of the text field because nothing in the fit knew the
+    /// composer was there.
+    func testEveryTileStaysOnTheFieldAndClearOfTheComposerBand() {
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                for (i, point) in bubbles(fan).enumerated() {
+                    XCTAssertTrue(isInside(point),
+                                  "tile \(i) at \(point) escaped for (\(x), \(y))")
+                    guard point.x >= composerBand.minX,
+                          point.x <= composerBand.maxX else { continue }
+                    XCTAssertLessThan(
+                        point.y, composerBand.minY,
+                        "tile \(i) landed in the composer band at (\(x), \(y))")
+                    // And not merely a hair above it: the mask blocks every
+                    // direction within `clearance` of a keep-out, so a tile
+                    // grazing the band means the mask stopped being applied.
+                    XCTAssertGreaterThan(
+                        composerBand.minY - point.y, 24,
+                        "tile \(i) grazed the composer band at (\(x), \(y))")
+                }
+            }
+        }
+    }
+
+    /// The property that makes adding a tile safe: nothing anywhere declares
+    /// how the tiles divide up, so the division cannot fall out of step with
+    /// the count. Parameterised over today's count, one fewer (the current
+    /// screen is never offered) and two more.
+    func testRingCountsAreDerivedFromTheTileCountAndSumToIt() {
+        let live = HomeTile.allCases.count
+        for count in [live - 1, live, live + 1, live + 2] {
+            for x in stride(from: 0.0, through: 402, by: 40) {
+                for y in stride(from: 0.0, through: 818, by: 40) {
+                    let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                              count: count, keepOut: keepOut)
+                    XCTAssertEqual(fan.rings.reduce(0) { $0 + $1.count }, count,
+                                   "\(count) tiles did not divide up at (\(x), \(y))")
+                    XCTAssertEqual(fan.offsets.count, count,
+                                   "\(count) tiles produced \(fan.offsets.count) offsets")
+                    XCTAssertEqual(fan.count, count)
+                    XCTAssertLessThanOrEqual(fan.rings.count, 3,
+                                             "a fourth ring appeared at (\(x), \(y))")
+                    for point in bubbles(fan) {
+                        XCTAssertTrue(isInside(point),
+                                      "\(count) tiles overflowed at (\(x), \(y))")
+                    }
+                }
+            }
+        }
     }
 }
