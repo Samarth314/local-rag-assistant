@@ -8,11 +8,16 @@ import SwiftUI
 
 // MARK: - Shared bits
 
-private struct ScreenState {
+// The tile screens' shared vocabulary. Internal rather than private since the
+// set outgrew this one file - MorningCallScreen is a tile screen too, and a
+// second copy of "Couldn't reach this surface" is how two screens start
+// wording the same failure differently.
+
+struct ScreenState {
     static let loadFailed = "Couldn't reach this surface - check Tailscale and the server in Settings."
 }
 
-private struct SectionHeader: View {
+struct SectionHeader: View {
     let text: String
     var body: some View {
         Text(text.uppercased())
@@ -23,7 +28,7 @@ private struct SectionHeader: View {
     }
 }
 
-private struct ErrorBanner: View {
+struct ErrorBanner: View {
     let message: String
     var body: some View {
         Label(message, systemImage: "wifi.exclamationmark")
@@ -410,20 +415,22 @@ struct HealthScreen: View {
 // MARK: - Home
 
 private enum HomeDTO {
-    struct Payload: Decodable {
+    // Codable, not just Decodable: the last payload is written back to disk so
+    // the screen has something to draw before the network answers. See HomeCache.
+    struct Payload: Codable {
         let ok: Bool?
         let error: String?
         let devices: [Device]?
         let sensors: [Device]?
     }
-    struct Device: Decodable {
+    struct Device: Codable {
         let entity_id: String?
         let domain: String?
         let name: String?
         let state: String?
         let attrs: Attrs?
     }
-    struct Attrs: Decodable {
+    struct Attrs: Codable {
         let brightness: Double?
         let temperature: Double?
         let current_temperature: Double?
@@ -442,19 +449,86 @@ private enum HomeDTO {
     }
 }
 
+/// The last `/api/home` response, so the page has something to draw before the
+/// network answers.
+///
+/// ## Where it is kept, and why not UserDefaults
+///
+/// The caches directory, for two reasons. It is the honest place for data that
+/// is regenerable by definition and that the system may throw away whenever it
+/// likes, which is exactly the contract here - a missing cache costs one blank
+/// frame. And it is not included in device backups, whereas UserDefaults is:
+/// a lamp's on/off state is about the least sensitive thing ATARU touches, but
+/// this app's standing rule is that server responses do not accumulate
+/// anywhere (`LiveATARUService` sets `urlCache = nil` on the same grounds), so
+/// the copy that does exist should be the narrowest one that solves the
+/// problem.
+///
+/// One file per backend: flipping Settings between the dev twin and production
+/// must never show one's devices under the other's name.
+private enum HomeCache {
+
+    private struct Envelope: Codable {
+        let payload: HomeDTO.Payload
+        let savedAt: Date
+    }
+
+    /// Derived from the backend URL by substitution, NOT by `hashValue` -
+    /// String hashing is seeded per process, so a hashed filename would miss
+    /// its own cache on the next launch, which is the only launch that matters.
+    private static func fileURL(for root: URL) -> URL? {
+        guard let dir = FileManager.default.urls(for: .cachesDirectory,
+                                                 in: .userDomainMask).first else { return nil }
+        let slug = root.absoluteString.replacingOccurrences(
+            of: "[^A-Za-z0-9]", with: "-", options: .regularExpression)
+        return dir.appending(path: "home-\(slug).json")
+    }
+
+    static func load(for root: URL?) -> (payload: HomeDTO.Payload, savedAt: Date)? {
+        guard let root, let url = fileURL(for: root),
+              let data = try? Data(contentsOf: url),
+              let envelope = try? JSONDecoder().decode(Envelope.self, from: data)
+        else { return nil }
+        return (envelope.payload, envelope.savedAt)
+    }
+
+    static func save(_ payload: HomeDTO.Payload, for root: URL) {
+        guard let url = fileURL(for: root),
+              let data = try? JSONEncoder().encode(
+                Envelope(payload: payload, savedAt: Date()))
+        else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 struct HomeScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: HomeDTO.Payload?
     @State private var failed = false
     @State private var busyEntity: String?
+    /// True while a fetch is in flight AND something is already on screen -
+    /// the difference between "loading" and "checking whether what you are
+    /// reading is still true".
+    @State private var isRefreshing = false
+    /// When the payload on screen was fetched, if it came off disk.
+    @State private var cachedAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                // Failed with nothing to fall back on is an error. Failed with
+                // a cached copy is not - it is yesterday's answer, labelled.
+                if failed {
+                    if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    }
+                }
                 if let error = payload?.error {
                     ErrorBanner(message: error)
                 }
+                if isRefreshing { refreshingRow }
 
                 if let devices = payload?.devices, !devices.isEmpty {
                     ATCard {
@@ -516,8 +590,35 @@ struct HomeScreen: View {
         .navigationTitle("Home")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        .task {
+            // Draw the last known state first, then go and check it. The page
+            // used to sit completely blank for the whole round trip - nothing
+            // renders until `payload` is non-nil - which on a tailnet round
+            // trip to the mini is exactly the "takes a moment" he reported.
+            if payload == nil, let cached = HomeCache.load(for: root) {
+                payload = cached.payload
+                cachedAt = cached.savedAt
+            }
+            await load()
+        }
     }
+
+    /// Deliberately a fixed-height row rather than something that appears and
+    /// disappears: a spinner that changes the layout height is a page that
+    /// jumps as it settles, which is the thing this whole change is meant to
+    /// stop.
+    private var refreshingRow: some View {
+        HStack(spacing: Theme.Space.xs) {
+            ProgressView().tint(Theme.textTertiary).scaleEffect(0.7)
+            Text("Checking devices")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.textTertiary)
+            Spacer(minLength: 0)
+        }
+        .frame(height: 18)
+    }
+
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.home) }
 
     private func detail(_ device: HomeDTO.Device) -> String {
         var parts: [String] = [device.state ?? "?"]
@@ -532,11 +633,19 @@ struct HomeScreen: View {
     }
 
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.home) else { return }
+        guard let root else { return }
+        // Only announce a refresh when there is already something to refresh.
+        // On a truly cold open the page is empty anyway and a second spinner
+        // above the emptiness says nothing.
+        isRefreshing = payload != nil
+        defer { isRefreshing = false }
         do {
-            payload = try await TileFetch.get(
+            let fresh = try await TileFetch.get(
                 HomeDTO.Payload.self, root.appending(path: "api/home"))
+            payload = fresh
             failed = false
+            cachedAt = nil
+            HomeCache.save(fresh, for: root)
         } catch { failed = true }
     }
 
