@@ -79,7 +79,17 @@ struct RemoteScreen: View {
         .ataruBackdrop()
         .navigationTitle("Screens")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await health.refresh() }
+        .task {
+            // Stand the web content processes up while the list is being read,
+            // so opening a machine pays for the page and not for the process
+            // too. This deliberately stops short of loading: these URLs carry
+            // `autoconnect=1`, and looking at a list of machines should not
+            // open live sessions to two of them. See `WarmWebViews.prepare`.
+            for machine in Self.machines {
+                if let url = url(for: machine) { WebScreen.prepare(url) }
+            }
+            await health.refresh()
+        }
     }
 
     private func row(_ machine: Machine) -> some View {
