@@ -239,6 +239,16 @@ struct RootView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
                                         to: nil, from: nil, for: nil)
         isComposerActive = false
+
+        // Media hands straight over to Swiftfin when it is installed, without
+        // a screen of ours in between. A video server deserves its own player,
+        // and the status card this replaces was advice with no way to act on
+        // it. Not installed - or the query scheme missing from Info.plist,
+        // which looks identical - falls through to that card, which now says
+        // so. Done outside the animation: there is nothing of ours to animate,
+        // and the app is about to leave the foreground.
+        if tile == .media, ExternalApp.swiftfin.open() { return }
+
         withAnimation(.easeInOut(duration: 0.24)) {
             switch tile {
             case .assistant:

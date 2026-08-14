@@ -172,7 +172,10 @@ struct ServiceCardScreen: View {
 
     private var blurb: String {
         switch tile {
-        case .media:         return "Jellyfin runs on the mini. Use the Jellyfin app or a browser on the tailnet for playback - a video server deserves its own player."
+        // Only reached when Swiftfin is NOT installed - RootView.open(tile:)
+        // hands `.media` straight to the app otherwise and never presents this
+        // screen. So the text is about the missing client, not about Jellyfin.
+        case .media:         return "Jellyfin runs on the mini, and Swiftfin isn't installed on this phone. Install Swiftfin and this tile opens it directly; until then, use a browser on the tailnet."
         case .music:         return "Navidrome on the mini. Any Subsonic-compatible player on the tailnet connects to it."
         case .passwords:     return "Vaultwarden on the mini. Pair it with the Bitwarden app pointed at the tailnet URL."
         case .whiteboard:    return "The PenEcho AI canvas - handwriting first, so it lives best on the iPad or a desktop."

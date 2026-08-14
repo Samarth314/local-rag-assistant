@@ -27,6 +27,19 @@
   <key>CFBundleShortVersionString</key><string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSRequiresIPhoneOS</key><true/>
+  <!--
+    Apps ATARU is allowed to ask about. `canOpenURL` returns false for any
+    scheme NOT listed here, silently and indistinguishably from the app being
+    absent — so a scheme missing from this list makes that app permanently
+    invisible to us, and the Media tile would sit forever on its "Swiftfin
+    isn't installed" card with Swiftfin installed. Keep in step with
+    ExternalApp; `swiftfin` is the URL type Swiftfin registers in its own
+    Info.plist.
+  -->
+  <key>LSApplicationQueriesSchemes</key>
+  <array>
+    <string>swiftfin</string>
+  </array>
   <key>UILaunchScreen</key>
   <dict>
     <key>UIColorName</key><string>LaunchCanvas</string>
