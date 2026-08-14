@@ -100,10 +100,30 @@ struct RootView: View {
             // on most of the app's pages is not the only way between them, so
             // the presentation gave way instead. Here it is just a layer, the
             // launcher stays above it, and every page behaves the same.
+            // A crossfade, NOT a slide up from the bottom.
+            //
+            // The slide is what he saw as "a rectangle of a different shade
+            // sweeping from the bottom of the page to the top": this host
+            // painted a flat colour where everything behind it paints the
+            // backdrop gradient, and it carried that mismatch up the screen
+            // over 0.24s on every single tile open. Worse, the host's own
+            // backdrop is anchored to the moving frame, so mid-slide two
+            // copies of the same gradient sat offset from each other and the
+            // seam between them was the moving edge.
+            //
+            // Fading has no edge to sweep. It also composites cleanly now that
+            // TileScreenHost paints the same backdrop as the root: the two
+            // gradients are identical AND aligned, so the background is
+            // completely still through the transition and only the content
+            // crossfades, which is the only part that is actually changing.
+            //
+            // The call layers below keep their slide on purpose - a call bar
+            // arriving from the bottom edge is a thing entering from off
+            // screen, which is what that motion is for.
             if let tile = presentedTile {
                 TileScreenHost(tile: tile) { close() }
                     .environmentObject(state)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(.opacity)
                     .zIndex(1.5)
             }
 

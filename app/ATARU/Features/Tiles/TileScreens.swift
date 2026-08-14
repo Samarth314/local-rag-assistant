@@ -5,18 +5,44 @@ import SwiftUI
 /// Where a tile's data comes from, decided by the server the app points at.
 ///
 /// The rule is the user's: if Settings points at a production server, tiles
-/// show REAL data from the production view apps; if it points at the dev box
-/// (any host containing "dev."), tiles show the dev twins' fixture data.
-/// One switch, every tile follows it.
+/// show REAL data from the production view apps; if it points at the dev twin,
+/// tiles show its fixture data. One switch, every tile follows it.
 struct TileBackend {
     let isDev: Bool
 
     init(baseURLString: String) {
-        isDev = baseURLString.lowercased().contains("dev.")
+        isDev = Self.isDevBackend(baseURLString)
     }
 
     private static let prodDomain = "ataru.aryasasikumar.com"
-    private static let devRoot = "https://dev.ataru.aryasasikumar.com"
+    /// The dev twin, by host. Exactly this host and nothing else.
+    static let devHost = "dev.ataru.aryasasikumar.com"
+    private static let devRoot = "https://\(devHost)"
+
+    /// Whether a configured base URL points at the dev twin.
+    ///
+    /// HOST EQUALITY, never a substring. This used to be
+    /// `baseURLString.lowercased().contains("dev.")`, which is true of any URL
+    /// with those four characters anywhere in it: `mydev.company.com`,
+    /// `ataru.aryasasikumar.com.dev.cdn.net`, a path like `/dev.html`, a query
+    /// like `?flag=dev.x`. The failure is silent and it is the bad direction -
+    /// a production URL that trips it serves every tile from the dev twin's
+    /// FIXTURES while looking exactly like production, so Finance and Health
+    /// would show invented numbers with nothing on screen saying so.
+    static func isDevBackend(_ baseURLString: String) -> Bool {
+        let trimmed = baseURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        // The Settings field does not insist on a scheme, and URLComponents
+        // reads a bare "host/path" as a path with no host at all - which would
+        // make every scheme-less entry look like production.
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let host = URLComponents(string: candidate)?.host?.lowercased() else {
+            return false
+        }
+        // A fully-qualified name may carry a trailing root dot.
+        let normalized = host.hasSuffix(".") ? String(host.dropLast()) : host
+        return normalized == devHost
+    }
 
     /// The JSON API root for a surface (no trailing slash).
     func apiRoot(_ tile: HomeTile) -> URL? {
@@ -99,7 +125,13 @@ struct TileScreenHost: View {
                     }
                 }
         }
-        .background(Ataru.Palette.bg.ignoresSafeArea())
+        // The same backdrop every other surface in the app paints, not the
+        // flat `Palette.bg` this used to use. #090A0C against a gradient
+        // running #15181D to #060708 is a visible shade difference wherever
+        // the two meet - and during a transition, where both are on screen at
+        // once, it was the whole screen. Matching it means the background is
+        // one continuous thing no matter which layer is drawing it.
+        .background(Ataru.backdrop.ignoresSafeArea())
         .preferredColorScheme(.dark)
     }
 
