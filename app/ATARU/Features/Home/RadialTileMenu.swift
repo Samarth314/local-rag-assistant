@@ -2,13 +2,15 @@ import SwiftUI
 
 /// Every surface ATARU has, as one routable set.
 ///
-/// This is the single source of truth for destinations: the Tiles grid and
-/// the radial launcher are two ways of launching the SAME set - the grid for
-/// browsing, the dial for muscle memory. Every case opens a native screen;
-/// nothing routes to a web page.
-/// The declaration order IS the launcher's order, and the first
-/// Declaration order is reach order: the earlier a tile is listed, the
-/// sooner a thumb gets to it.
+/// This is the single source of truth for destinations: the radial launcher
+/// and the accessibility menu in the navigation bar are two ways of launching
+/// the SAME set - the dial for muscle memory, the menu for everyone the dial
+/// cannot serve. Every case opens a native screen; nothing routes to a web
+/// page.
+///
+/// Declaration order is reach order: the earlier a tile is listed, the sooner
+/// a thumb gets to it. The inner ring is filled first and in order, so where a
+/// tile sits in this enum is the whole of its priority.
 ///
 /// Stage one is chosen by how often a phone is the right device for the job:
 /// the surfaces holding your own data, and the ones that change day to day.

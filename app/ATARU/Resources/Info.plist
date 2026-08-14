@@ -9,10 +9,15 @@
        never reaches the app: AppConfiguration reads this exact key, so the
        "default" silently resolved to an empty string. -->
   <key>ATARUDefaultBaseURL</key><string>$(ATARU_DEFAULT_BASE_URL)</string>
-  <!-- The launcher/tiles host: the Tiles tab fetches <this>/api/launcher for
-       the live tile manifest (same grid as the wall launcher, with health
-       dots). A DIFFERENT host from the assistant base URL, deliberately.
-       Empty -> the tab falls back to the static HomeTile grid. -->
+  <!-- The launcher host: TileHealthModel fetches <this>/api/launcher and uses
+       it for ONE thing, the online/offline dot on the screens that show a
+       machine's state (ServiceCardScreen and RemoteScreen). A DIFFERENT host
+       from the assistant base URL, deliberately.
+
+       It has never supplied the destinations themselves - those are the
+       native HomeTile enum - so empty, or unreachable, costs the dots and
+       nothing else. There is no tile grid any more; the radial launcher
+       replaced it. -->
   <key>ATARUTilesURL</key><string>$(ATARU_TILES_URL)</string>
   <key>CFBundleExecutable</key><string>$(EXECUTABLE_NAME)</string>
   <key>CFBundleIdentifier</key><string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>

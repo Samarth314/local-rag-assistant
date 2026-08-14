@@ -121,10 +121,16 @@ struct TileScreenHost: View {
 
 // MARK: - Service card (third-party surfaces)
 
-/// A native face for the third-party services (Jellyfin, Navidrome,
-/// Vaultwarden, Portainer, ntfy, the remote hub, the canvas): what it is and
-/// whether it's up. These are full products of their own - the honest native
-/// treatment is status, not a half-reimplementation.
+/// A native face for the third-party services - Jellyfin, Navidrome,
+/// Vaultwarden and the PenEcho canvas: what it is and whether it's up. These
+/// are full products of their own, and the honest native treatment is status
+/// rather than a half-reimplementation.
+///
+/// Portainer and ntfy used to be listed here and are not tiles at all any
+/// more (see HomeTile: Docker and Notify were removed outright). The remote
+/// hub was the fifth card until it earned a real page - RemoteScreen - and
+/// TileScreenHost routes `.remote` there now, so nothing reaches this screen
+/// asking about it.
 struct ServiceCardScreen: View {
     let tile: HomeTile
     @StateObject private var health = TileHealthModel()
@@ -168,7 +174,6 @@ struct ServiceCardScreen: View {
         case .media:         return "Jellyfin runs on the mini. Use the Jellyfin app or a browser on the tailnet for playback - a video server deserves its own player."
         case .music:         return "Navidrome on the mini. Any Subsonic-compatible player on the tailnet connects to it."
         case .passwords:     return "Vaultwarden on the mini. Pair it with the Bitwarden app pointed at the tailnet URL."
-        case .remote:        return "noVNC screens for the mini, Orin and NAS - a desktop-sized surface, best used from a desktop."
         case .whiteboard:    return "The PenEcho AI canvas - handwriting first, so it lives best on the iPad or a desktop."
         default:             return ""
         }
