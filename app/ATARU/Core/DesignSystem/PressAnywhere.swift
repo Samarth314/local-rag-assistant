@@ -32,7 +32,7 @@ struct PressAnywhere: UIViewRepresentable {
     var isEnabled: Bool
     /// Rects, in global coordinates, where a press means something else. The
     /// orb is the one that matters — holding it is how you talk to ATARU, and
-    /// a menu opening a third of a second into every question would make the
+    /// a menu opening a fifth of a second into every question would make the
     /// app unusable.
     var exclusions: [CGRect]
 
@@ -106,17 +106,29 @@ struct PressAnywhere: UIViewRepresentable {
             guard let window else { return }
             let press = UILongPressGestureRecognizer(
                 target: self, action: #selector(handle(_:)))
-            // Near UIKit's own 0.5 default rather than the snappier 0.32 this
-            // started at. The launcher competes with every tap in the app, so
-            // the cost of firing too eagerly is not a slightly early animation
-            // — it is a button press cancelled and a screen the user did not
-            // ask for. Slow taps happen; accidental navigation is worse than a
-            // fan that takes another tenth of a second.
-            press.minimumPressDuration = 0.45
-            // A little more slack than the default 10: reaching a thumb across
-            // a phone drifts, and a press that dies from a wobble reads as the
-            // gesture simply not working.
-            press.allowableMovement = 14
+            // 0.22s, down from 0.45 (and 0.32 before that). 0.45 was chosen
+            // to sit near UIKit's own 0.5 default on the grounds that the
+            // launcher competes with every tap in the app, so firing eagerly
+            // costs a cancelled button press and a screen nobody asked for.
+            // That reasoning was right about the risk and wrong about which
+            // gate carries it: waiting is not what tells a hold apart from a
+            // tap or a scroll, movement is. A tap is gone in ~0.1s and never
+            // reaches even this threshold, and a scroll is moving from the
+            // first frame.
+            //
+            // So the time gate comes down to where the fan feels like it
+            // answers the thumb, and the movement gate below takes over the
+            // job of turning down everything that is not a deliberate hold.
+            press.minimumPressDuration = 0.22
+            // Back to UIKit's default 10, from the 14 that ran alongside the
+            // longer wait. The slack was there because a thumb reaching across
+            // a phone drifts and a press dying from a wobble reads as the
+            // gesture simply not working - but drift is a function of how long
+            // the finger has to sit still, and that is now half what it was.
+            // At 0.22s, 14pt of slack stops discriminating: a slow scroll
+            // covers about 11pt in that time and would have been recognised as
+            // a hold, taking the scroll with it (see suspendCompanions).
+            press.allowableMovement = 10
             press.delegate = self
             press.cancelsTouchesInView = true
             window.addGestureRecognizer(press)
@@ -204,7 +216,7 @@ struct PressAnywhere: UIViewRepresentable {
         /// the life of the gesture, so the scroll view's pan kept following the
         /// same finger that was choosing a destination. Before recognition the
         /// answer must stay `true` — lists have to keep scrolling and buttons
-        /// have to keep taking taps during the 0.45s nobody has committed to
+        /// have to keep taking taps during the 0.22s nobody has committed to
         /// anything yet.
         func gestureRecognizer(
             _ gestureRecognizer: UIGestureRecognizer,
