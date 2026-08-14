@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The app's one screen, and everything that can take it over.
 ///
-/// There is no tab bar and no visible launcher. Three root screens swap in
+/// There is no tab bar and no visible launcher. Two root screens swap in
 /// place, every other destination arrives as a layer over them, and the way
 /// between them is a thumb held anywhere on the glass — see `RadialPressMenu`.
 /// What is left is the content and nothing else.
@@ -23,8 +23,8 @@ struct RootView: View {
     /// is how you talk to ATARU.
     @State private var pressExclusions: [CGRect] = []
     /// The native tile screen currently presented, if any. Every tile is
-    /// native now - the grid and the radial dial are two ways of opening the
-    /// same set, and nothing routes to a web page.
+    /// native now - the radial dial and the accessibility menu are two ways of
+    /// opening the same set, and nothing routes to a web page.
     @State private var presentedTile: HomeTile?
 
     // Borrowed from CallStack, never constructed here. A view's init re-runs
@@ -47,7 +47,14 @@ struct RootView: View {
         session = stack.session
     }
 
-    enum Tab: Hashable { case ask, tiles, library }
+    /// The two screens that are roots rather than layers. Everything else in
+    /// `HomeTile` arrives as a tile screen over one of these.
+    ///
+    /// There was a third, `tiles`, backing a scrollable grid of every
+    /// destination. The radial launcher replaced it and nothing ever assigned
+    /// the case again, so the grid had been unreachable since the tab bar was
+    /// dropped - see `TileDestinationsMenu` for the accessible way in.
+    enum Tab: Hashable { case ask, library }
 
     /// True while the Ask composer owns the keyboard. Reported up from
     /// VoiceView so the radial launcher can get out of the way - the dial
@@ -74,7 +81,6 @@ struct RootView: View {
             Group {
                 switch selection {
                 case .ask:     VoiceView(composerActive: $isComposerActive)
-                case .tiles:   TilesView(onOpen: open(tile:))
                 case .library: DocumentsView()
                 }
             }
@@ -209,12 +215,11 @@ struct RootView: View {
     }
 
     /// The tile the current screen already is, so the launcher can leave it
-    /// out. The grid is not a destination of its own, so it maps to nothing.
+    /// out.
     private var currentTile: HomeTile? {
         switch selection {
         case .ask:     return .assistant
         case .library: return .documents
-        case .tiles:   return nil
         }
     }
 
