@@ -313,6 +313,7 @@ struct TileScreenHost: View {
     private var screen: some View {
         switch tile {
         case .plan:       PlanView()
+        case .notes:      NotesScreen()
         case .finance:    FinanceScreen()
         case .health:     HealthScreen()
         case .home:       HomeScreen()

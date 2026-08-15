@@ -26,7 +26,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
     // routine rather than a machine or a media server, so it does not belong
     // with the second group - but it is a setting, dialled the night before
     // and then left alone, so it has no business in first reach either.
-    case assistant, plan, finance, health, journal, documents, home, workspaces
+    case assistant, plan, notes, finance, health, journal, documents, home, workspaces
     case morning
     // Genuinely better on a bigger screen, revealed by pushing further out.
     case status, passwords, media, music, whiteboard, remote
@@ -43,6 +43,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         switch self {
         case .assistant:     return "Ask"
         case .plan:          return "Plan"
+        case .notes:         return "Notes"
         case .finance:       return "Finance"
         case .health:        return "Health"
         case .home:          return "Home"
@@ -63,6 +64,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         switch self {
         case .assistant:     return "waveform"
         case .plan:          return "checklist"
+        case .notes:         return "waveform.badge.mic"
         case .finance:       return "dollarsign.circle"
         case .health:        return "heart.text.square"
         case .home:          return "lightbulb"
@@ -84,6 +86,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         switch self {
         case .assistant:     return "Voice · chat"
         case .plan:          return "Top 3 · todos"
+        case .notes:         return "Dictate · summarise"
         case .finance:       return "Spending · net worth"
         case .health:        return "Labs · meds"
         case .home:          return "Devices · switches"
