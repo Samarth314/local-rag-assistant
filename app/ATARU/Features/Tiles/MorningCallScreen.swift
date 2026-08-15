@@ -46,16 +46,13 @@ struct MorningCallScreen: View {
             VStack(spacing: Theme.Space.m) {
                 switch phase {
                 case .loading:
-                    ATCard {
-                        HStack(spacing: Theme.Space.s) {
-                            ProgressView().tint(Theme.cyan)
-                            Text("Checking the schedule")
-                                .font(.ataruCaption())
-                                .foregroundStyle(Theme.textSecondary)
-                        }
-                        .padding(Theme.Space.l)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // First load with nothing to show: a minimal centred
+                    // indicator, no card and no words. See ScreenState for the
+                    // one rule this follows.
+                    ProgressView()
+                        .tint(Theme.cyan)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Theme.Space.xl)
 
                 case .unavailable:
                     unavailableCard
@@ -135,16 +132,19 @@ struct MorningCallScreen: View {
                 Button {
                     Task { await save() }
                 } label: {
-                    HStack(spacing: Theme.Space.xs) {
-                        if isSaving { ProgressView().tint(Theme.textPrimary) }
-                        Text(isSaving ? "Setting" : "Set for tomorrow")
-                            .font(.ataruLabel())
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, Theme.Space.s)
+                    // Constant label, constant size. A spinner appearing
+                    // inside the button and the word changing to "Setting"
+                    // both resized it mid-tap; dimming says the same thing and
+                    // moves nothing. The confirmation card is the real answer.
+                    Text("Set for tomorrow")
+                        .font(.ataruLabel())
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Theme.Space.s)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(Theme.cyan)
+                .opacity(isSaving ? 0.6 : 1)
+                .animation(.easeOut(duration: 0.18), value: isSaving)
                 .disabled(isSaving)
             }
             .padding(Theme.Space.m)

@@ -14,7 +14,20 @@ import SwiftUI
 // wording the same failure differently.
 
 struct ScreenState {
-    /// The generic one, for screens that still only know THAT a load failed.
+    /// ONE RULE ABOUT LOADING, everywhere in the app.
+    ///
+    /// A refresh over content that is already on screen shows nothing. No
+    /// spinner, no "Checking…", no row that appears and pushes the page down.
+    /// The content simply becomes newer, and the only thing a refresh may ever
+    /// put on screen is a failure - and then only the quiet one-line kind.
+    ///
+    /// The version of this that shipped had a fixed-height "Checking devices"
+    /// row, on the reasoning that fixing its height stopped the page jumping.
+    /// It still inserted a row, still shifted everything below it, and still
+    /// announced a thing nobody asked to be told. A refresh is not an event.
+    ///
+    /// A first load with nothing cached may show a minimal centred indicator,
+    /// because then there genuinely is nothing else on the screen.
     /// Note the wording: "load", not "reach". The old string said "Couldn't
     /// reach this surface - check Tailscale…", which is a claim about the
     /// network that none of these screens ever actually tested - and it was
@@ -530,10 +543,6 @@ struct HomeScreen: View {
     @State private var payload: HomeDTO.Payload?
     /// What went wrong last, not merely that something did. See TileFetchError.
     @State private var failure: TileFetchError?
-    /// True while a fetch is in flight AND something is already on screen -
-    /// the difference between "loading" and "checking whether what you are
-    /// reading is still true".
-    @State private var isRefreshing = false
     /// When the payload on screen was fetched, if it came off disk.
     @State private var cachedAt: Date?
     /// Switches the user has flipped that the server has not confirmed yet.
@@ -568,7 +577,6 @@ struct HomeScreen: View {
                     ErrorBanner(message: error)
                 }
                 if let toggleNote { InlineNote(text: toggleNote) }
-                if isRefreshing { refreshingRow }
 
                 if let devices = payload?.devices, !devices.isEmpty {
                     ATCard {
@@ -645,21 +653,6 @@ struct HomeScreen: View {
         }
     }
 
-    /// Deliberately a fixed-height row rather than something that appears and
-    /// disappears: a spinner that changes the layout height is a page that
-    /// jumps as it settles, which is the thing this whole change is meant to
-    /// stop.
-    private var refreshingRow: some View {
-        HStack(spacing: Theme.Space.xs) {
-            ProgressView().tint(Theme.textTertiary).scaleEffect(0.7)
-            Text("Checking devices")
-                .font(.ataruCaption())
-                .foregroundStyle(Theme.textTertiary)
-            Spacer(minLength: 0)
-        }
-        .frame(height: 18)
-    }
-
     private var root: URL? { TileBackend.current(from: state).apiRoot(.home) }
 
     private func detail(_ device: HomeDTO.Device) -> String {
@@ -677,11 +670,9 @@ struct HomeScreen: View {
     @discardableResult
     private func load() async -> Bool {
         guard let root else { return false }
-        // Only announce a refresh when there is already something to refresh.
-        // On a truly cold open the page is empty anyway and a second spinner
-        // above the emptiness says nothing.
-        isRefreshing = payload != nil
-        defer { isRefreshing = false }
+        // No loading state of any kind. A refresh over content that is
+        // already on screen must be invisible until it has something to say -
+        // see the note on ScreenState.
         do {
             // Longer than the shared default. This endpoint gathers the whole
             // of Home Assistant's state, where /api/toggle touches one entity
