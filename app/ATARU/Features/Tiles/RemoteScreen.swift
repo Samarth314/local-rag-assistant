@@ -70,7 +70,11 @@ struct RemoteScreen: View {
                         } label: {
                             row(machine)
                         }
-                        .buttonStyle(.plain)
+                        // Gives under the thumb. A VNC destination takes a
+                        // moment to open, and `.plain` left the row completely
+                        // inert until it did - so the tap read as a miss and
+                        // invited a second one.
+                        .buttonStyle(.atPress)
                     }
                 }
             }

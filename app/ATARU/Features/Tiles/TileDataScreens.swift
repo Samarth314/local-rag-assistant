@@ -1002,7 +1002,7 @@ struct JournalScreen: View {
                             .padding(Theme.Space.m)
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.atPress)
                 }
             }
             .padding(Theme.Space.screen)
@@ -1224,7 +1224,7 @@ struct WorkspacesScreen: View {
                             .padding(Theme.Space.m)
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.atPress)
                 }
             }
             .padding(Theme.Space.screen)

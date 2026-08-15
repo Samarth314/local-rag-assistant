@@ -129,7 +129,7 @@ struct DocumentsView: View {
                     NavigationLink(value: document) {
                         DocumentCard(document: document)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.atPress)
                     .padding(.horizontal, Theme.Space.screen)
                 }
             }

@@ -31,6 +31,33 @@ struct ATCard<Content: View>: View {
     }
 }
 
+// MARK: - Press feedback
+
+/// What a tappable card does under a thumb.
+///
+/// `.buttonStyle(.plain)` is what these rows used, and plain means literally
+/// nothing happens on touch-down: the row is inert until the navigation push
+/// begins, so on a slow push the tap reads as having missed. A card that
+/// gives slightly under the finger costs one modifier and is the difference
+/// between an app that responds and an app that eventually reacts.
+///
+/// Deliberately small. 0.97 and a few percent of dimming is felt rather than
+/// watched - anything more and a list of cards becomes a trampoline.
+struct ATPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.88 : 1)
+            .animation(.spring(response: 0.24, dampingFraction: 0.75),
+                       value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == ATPressStyle {
+    /// `.buttonStyle(.atPress)` - the app's tappable-card feedback.
+    static var atPress: ATPressStyle { ATPressStyle() }
+}
+
 // MARK: - Status
 
 /// Semantic status used by nodes, services and models.
