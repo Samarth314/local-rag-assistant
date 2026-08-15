@@ -14,7 +14,17 @@ import SwiftUI
 // wording the same failure differently.
 
 struct ScreenState {
-    static let loadFailed = "Couldn't reach this surface - check Tailscale and the server in Settings."
+    /// The generic one, for screens that still only know THAT a load failed.
+    /// Note the wording: "load", not "reach". The old string said "Couldn't
+    /// reach this surface - check Tailscale…", which is a claim about the
+    /// network that none of these screens ever actually tested - and it was
+    /// shown for decode failures and HTTP errors too. Sending someone to
+    /// check Tailscale over a 502 is worse than saying nothing.
+    static let loadFailed = "Couldn't load this surface - check the server in Settings."
+
+    /// The reachability claim, now only used where reachability really was the
+    /// problem. See `TileFetchError`.
+    static let unreachable = "Couldn't reach this surface - check Tailscale and the server in Settings."
 }
 
 struct SectionHeader: View {
@@ -25,6 +35,20 @@ struct SectionHeader: View {
             .foregroundStyle(Theme.textTertiary)
             .kerning(1.5)
             .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// A quieter banner, for something that went wrong beside content that is
+/// still good. `ErrorBanner` is for a screen that has nothing to show; this is
+/// for a screen that has everything to show and one stale corner.
+struct InlineNote: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.ataruCaption())
+            .foregroundStyle(Theme.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .transition(.opacity)
     }
 }
 
@@ -504,30 +528,46 @@ private enum HomeCache {
 struct HomeScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: HomeDTO.Payload?
-    @State private var failed = false
-    @State private var busyEntity: String?
+    /// What went wrong last, not merely that something did. See TileFetchError.
+    @State private var failure: TileFetchError?
     /// True while a fetch is in flight AND something is already on screen -
     /// the difference between "loading" and "checking whether what you are
     /// reading is still true".
     @State private var isRefreshing = false
     /// When the payload on screen was fetched, if it came off disk.
     @State private var cachedAt: Date?
+    /// Switches the user has flipped that the server has not confirmed yet.
+    /// Present means "show this, whatever the payload says".
+    @State private var optimistic: [String: Bool] = [:]
+    /// One in-flight request per entity, so a rapid re-tap replaces its
+    /// predecessor rather than racing it.
+    @State private var inFlight: [String: Task<Void, Never>] = [:]
+    @State private var toggleNote: String?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                // Failed with nothing to fall back on is an error. Failed with
-                // a cached copy is not - it is yesterday's answer, labelled.
-                if failed {
-                    if let cachedAt {
+                // Three different events, three different things to say.
+                //
+                // Nothing to show is an error. A refresh that failed over
+                // content that is already on screen is NOT - it is a lost
+                // round trip, and dressing it as "couldn't reach this surface"
+                // is what had the page calling itself unreachable while its
+                // own toggles were switching the lights.
+                if let failure {
+                    if payload == nil {
+                        ErrorBanner(message: failure.errorDescription
+                                    ?? ScreenState.loadFailed)
+                    } else if let cachedAt {
                         FreshnessBanner(state: .stale(cachedAt))
                     } else {
-                        ErrorBanner(message: ScreenState.loadFailed)
+                        InlineNote(text: failure.refreshNote)
                     }
                 }
                 if let error = payload?.error {
                     ErrorBanner(message: error)
                 }
+                if let toggleNote { InlineNote(text: toggleNote) }
                 if isRefreshing { refreshingRow }
 
                 if let devices = payload?.devices, !devices.isEmpty {
@@ -545,17 +585,19 @@ struct HomeScreen: View {
                                             .foregroundStyle(Theme.textTertiary)
                                     }
                                     Spacer()
-                                    if busyEntity == device.entity_id {
-                                        ProgressView().tint(Theme.cyan)
-                                    } else {
-                                        Toggle("", isOn: Binding(
-                                            get: { device.state == "on" },
-                                            set: { on in
-                                                Task { await toggle(device, on: on) }
-                                            }))
-                                        .labelsHidden()
-                                        .tint(Theme.cyan)
-                                    }
+                                    // No spinner, and no waiting. The switch
+                                    // is the user's, not the server's: it
+                                    // moves on touch and the request follows.
+                                    // It used to be replaced by a ProgressView
+                                    // for the whole round trip and then come
+                                    // back already in its new position, which
+                                    // is why flipping a light felt like
+                                    // filing a request and watching it jump.
+                                    Toggle("", isOn: Binding(
+                                        get: { isOn(device) },
+                                        set: { on in flip(device, on: on) }))
+                                    .labelsHidden()
+                                    .tint(Theme.cyan)
                                 }
                                 .padding(.vertical, 2)
                             }
@@ -632,32 +674,99 @@ struct HomeScreen: View {
         return parts.joined(separator: " · ")
     }
 
-    private func load() async {
-        guard let root else { return }
+    @discardableResult
+    private func load() async -> Bool {
+        guard let root else { return false }
         // Only announce a refresh when there is already something to refresh.
         // On a truly cold open the page is empty anyway and a second spinner
         // above the emptiness says nothing.
         isRefreshing = payload != nil
         defer { isRefreshing = false }
         do {
+            // Longer than the shared default. This endpoint gathers the whole
+            // of Home Assistant's state, where /api/toggle touches one entity
+            // - the asymmetry that had a page timing out on refresh while its
+            // own toggles answered instantly. It costs nothing to wait now
+            // that the page renders from cache instead of sitting blank.
             let fresh = try await TileFetch.get(
-                HomeDTO.Payload.self, root.appending(path: "api/home"))
-            payload = fresh
-            failed = false
-            cachedAt = nil
+                HomeDTO.Payload.self, root.appending(path: "api/home"), timeout: 25)
+            withAnimation(.easeOut(duration: 0.2)) {
+                payload = fresh
+                failure = nil
+                cachedAt = nil
+            }
             HomeCache.save(fresh, for: root)
-        } catch { failed = true }
+            return true
+        } catch {
+            withAnimation(.easeOut(duration: 0.2)) {
+                failure = error as? TileFetchError ?? .unreachable
+            }
+            return false
+        }
     }
 
-    private func toggle(_ device: HomeDTO.Device, on: Bool) async {
-        guard let entity = device.entity_id,
-              let root = TileBackend.current(from: state).apiRoot(.home) else { return }
-        busyEntity = entity
-        defer { busyEntity = nil }
-        _ = try? await TileFetch.post(
-            HomeDTO.ToggleReply.self, root.appending(path: "api/toggle"),
-            body: HomeDTO.ToggleBody(entity_id: entity, action: on ? "on" : "off"))
-        await load()
+    // MARK: - Switches
+
+    /// What the switch shows: the user's intent while one is outstanding, the
+    /// server's answer otherwise.
+    private func isOn(_ device: HomeDTO.Device) -> Bool {
+        if let entity = device.entity_id, let pending = optimistic[entity] {
+            return pending
+        }
+        return device.state == "on"
+    }
+
+    private func flip(_ device: HomeDTO.Device, on: Bool) {
+        guard let entity = device.entity_id else { return }
+        Haptics.fire(.selection)
+        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+            optimistic[entity] = on
+            toggleNote = nil
+        }
+        // Last intent wins. Flipping twice quickly cancels the first request
+        // rather than letting two answers arrive in whatever order they like
+        // and settling on the older one.
+        inFlight[entity]?.cancel()
+        inFlight[entity] = Task { await send(entity, on: on) }
+    }
+
+    private func send(_ entity: String, on: Bool) async {
+        guard let root else { return }
+        do {
+            let reply = try await TileFetch.post(
+                HomeDTO.ToggleReply.self, root.appending(path: "api/toggle"),
+                body: HomeDTO.ToggleBody(entity_id: entity, action: on ? "on" : "off"))
+            if Task.isCancelled { return }
+            if let error = reply.error {
+                revert(entity, note: error)
+                return
+            }
+            // The switch already shows the right thing, so this refresh is
+            // only about the rest of the card - brightness, power draw. If it
+            // fails, the optimistic value STAYS: the toggle is known to have
+            // worked, and snapping the switch back because a separate request
+            // did not answer would be a lie in the other direction.
+            let refreshed = await load()
+            guard !Task.isCancelled, refreshed else { return }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                optimistic[entity] = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            revert(entity, note: (error as? TileFetchError)?.refreshNote
+                   ?? "That didn't reach the device.")
+        }
+    }
+
+    /// Put the switch back where it was, and say so on one line. Deliberately
+    /// not an alert: a light that did not turn on is not worth a modal.
+    private func revert(_ entity: String, note: String) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            optimistic[entity] = nil
+            toggleNote = note
+        }
     }
 }
 

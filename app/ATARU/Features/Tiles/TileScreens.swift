@@ -1,4 +1,13 @@
+import OSLog
 import SwiftUI
+
+/// Logging for the tile surfaces. Their failures are all network-shaped and
+/// none of them are visible after the fact - this is what turns "it said it
+/// couldn't reach the server" into which call, and why.
+///
+///     log stream --device --predicate 'subsystem == "com.ataru.client"'
+///
+let tileLog = Logger(subsystem: "com.ataru.client", category: "tiles")
 
 // MARK: - Backend resolution
 
@@ -77,25 +86,117 @@ struct TileBackend {
     }
 }
 
+/// Why a tile's fetch failed - kept apart, because they are not the same
+/// problem and only one of them is about the network.
+///
+/// THE BUG THIS EXISTS TO FIX. Every one of these used to arrive at the same
+/// `catch { failed = true }` and print "Couldn't reach this surface - check
+/// Tailscale and the server in Settings." That is a claim about reachability,
+/// and nothing in the old code ever tested reachability: `get` did not look at
+/// the status code at all, so a 502 from the proxy, a 200 carrying an HTML
+/// error page, and a genuinely dead tailnet were indistinguishable. Hence a
+/// Home page that declared itself unreachable while its own toggles - same
+/// host, same session - were switching the lights fine.
+enum TileFetchError: LocalizedError, Equatable {
+    /// Nothing answered. The ONLY case that justifies telling someone to go
+    /// and look at Tailscale.
+    case unreachable
+    case timedOut(seconds: Int)
+    /// The server answered, and the answer was a refusal.
+    case status(Int)
+    /// The server answered with something this page cannot read.
+    case undecodable
+
+    var errorDescription: String? {
+        switch self {
+        case .unreachable:
+            return ScreenState.unreachable
+        case .timedOut(let seconds):
+            return "The server didn't answer within \(seconds)s. It may still be gathering this."
+        case .status(let code):
+            return "The server answered with HTTP \(code)."
+        case .undecodable:
+            return "The server answered with something this page couldn't read."
+        }
+    }
+
+    /// One line, for when there is already content on screen. Losing a refresh
+    /// is not the same event as having nothing to show, and it must not be
+    /// dressed as one.
+    var refreshNote: String {
+        switch self {
+        case .unreachable:  return "Couldn't refresh - no answer from the server."
+        case .timedOut:     return "Refresh timed out."
+        case .status(let code): return "Couldn't refresh - the server said HTTP \(code)."
+        case .undecodable:  return "Couldn't refresh - unreadable answer."
+        }
+    }
+
+    static func from(_ error: Error, timeout: TimeInterval) -> TileFetchError {
+        if let already = error as? TileFetchError { return already }
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else {
+            // A decoding error is not a network error, and saying so is the
+            // whole point of this type.
+            return .undecodable
+        }
+        switch ns.code {
+        case NSURLErrorTimedOut: return .timedOut(seconds: Int(timeout))
+        default: return .unreachable
+        }
+    }
+}
+
 /// Shared fetch helper for the tile screens: plain tailnet GET/POST, JSON.
 enum TileFetch {
-    static func get<T: Decodable>(_ type: T.Type, _ url: URL) async throws -> T {
+    static let defaultTimeout: TimeInterval = 10
+
+    static func get<T: Decodable>(_ type: T.Type, _ url: URL,
+                                  timeout: TimeInterval = defaultTimeout) async throws -> T {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return try JSONDecoder().decode(type, from: data)
+        request.timeoutInterval = timeout
+        return try await run(type, request, timeout: timeout)
     }
 
     @discardableResult
     static func post<T: Decodable, Body: Encodable>(
-        _ type: T.Type, _ url: URL, body: Body) async throws -> T {
+        _ type: T.Type, _ url: URL, body: Body,
+        timeout: TimeInterval = defaultTimeout) async throws -> T {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return try JSONDecoder().decode(type, from: data)
+        return try await run(type, request, timeout: timeout)
+    }
+
+    private static func run<T: Decodable>(_ type: T.Type, _ request: URLRequest,
+                                          timeout: TimeInterval) async throws -> T {
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            // Checked at last. Without this a proxy's 502 error page reached
+            // JSONDecoder, failed there, and was reported as a network fault.
+            if let http = response as? HTTPURLResponse,
+               !(200...299).contains(http.statusCode) {
+                throw TileFetchError.status(http.statusCode)
+            }
+            do {
+                return try JSONDecoder().decode(type, from: data)
+            } catch {
+                throw TileFetchError.undecodable
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let classified = TileFetchError.from(error, timeout: timeout)
+            // The path only, never the body: these responses are vault content.
+            tileLog.error("""
+                \(request.httpMethod ?? "GET", privacy: .public) \
+                \(request.url?.path ?? "?", privacy: .public) failed: \
+                \(classified.errorDescription ?? "", privacy: .public)
+                """)
+            throw classified
+        }
     }
 }
 
