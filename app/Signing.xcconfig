@@ -27,11 +27,14 @@ CODE_SIGN_STYLE = Automatic
 ATARU_ENTITLEMENTS =
 CODE_SIGN_ENTITLEMENTS = $(ATARU_ENTITLEMENTS)
 
+// Launcher-manifest origin (see Info.plist ATARUTilesURL). Empty by default:
+// the service cards and Remote page simply show no online/offline dot. Set
+// your launcher origin in Config.xcconfig. Like every default in this file it
+// MUST stay above the include - in xcconfig the last assignment wins, and this
+// line sat below the include until 2026-08-14, silently blanking the
+// configured value so the health dots never rendered.
+ATARU_TILES_URL =
+
 // Optional, gitignored, may not exist — hence `#include?` rather than
 // `#include`, which would fail the build when it is absent.
 #include? "Config.xcconfig"
-
-// Tiles host for the Tiles tab (see Info.plist ATARUTilesURL). Empty by
-// default: the tab falls back to its static grid. Set your launcher origin
-// in Config.xcconfig.
-ATARU_TILES_URL =
