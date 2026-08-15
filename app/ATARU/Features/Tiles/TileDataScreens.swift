@@ -459,6 +459,49 @@ private enum HomeDTO {
         let error: String?
         let devices: [Device]?
         let sensors: [Device]?
+        /// Absent on a server that has not been extended yet, and empty when
+        /// no thermostat is paired. Both render nothing at all - a "no
+        /// thermostat" placeholder is a row about the absence of a thing.
+        let climate: [Climate]?
+    }
+
+    struct Climate: Codable, Identifiable {
+        let entity_id: String?
+        let name: String?
+        let current_temp: Double?
+        let target_temp: Double?
+        let target_temp_low: Double?
+        let target_temp_high: Double?
+        /// heat | cool | heat_cool | off
+        let hvac_mode: String?
+        /// What it is doing right now - heating, cooling, idle.
+        let hvac_action: String?
+        let humidity: Double?
+
+        var id: String { entity_id ?? name ?? UUID().uuidString }
+
+        /// A band rather than a single setpoint. The POST contract carries one
+        /// `temperature`, so a band cannot be set from here - the card shows it
+        /// and hides its steppers rather than pretending otherwise.
+        var isRange: Bool {
+            hvac_mode == "heat_cool" && target_temp_low != nil && target_temp_high != nil
+        }
+    }
+
+    struct ClimateReply: Decodable {
+        let ok: Bool?
+        let error: String?
+        /// The verified object, when the server nests it. The contract reads
+        /// as though it may instead be spread across the top level, so this is
+        /// optional and the reconcile falls back to a plain refresh - both
+        /// paths are silent, and neither guesses.
+        let climate: Climate?
+    }
+
+    struct ClimateBody: Encodable {
+        let entity_id: String
+        let temperature: Double?
+        let hvac_mode: String?
     }
     struct Device: Codable {
         let entity_id: String?
@@ -552,6 +595,12 @@ struct HomeScreen: View {
     /// predecessor rather than racing it.
     @State private var inFlight: [String: Task<Void, Never>] = [:]
     @State private var toggleNote: String?
+    /// Setpoints and modes the user has dialled that the thermostat has not
+    /// confirmed yet, and the one deferred request per thermostat that will
+    /// carry them. Same optimistic contract as the switches.
+    @State private var pendingTarget: [String: Double] = [:]
+    @State private var pendingMode: [String: String] = [:]
+    @State private var climateTasks: [String: Task<Void, Never>] = [:]
 
     var body: some View {
         ScrollView {
@@ -577,6 +626,15 @@ struct HomeScreen: View {
                     ErrorBanner(message: error)
                 }
                 if let toggleNote { InlineNote(text: toggleNote) }
+
+                // Climate leads: a thermostat is the thing you came to the
+                // page to check. Nothing at all when the list is empty or
+                // absent - see HomeDTO.Climate.
+                if let climate = payload?.climate, !climate.isEmpty {
+                    ForEach(climate) { thermostat in
+                        climateCard(thermostat)
+                    }
+                }
 
                 if let devices = payload?.devices, !devices.isEmpty {
                     ATCard {
@@ -693,6 +751,214 @@ struct HomeScreen: View {
                 failure = error as? TileFetchError ?? .unreachable
             }
             return false
+        }
+    }
+
+    // MARK: - Thermostat
+
+    private static let modes: [(id: String, label: String, symbol: String)] = [
+        ("heat", "Heat", "flame"),
+        ("cool", "Cool", "snowflake"),
+        ("heat_cool", "Auto", "arrow.up.arrow.down"),
+        ("off", "Off", "power"),
+    ]
+
+    @ViewBuilder
+    private func climateCard(_ thermostat: HomeDTO.Climate) -> some View {
+        let entity = thermostat.entity_id ?? ""
+        let mode = pendingMode[entity] ?? thermostat.hvac_mode ?? "off"
+        let target = pendingTarget[entity] ?? thermostat.target_temp
+
+        ATCard {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                SectionHeader(text: thermostat.name ?? "Thermostat")
+
+                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    // The number you actually came to read.
+                    Text(Self.degrees(thermostat.current_temp))
+                        .font(.system(size: 44, weight: .thin))
+                        .foregroundStyle(Theme.textPrimary)
+                        .monospacedDigit()
+                    VStack(alignment: .leading, spacing: 1) {
+                        if let action = thermostat.hvac_action, !action.isEmpty {
+                            Text(action.capitalized)
+                                .font(.ataruCaption())
+                                .foregroundStyle(action == "idle" ? Theme.textTertiary : Theme.cyan)
+                        }
+                        if let humidity = thermostat.humidity {
+                            Text("\(Int(humidity))% humidity")
+                                .font(.ataruCaption())
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if thermostat.isRange {
+                    // A band, and the POST contract has one `temperature`
+                    // field - so this is shown and not offered for editing
+                    // rather than pretending a stepper could set it.
+                    HStack {
+                        Text("Target")
+                            .font(.ataruCaption())
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer()
+                        Text("\(Self.degrees(thermostat.target_temp_low)) – \(Self.degrees(thermostat.target_temp_high))")
+                            .font(.ataruBody())
+                            .foregroundStyle(Theme.textPrimary)
+                            .monospacedDigit()
+                    }
+                } else if mode != "off" {
+                    HStack(spacing: Theme.Space.m) {
+                        Text("Target")
+                            .font(.ataruCaption())
+                            .foregroundStyle(Theme.textTertiary)
+                        Spacer(minLength: 0)
+                        stepButton("minus", entity: entity) { step(thermostat, by: -1) }
+                        Text(Self.degrees(target))
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(Theme.cyan)
+                            .monospacedDigit()
+                            .frame(minWidth: 62)
+                            .contentTransition(.numericText())
+                        stepButton("plus", entity: entity) { step(thermostat, by: 1) }
+                    }
+                }
+
+                HStack(spacing: Theme.Space.xs) {
+                    ForEach(Self.modes, id: \.id) { option in
+                        modeChip(option, selected: mode == option.id) {
+                            setMode(thermostat, to: option.id)
+                        }
+                    }
+                }
+            }
+            .padding(Theme.Space.m)
+        }
+    }
+
+    private func stepButton(_ symbol: String, entity: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(Theme.cyan)
+                .frame(width: 38, height: 38)
+                .background {
+                    Circle().fill(Theme.surfaceElevated)
+                }
+        }
+        .buttonStyle(.atPress)
+    }
+
+    private func modeChip(_ option: (id: String, label: String, symbol: String),
+                          selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: option.symbol).font(.system(size: 11))
+                Text(option.label).font(.ataruCaption())
+            }
+            .padding(.horizontal, Theme.Space.s)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+                    .fill(selected ? Theme.cyan.opacity(0.16) : Theme.surfaceElevated)
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
+                    .strokeBorder(selected ? Theme.cyan : .clear, lineWidth: 1)
+            }
+            .foregroundStyle(selected ? Theme.cyan : Theme.textTertiary)
+        }
+        .buttonStyle(.atPress)
+    }
+
+    private static func degrees(_ value: Double?) -> String {
+        guard let value else { return "--°" }
+        // No unit assumed. The server reports whatever Home Assistant is set
+        // to, and printing an F onto a C reading would be worse than silence.
+        return value == value.rounded() ? "\(Int(value))°"
+                                        : String(format: "%.1f°", value)
+    }
+
+    /// A stepper tap moves the number NOW, and the request is deferred.
+    ///
+    /// Coalescing, not just debouncing: holding + through six degrees sends
+    /// ONE setpoint, not six. Each tap cancels the pending send and restarts
+    /// the wait, so the thermostat is asked for the number he stopped on -
+    /// which also means a burst never arrives out of order.
+    private func step(_ thermostat: HomeDTO.Climate, by delta: Double) {
+        guard let entity = thermostat.entity_id else { return }
+        let base = pendingTarget[entity] ?? thermostat.target_temp ?? 70
+        let next = min(90, max(45, (base + delta).rounded()))
+        guard next != base else { return }
+        Haptics.fire(.selection)
+        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+            pendingTarget[entity] = next
+            toggleNote = nil
+        }
+        climateTasks[entity]?.cancel()
+        climateTasks[entity] = Task { await commitClimate(entity, temperature: next, mode: nil) }
+    }
+
+    private func setMode(_ thermostat: HomeDTO.Climate, to mode: String) {
+        guard let entity = thermostat.entity_id,
+              (pendingMode[entity] ?? thermostat.hvac_mode) != mode else { return }
+        Haptics.fire(.selection)
+        withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+            pendingMode[entity] = mode
+            toggleNote = nil
+        }
+        climateTasks[entity]?.cancel()
+        // No wait: a mode is one deliberate tap, not a run of them.
+        climateTasks[entity] = Task { await commitClimate(entity, temperature: nil, mode: mode) }
+    }
+
+    private func commitClimate(_ entity: String, temperature: Double?, mode: String?) async {
+        if temperature != nil {
+            // The coalescing window. Cancelled by the next tap.
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled else { return }
+        }
+        guard let root else { return }
+        do {
+            let reply = try await TileFetch.post(
+                HomeDTO.ClimateReply.self, root.appending(path: "api/climate"),
+                body: HomeDTO.ClimateBody(entity_id: entity, temperature: temperature,
+                                          hvac_mode: mode))
+            if Task.isCancelled { return }
+            if let error = reply.error {
+                revertClimate(entity, note: error)
+                return
+            }
+            // Silent reconcile. The verified object when the server nests one,
+            // otherwise a plain refresh - and if THAT fails the optimistic
+            // value stays, because the setpoint is known to have landed.
+            if reply.climate != nil {
+                await load()
+            } else if await load() == false {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
+                pendingTarget[entity] = nil
+                pendingMode[entity] = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled else { return }
+            revertClimate(entity, note: (error as? TileFetchError)?.refreshNote
+                          ?? "That didn't reach the thermostat.")
+        }
+    }
+
+    private func revertClimate(_ entity: String, note: String) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            pendingTarget[entity] = nil
+            pendingMode[entity] = nil
+            toggleNote = note
         }
     }
 
