@@ -14,6 +14,9 @@ struct VoiceView: View {
     /// through this one flag; before it existed nothing in the app could
     /// resign the field and the keyboard stayed up forever.
     @FocusState private var composerFocused: Bool
+    /// Measured, not assumed - see KeyboardInset for why the automatic
+    /// avoidance cannot reach this screen.
+    @StateObject private var keyboard = KeyboardInset()
     /// Reported upward so RootView can hide the radial launcher while the
     /// user is typing - the dial used to float on top of the composer.
     @Binding private var composerActive: Bool
@@ -54,6 +57,25 @@ struct VoiceView: View {
                     .allowsHitTesting(composerFocused)
                     .onTapGesture { composerFocused = false }
 
+                // THE COMPOSER MUST STAY ABOVE THE KEYBOARD, both ways up.
+                //
+                // This column is given an explicit height because it is
+                // Spacers and fixed blocks and has to fill the screen rather
+                // than settle at its natural size. But SwiftUI's automatic
+                // keyboard avoidance works by shrinking the SAFE AREA, and a
+                // view with an explicit height does not care what the safe
+                // area does - so the column stayed full-screen tall and the
+                // keyboard was simply drawn over the bottom of it, composer
+                // included. That is the "I have no idea what I am typing" bug,
+                // and it was the same in landscape, where there is far less
+                // height to lose.
+                //
+                // So this opts out of the implicit behaviour that was already
+                // being overridden, and subtracts a measured keyboard overlap
+                // instead. `geo` then stays stable and orientation-correct,
+                // and the height change is animated with the keyboard's OWN
+                // duration, so the composer travels up with it rather than
+                // arriving after it.
                 GeometryReader { geo in
                     Group {
                         if geo.size.width > geo.size.height {
@@ -62,8 +84,13 @@ struct VoiceView: View {
                             portraitLayout
                         }
                     }
-                    .frame(width: geo.size.width, height: geo.size.height)
+                    .frame(width: geo.size.width,
+                           height: max(160, geo.size.height - keyboard.overlap),
+                           alignment: .top)
+                    .animation(.easeOut(duration: keyboard.duration),
+                               value: keyboard.overlap)
                 }
+                .ignoresSafeArea(.keyboard, edges: .bottom)
             }
             .navigationTitle("Ask")
             .navigationBarTitleDisplayMode(.inline)
