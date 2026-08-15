@@ -221,6 +221,9 @@ struct RootView: View {
             // Transcription goes to this server too, so it has to follow a
             // Demo/Live flip along with everything else in here.
             SpeechDictation.sharedService = state.service
+            // And the notification token: one registered with Demo reaches
+            // nothing, exactly like the VoIP one.
+            RemotePushService.shared.update(service: state.service)
             // Warm the name roster here, where waiting costs nothing. Fetching
             // it when the talk button goes down delayed the microphone past
             // the user's release.

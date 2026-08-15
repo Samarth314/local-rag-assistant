@@ -99,6 +99,18 @@ protocol ATARUService: AnyObject, Sendable {
     /// silently — the phone simply never rings, and nothing surfaces anywhere
     /// the user would think to look.
     func registerVoIPToken(_ token: String, environment: String) async throws
+
+    /// Hands the server the APNs token for ordinary notifications - the ones
+    /// that used to arrive from ntfy.
+    ///
+    /// A DIFFERENT token from `registerVoIPToken`'s, and not interchangeable:
+    /// PushKit issues its own, and sending a notification to a VoIP token (or
+    /// the reverse) fails. Both go to the same APNs key, hence the same
+    /// `environment` argument telling the server which host to use.
+    ///
+    /// Called on every launch, because that is when iOS hands over a token and
+    /// the token can rotate at Apple's discretion. The endpoint is idempotent.
+    func registerPushToken(_ token: String, environment: String) async throws
 }
 
 extension ATARUService {
@@ -135,6 +147,13 @@ extension ATARUService {
     func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule {
         throw APIError.notFound
     }
+
+    /// Backends with nowhere to send a notification accept the token and do
+    /// nothing with it. Demo is the real case - there is no server to register
+    /// with - and quietly succeeding is right there, because nothing in the
+    /// app depends on registration having happened. (It also keeps the test
+    /// stubs compiling without learning the vocabulary.)
+    func registerPushToken(_ token: String, environment: String) async throws {}
 }
 
 /// Client-side filtering and sorting.

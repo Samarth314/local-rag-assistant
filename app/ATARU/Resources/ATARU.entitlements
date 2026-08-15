@@ -22,12 +22,16 @@
   <true/>
 
   <!--
-    Push Notifications, for the VoIP push that rings the phone while ATARU is
-    closed. "development" matches an Xcode-installed build and pairs with the
-    SANDBOX APNs host; TestFlight and the App Store need "production" and the
-    production host. Mismatching the two fails as BadDeviceToken and the phone
-    simply never rings — see VoIPPushService.environment, which tells the
-    server which kind of build this is so it picks the right host.
+    Push Notifications. ONE entitlement, covering both of ATARU's push paths:
+    the PushKit VoIP push that rings the phone while the app is closed
+    (VoIPPushService) and ordinary APNs notifications (RemotePushService,
+    which replaced ntfy). Adding the second needed no entitlement change.
+
+    "development" matches an Xcode-installed build and pairs with the SANDBOX
+    APNs host; TestFlight and the App Store need "production" and the
+    production host. Mismatching the two fails as BadDeviceToken and the push
+    simply never arrives — see VoIPPushService.environment, which both
+    services report to the server so it picks the right host.
   -->
   <key>aps-environment</key>
   <string>development</string>

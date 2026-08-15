@@ -28,9 +28,18 @@ struct ATARUApp: App {
                     // when the first question is already being asked - that
                     // first turn would otherwise always fall back to Apple.
                     WhisperTranscriber.shared.prepare()
-                    guard !hasRequestedVoicePermissions else { return }
-                    hasRequestedVoicePermissions = true
-                    _ = await SpeechDictation.requestAuthorization()
+                    if !hasRequestedVoicePermissions {
+                        hasRequestedVoicePermissions = true
+                        _ = await SpeechDictation.requestAuthorization()
+                    }
+                    // After speech rather than alongside it, so a first launch
+                    // asks one thing at a time instead of stacking two system
+                    // dialogs. Every launch, not just the first: this also
+                    // registers for remote notifications, and the APNs token
+                    // is reissued at Apple's discretion. It does not block -
+                    // nothing here is awaited and every failure inside is
+                    // logged and dropped.
+                    RemotePushService.shared.start()
                 }
         }
         .onChange(of: scenePhase) { _, phase in

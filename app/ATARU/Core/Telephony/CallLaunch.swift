@@ -81,4 +81,26 @@ final class CallLaunchDelegate: NSObject, UIApplicationDelegate {
         callLog.notice("call stack initialized at launch")
         return true
     }
+
+    // MARK: - Remote notifications
+    //
+    // These live here because SwiftUI allows exactly one
+    // `UIApplicationDelegateAdaptor`, and this is it. They are the plain APNs
+    // path and have nothing to do with the VoIP push above: PushKit delivers
+    // its token to `VoIPPushService` through `PKPushRegistryDelegate`, and the
+    // two never meet. See `RemotePushService`.
+
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        MainActor.assumeIsolated {
+            RemotePushService.shared.didRegister(deviceToken: deviceToken)
+        }
+    }
+
+    func application(_ application: UIApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        MainActor.assumeIsolated {
+            RemotePushService.shared.didFailToRegister(error)
+        }
+    }
 }

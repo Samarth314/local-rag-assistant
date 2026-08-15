@@ -232,6 +232,40 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         _ = try await perform(request)
     }
 
+    func registerPushToken(_ token: String, environment: String) async throws {
+        guard let url = endpoints.url("api/push/register") else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            PushRegistration(token: token, platform: "ios", environment: environment)
+        )
+        let (data, _) = try await perform(request)
+        // A 2xx that says `ok: false` is still a refusal, and without this the
+        // app would report a token as registered that the server did not keep.
+        // Lenient on shape: a body that will not decode, or one with no `ok`
+        // at all, is taken at its HTTP word.
+        if (try? decode(PushRegistrationReply.self, from: data))?.ok == false {
+            throw APIError.malformedResponse("push/register returned ok: false")
+        }
+    }
+
+    /// `platform` is what the contract asks for. `environment` is additive:
+    /// the contract does not mention it, and a server ignoring unknown keys is
+    /// unaffected - but without it a backend has to guess between the sandbox
+    /// and production APNs hosts, and guessing wrong fails as BadDeviceToken
+    /// with nothing to see. The VoIP registration already carries the same
+    /// field for the same reason.
+    private struct PushRegistration: Encodable {
+        let token: String
+        let platform: String
+        let environment: String
+    }
+
+    private struct PushRegistrationReply: Decodable {
+        let ok: Bool?
+    }
+
     private struct VoIPRegistration: Encodable {
         let token: String
         let environment: String
