@@ -213,9 +213,32 @@ struct TileScreenHost: View {
     let tile: HomeTile
     let onClose: () -> Void
 
+    /// How far the page has been pulled down, and the distance past which
+    /// letting go means "close" rather than "never mind".
+    @State private var pull: CGFloat = 0
+    private let releaseAt: CGFloat = 110
+
     var body: some View {
         NavigationStack {
             screen
+                // The grab bar sits between the navigation bar and the
+                // content, where a sheet's would be, and it OWNS the gesture
+                // rather than sharing it.
+                //
+                // Sharing was the obvious design and it does not work here.
+                // The standard sheet rule - claim the drag only while the
+                // content is at scroll top - needs the host to know a child
+                // ScrollView's offset, and every one of these pages owns its
+                // own ScrollView. Reading that offset from out here needs
+                // onScrollGeometryChange, which is iOS 18; this app targets
+                // 17. A simultaneous gesture without it would scroll the page
+                // AND drag the sheet on the same finger.
+                //
+                // So the handle is the whole of the gesture's surface. It
+                // cannot fight scrolling because it is not on the scrolling
+                // part, and it is visible, which is the other half of making
+                // a gesture usable.
+                .safeAreaInset(edge: .top, spacing: 0) { grabBar }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button(action: onClose) {
@@ -234,6 +257,56 @@ struct TileScreenHost: View {
         // one continuous thing no matter which layer is drawing it.
         .background(Ataru.backdrop.ignoresSafeArea())
         .preferredColorScheme(.dark)
+        // Only the content moves. The backdrop behind this is the same
+        // gradient, so the page slides over a background that stays perfectly
+        // still - no edge, no shade change, nothing sweeping.
+        .offset(y: pull)
+        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: pull)
+    }
+
+    /// Drag down to put the page away.
+    private var grabBar: some View {
+        // A generous strip around a small mark: 28pt of target for a 4pt bar,
+        // because the thing you have to hit should be bigger than the thing
+        // you can see.
+        Capsule()
+            .fill(Theme.textTertiary.opacity(pull > releaseAt ? 0.9 : 0.45))
+            .frame(width: 38, height: 4)
+            .frame(maxWidth: .infinity)
+            .frame(height: 28)
+            .contentShape(Rectangle())
+            .background(Color.clear)
+            .gesture(
+                DragGesture(minimumDistance: 4)
+                    .onChanged { value in
+                        // Downward only, and rubber-banded upward so pulling
+                        // the wrong way reads as resistance rather than as
+                        // nothing happening.
+                        pull = value.translation.height > 0
+                            ? value.translation.height
+                            : value.translation.height / 6
+                    }
+                    .onEnded { value in
+                        // A flick counts as much as a distance: releasing at
+                        // speed near the threshold should still close, or a
+                        // fast gesture gets punished for being fast.
+                        let projected = value.translation.height
+                            + value.predictedEndTranslation.height / 3
+                        if projected > releaseAt {
+                            Haptics.fire(.tap)
+                            onClose()
+                            // Reset behind the dismissal, so reopening the
+                            // page does not start it half way down the screen.
+                            pull = 0
+                        } else {
+                            pull = 0
+                        }
+                    }
+            )
+            .accessibilityLabel("Close")
+            .accessibilityHint("Drag down, or use the close button.")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { onClose() }
     }
 
     @ViewBuilder
