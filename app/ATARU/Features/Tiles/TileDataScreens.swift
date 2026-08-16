@@ -700,6 +700,10 @@ struct HomeScreen: View {
                                         set: { on in flip(device, on: on) }))
                                     .labelsHidden()
                                     .tint(Theme.cyan)
+                                    // A switch takes drags of its own, and
+                                    // this is the page most likely to be
+                                    // poked at one-handed.
+                                    .dismissExclusion()
                                 }
                                 .padding(.vertical, 2)
                             }
@@ -1669,6 +1673,7 @@ private struct WorkspaceDetailScreen: View {
                         }
                         HStack(spacing: Theme.Space.s) {
                             TextField("Add a task", text: $newTask)
+                                .dismissExclusion()
                                 .textFieldStyle(.plain)
                                 .font(.ataruBody())
                                 .onSubmit { submitTask() }

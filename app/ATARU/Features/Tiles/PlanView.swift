@@ -160,6 +160,7 @@ struct PlanView: View {
                 if showInput {
                     HStack(spacing: Theme.Space.s) {
                         TextField(placeholder, text: input)
+                            .dismissExclusion()
                             .textFieldStyle(.plain)
                             .font(.ataruBody())
                             .foregroundStyle(Theme.textPrimary)

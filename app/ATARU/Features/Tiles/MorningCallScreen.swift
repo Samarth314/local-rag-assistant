@@ -126,6 +126,9 @@ struct MorningCallScreen: View {
                            displayedComponents: .hourAndMinute)
                     .datePickerStyle(.wheel)
                     .labelsHidden()
+                    // A wheel is nothing but vertical dragging. Without this
+                    // every attempt to set the wake time closes the page.
+                    .dismissExclusion()
                     .frame(maxWidth: .infinity)
                     .colorScheme(.dark)
 

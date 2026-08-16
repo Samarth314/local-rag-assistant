@@ -377,19 +377,108 @@ struct TileScreenHost: View {
 /// snapping back to zero and vanishing - which is what made the old exit feel
 /// abrupt, because the page jumped back UP to its origin at the same instant
 /// it disappeared.
+/// What the hosted page's own scrolling looks like from outside it.
+///
+/// Two facts, not one. "At the top" decides who owns a downward drag on a page
+/// that scrolls; "does it scroll at all" is what tells the two KINDS of tile
+/// page apart, and they need different rules - see `TileDismissal`.
+struct TileScrollFacts: Equatable {
+    var atTop: Bool
+    var scrolls: Bool
+
+    /// What a page with no ScrollView in it reports, by never reporting: it is
+    /// trivially at its top, and it does not scroll.
+    static let still = TileScrollFacts(atTop: true, scrolls: false)
+}
+
+/// Rects where a downward drag already means something to the control under it.
+///
+/// Same idea as `PressExclusionKey`, deliberately a separate key: what a long
+/// press must keep off is not the same set as what a drag must keep off. A
+/// stepper wants vertical drags; the orb does not care about them.
+struct DismissExclusionKey: PreferenceKey {
+    static let defaultValue: [CGRect] = []
+    static func reduce(value: inout [CGRect], nextValue: () -> [CGRect]) {
+        value.append(contentsOf: nextValue())
+    }
+}
+
+extension View {
+    /// Marks this view as a control that owns its own drags, so the page
+    /// dismissal never starts from a finger that landed on it.
+    ///
+    /// Opt-in per control rather than inferred. The alternative was hit-testing
+    /// the window and looking for a `UIControl`, which answers correctly for a
+    /// TextField, unreliably for a Toggle and never for a SwiftUI Button - a
+    /// rule that is right two thirds of the time is worse than one that is
+    /// written down.
+    func dismissExclusion() -> some View {
+        background(
+            GeometryReader { geo in
+                Color.clear.preference(key: DismissExclusionKey.self,
+                                       value: [geo.frame(in: .global)])
+            }
+        )
+    }
+}
+
+/// Drag the page down to close it: the gesture, the tracking, and the dissolve.
+///
+/// ## Why a ViewModifier and not just more state on the host
+///
+/// "It jitters while I pull down." It did, and the state was in the wrong
+/// place. `pull` lived on `TileScreenHost`, and `TileScreenHost.body` is what
+/// builds `screen` - so every touch-moved event invalidated the host's body and
+/// SwiftUI re-evaluated the entire tile page, sixty times a second, while the
+/// finger was down. On a light page that is invisible. On Finance or Workspaces
+/// it is exactly the stutter he reported.
+///
+/// A ViewModifier fixes it structurally. `body(content:)` receives the already
+/// built subtree as an opaque value, so state changing HERE re-runs this
+/// twenty-line body and does not touch the page at all. The offset, the scale
+/// and the opacity are layer properties the compositor animates without asking
+/// SwiftUI to lay anything out again.
+///
+/// ## Why it takes a deliberate pull, and did not used to
+///
+/// "Most of the tiles in the app don't involve scrolling but some do (like docs
+/// and settings). I've swiped out of the tile on accident when I didn't mean
+/// to." Structural, and obvious in hindsight: the claim rule was "the content
+/// is at its scroll top", and on a page with nothing to scroll that is true
+/// forever. Every downward wiggle was a dismissal.
+///
+/// Four things raise the bar without making the gesture indirect:
+///
+/// * **A dead zone.** Nothing happens at all - no movement, no haptic, no
+///   scroll lock - until the finger has travelled `activateAt` downward. Past
+///   it the page picks up from zero rather than jumping, so the gesture still
+///   feels like dragging the page and not like tripping a switch.
+/// * **Vertical dominance**, at 2:1 rather than the old 1:1. A drag that is
+///   only just more vertical than horizontal is a wander, not an intent.
+/// * **Controls keep their own drags.** A finger that lands on a toggle, a
+///   picker or a text field never starts a dismissal - see `dismissExclusion`.
+/// * **A longer pull on pages that do not scroll**, where there is no scroll
+///   gesture to disambiguate against and the extra caution costs nothing. On
+///   Docs or Settings the at-top rule is already doing that work, so those
+///   keep the shorter throw.
 struct TileDismissal: ViewModifier {
     let onClose: () -> Void
 
-    /// How far the page has been pulled. Never animated while a finger is
-    /// down.
+    /// How far the page has been pulled, with the dead zone already
+    /// subtracted. Never animated while a finger is down.
     @State private var pull: CGFloat = 0
-    /// Whether the hosted page's own ScrollView is at its top, which is the
-    /// standard sheet rule for who owns a downward drag. True until told
-    /// otherwise: a page with no ScrollView never reports, and "no scroll
-    /// view" must mean "draggable from anywhere", not "never draggable".
-    @State private var atTop = true
+    /// What the hosted page's ScrollView is doing. `still` until told
+    /// otherwise: a page with no ScrollView never reports, and that is a real
+    /// answer rather than a missing one.
+    @State private var scroll = TileScrollFacts.still
+    /// Controls that own their own drags, in global coordinates.
+    @State private var exclusions: [CGRect] = []
     /// True once a drag has been claimed as a dismissal.
     @State private var claimed = false
+    /// Set when a drag has been examined and rejected, so the decision is made
+    /// once per gesture instead of re-litigated on every event - otherwise a
+    /// finger that started on a toggle could still claim later by wandering.
+    @State private var refused = false
     /// Whether letting go right now would close the page. Tracked so the
     /// haptic fires once per crossing rather than on every event past it.
     @State private var wouldClose = false
@@ -401,8 +490,13 @@ struct TileDismissal: ViewModifier {
     /// movement through depth.
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// Past this, releasing closes.
-    private let releaseAt: CGFloat = 110
+    /// Travel before the gesture is anything at all. Between 25 and 30 was the
+    /// brief; 28 is a deliberate wiggle and nowhere near a scroll flick.
+    private let activateAt: CGFloat = 28
+    /// Past this, releasing closes. Longer on a page with nothing to scroll,
+    /// because there the dismissal is the ONLY thing a vertical drag can mean
+    /// and a mistake has nothing to fall back to.
+    private var releaseAt: CGFloat { scroll.scrolls ? 110 : 150 }
     /// A drag starting inside this band from the top is treated as a handle
     /// drag and skips the at-top rule, the way a sheet's grabber does. It
     /// covers the navigation bar and the grab bar under it, neither of which
@@ -411,13 +505,17 @@ struct TileDismissal: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // The page's own scroll position, read from out here. This is what
-            // the iOS 18 floor was raised for.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
-            } action: { _, top in
-                atTop = top
+            // The page's own scroll position and whether it scrolls at all,
+            // read from out here. This is what the iOS 18 floor was raised for.
+            .onScrollGeometryChange(for: TileScrollFacts.self) { geometry in
+                TileScrollFacts(
+                    atTop: geometry.contentOffset.y <= geometry.contentInsets.top + 0.5,
+                    scrolls: geometry.contentSize.height
+                        > geometry.containerSize.height + 1)
+            } action: { _, facts in
+                scroll = facts
             }
+            .onPreferenceChange(DismissExclusionKey.self) { exclusions = $0 }
             // Handing the gesture over cleanly rather than letting two things
             // move at once: without this the ScrollView rubber-bands downward
             // under the same finger that is already moving the whole page.
@@ -441,22 +539,27 @@ struct TileDismissal: ViewModifier {
     }
 
     private var drag: some Gesture {
-        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+        DragGesture(minimumDistance: 12, coordinateSpace: .global)
             .onChanged { value in
                 if !claimed {
-                    let fromHandle = value.startLocation.y < handleBand
-                    guard atTop || fromHandle,
-                          value.translation.height > 0,
-                          value.translation.height > abs(value.translation.width)
-                    else { return }
+                    guard !refused else { return }
+                    // Below the dead zone nothing has happened yet, and
+                    // nothing is decided yet either - a gesture is only judged
+                    // once it is long enough to have a direction worth reading.
+                    guard value.translation.height >= activateAt else { return }
+                    guard canClaim(value) else {
+                        refused = true
+                        return
+                    }
                     claimed = true
                     Haptics.fire(.tap)
                 }
                 // Raw. No withAnimation, no implicit animation on `pull`: the
-                // page has to be exactly where the thumb put it.
-                pull = value.translation.height > 0
-                    ? value.translation.height
-                    : value.translation.height / 6
+                // page has to be exactly where the thumb put it. The dead zone
+                // is subtracted so the page starts from where the finger was
+                // when it was claimed, rather than jumping 28pt.
+                let travel = value.translation.height - activateAt
+                pull = travel > 0 ? travel : travel / 6
 
                 // One tick when crossing into "letting go closes it", and one
                 // more only if he pulls back out and in again. The lower reset
@@ -470,12 +573,13 @@ struct TileDismissal: ViewModifier {
                 }
             }
             .onEnded { value in
+                refused = false
                 guard claimed else { return }
                 claimed = false
                 wouldClose = false
                 // A flick counts as much as a distance, so a fast gesture is
                 // not punished for being fast.
-                let projected = value.translation.height
+                let projected = value.translation.height - activateAt
                     + value.predictedEndTranslation.height / 3
                 if projected > releaseAt {
                     close()
@@ -483,6 +587,26 @@ struct TileDismissal: ViewModifier {
                     withAnimation(Theme.spring) { pull = 0 }
                 }
             }
+    }
+
+    /// Whether this drag is allowed to become a dismissal.
+    private func canClaim(_ value: DragGesture.Value) -> Bool {
+        // Downward, and decisively so. 2:1 rather than the old "more vertical
+        // than horizontal", which admitted a 46-degree wander.
+        guard value.translation.height > 0,
+              value.translation.height > abs(value.translation.width) * 2
+        else { return false }
+        // A control that takes drags of its own keeps this one.
+        if exclusions.contains(where: { $0.contains(value.startLocation) }) {
+            return false
+        }
+        // The grab bar and the navigation bar are handles: they are not
+        // scrolling content, so they close the page however far down it has
+        // been read - which is what a sheet's grabber does.
+        if value.startLocation.y < handleBand { return true }
+        // Anywhere else: a page that scrolls must be at its top, and a page
+        // that does not scroll has already passed the longer test above.
+        return scroll.atTop
     }
 
     /// Commit. The page keeps travelling as it dissolves rather than snapping
