@@ -42,7 +42,9 @@ struct VoiceView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Ataru.backdrop.ignoresSafeArea()
+                // AtaruBackdrop, not `Ataru.backdrop` - the raw gradient is
+                // anchored to whatever frame paints it. See Backdrop.swift.
+                AtaruBackdrop(surface: "ask")
 
                 // Tap anywhere off the controls to put the keyboard away.
                 //

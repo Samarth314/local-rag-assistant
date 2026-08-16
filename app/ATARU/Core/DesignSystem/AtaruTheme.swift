@@ -89,6 +89,11 @@ public enum Ataru {
 
     /// The app background. Anchored above the top edge so the light appears to
     /// come from off-screen. Pin it behind everything and never let it scroll.
+    /// PAINT THIS THROUGH `AtaruBackdrop` (or `.ataruBackdrop()`), NEVER
+    /// directly. Its centre is a fraction of the painting view's own height,
+    /// so two views drawing it at different sizes get two different
+    /// backgrounds with a hard seam between them. Two surfaces used it raw and
+    /// that is exactly what happened. See Backdrop.swift.
     public static let backdrop = RadialGradient(
         stops: [
             .init(color: Color(hex: 0x15181D), location: 0.00),

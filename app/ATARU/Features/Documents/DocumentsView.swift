@@ -18,7 +18,14 @@ struct DocumentsView: View {
 
     var body: some View {
         ZStack {
-            Ataru.backdrop.ignoresSafeArea()
+            // THE RESIDUAL RECTANGLE, and it was not a one-frame flash at
+            // all. This painted the RAW gradient, anchored to this view's own
+            // frame - which sits inside the navigation stack, about 100pt down
+            // the screen. The host behind it paints the window-anchored one.
+            // Two gradients, two anchors, one drawn over the other, with the
+            // seam exactly at the content area: an off-colour rectangle, every
+            // time the Library was opened, for as long as it was on screen.
+            AtaruBackdrop(surface: "library")
             content
         }
         .navigationTitle("Library")
