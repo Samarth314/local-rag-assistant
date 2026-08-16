@@ -29,7 +29,6 @@ struct SettingsView: View {
 
     @State private var baseURL: String = ""
     @State private var token: String = ""
-    @State private var isAddingContact = false
     @State private var contactStatus: String?
     @State private var contactFailed = false
     /// The vCard to hand to the share sheet, built on demand. Non-nil is what
@@ -80,7 +79,6 @@ struct SettingsView: View {
                 Button("Add ATARU to Contacts") {
                     addContact()
                 }
-                .disabled(isAddingContact)
 
                 if let contactStatus {
                     Text(contactStatus)
@@ -149,9 +147,15 @@ struct SettingsView: View {
     ///
     /// No permission prompt, because nothing here reads the address book. See
     /// ATARUContact for the whole argument.
+    ///
+    /// NO "adding" FLAG. There was one, set and cleared inside this function
+    /// with a `defer` - so it was true only for the duration of a synchronous
+    /// call and false again before SwiftUI could ever draw the disabled state.
+    /// The `.disabled` it fed therefore never engaged once. Writing a vCard to
+    /// a temporary file is microseconds and cannot be in flight when the next
+    /// tap arrives, so the honest fix is to drop the flag rather than to make
+    /// it work: it was guarding against something that cannot happen.
     private func addContact() {
-        isAddingContact = true
-        defer { isAddingContact = false }
         do {
             contactCard = try ATARUContact.card()
             Haptics.fire(.tap)

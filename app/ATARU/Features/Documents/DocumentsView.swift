@@ -225,6 +225,8 @@ private struct CategoryChip: View {
                 Capsule().strokeBorder(isSelected ? .clear : Theme.border, lineWidth: 1)
             }
             .contentShape(Capsule())
+            // The capsule stays 30pt; only the target grows.
+            .hitTarget()
         }
         .buttonStyle(.plain)
         // The chip is terse; VoiceOver gets the unabbreviated version.

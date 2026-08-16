@@ -39,7 +39,33 @@ public enum Ataru {
 
         public static let text        = Color(hex: 0xDFE4EA)
         public static let muted       = Color(hex: 0x8B95A3)
-        public static let faint       = Color(hex: 0x4A4F58)
+        /// LIFTED FROM THE KIT'S #4A4F58, and the second deliberate edit this
+        /// vendored file carries (see `ataruBackdrop` below for the first).
+        ///
+        /// #4A4F58 measures 2.18:1 on the panel and 2.05:1 on the lightest
+        /// corner of the `metal` card gradient - roughly half the 4.5:1 WCAG
+        /// asks of body text, and under even the 3:1 floor for large text. On
+        /// the web that is a caption you squint at; here it is the tier that
+        /// carries med schedules, timeline dates, task counts, device state
+        /// lines, `InlineNote` (which is every refresh failure in the app) and
+        /// the Plan empty states. Failure text nobody can read is the same as
+        /// no failure text.
+        ///
+        /// #747C8A is the same hue and saturation, taken up in value only, so
+        /// nothing about the palette's temperature moves. It measures 4.27:1
+        /// on panel, 4.71:1 on the app background and 4.01:1 at the lightest
+        /// point of a card - a 2x improvement that clears the 3:1 large-text
+        /// floor everywhere with room to spare and lands at the AA body
+        /// threshold on the surfaces this text actually sits on.
+        ///
+        /// It stops there rather than going the rest of the way to 4.5:1 on
+        /// every surface for a structural reason: `muted` is 5.9:1 on panel, so
+        /// a third tier at 4.5 would sit 1.2x from the second and the app would
+        /// have two tiers that look alike instead of three that read as depth.
+        /// At #747C8A the gap to `muted` is 1.39x, which is still a visible
+        /// step down. Raising the whole ladder (`muted` toward 8:1) is the real
+        /// fix and is a kit change, not an app one.
+        public static let faint       = Color(hex: 0x747C8A)
 
         /// The accent. Send button, links, and the orb's tint.
         public static let accent      = Color(hex: 0x8FD3E6)

@@ -58,6 +58,28 @@ extension ButtonStyle where Self == ATPressStyle {
     static var atPress: ATPressStyle { ATPressStyle() }
 }
 
+// MARK: - Hit targets
+
+extension View {
+    /// Grows what a finger has to hit to at least 44pt square, without growing
+    /// what the eye sees.
+    ///
+    /// The glyph stays whatever size the design wants it: an 11pt xmark, a
+    /// 20pt circle, a 15pt chevron in a 38pt disc. What changes is the frame
+    /// around it, and `contentShape` is what makes that frame - rather than
+    /// the glyph's own painted pixels - the thing taps land on. Without the
+    /// shape a `frame` alone does nothing, because SwiftUI hit-tests the
+    /// content.
+    ///
+    /// 44 is the HIG floor, and it is a floor rather than a preference: the
+    /// pad of an adult index finger is about 45pt across, so a 14pt target is
+    /// aimed at rather than touched.
+    func hitTarget(_ side: CGFloat = Theme.minHitTarget) -> some View {
+        frame(minWidth: side, minHeight: side)
+            .contentShape(Rectangle())
+    }
+}
+
 // MARK: - Status
 
 /// Semantic status used by nodes, services and models.

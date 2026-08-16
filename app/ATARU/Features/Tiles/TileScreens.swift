@@ -210,7 +210,7 @@ enum TileFetch {
     private static func run<T: Decodable>(_ type: T.Type, _ request: URLRequest,
                                           timeout: TimeInterval) async throws -> T {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.cacheless.data(for: request)
             // Checked at last. Without this a proxy's 502 error page reached
             // JSONDecoder, failed there, and was reported as a network fault.
             if let http = response as? HTTPURLResponse,
@@ -591,7 +591,15 @@ struct TileDismissal: ViewModifier {
     /// drag and skips the at-top rule, the way a sheet's grabber does. It
     /// covers the navigation bar and the grab bar under it, neither of which
     /// is scrolling content.
-    private let handleBand: CGFloat = 132
+    ///
+    /// MEASURED, NOT ASSUMED. It was a flat 132, which is the right answer in
+    /// portrait on this phone and only there: 132 is the 59pt safe-area top
+    /// plus a 44pt navigation bar plus the 28pt grab bar, and the first of
+    /// those three goes to ZERO in landscape when the island moves to the
+    /// side. So on a phone lying down, 132 of a 393pt screen - a third of it,
+    /// most of which is ordinary content - skipped the at-top rule, and a
+    /// downward drag there dismissed the page instead of scrolling it.
+    private var handleBand: CGFloat { ActiveWindow.topInset + 73 }
 
     func body(content: Content) -> some View {
         content

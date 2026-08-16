@@ -37,7 +37,7 @@ final class TileHealthModel: ObservableObject {
             var request = URLRequest(url: url)
             request.timeoutInterval = 8
             ATARUAuth.stamp(&request)
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, _) = try await URLSession.cacheless.data(for: request)
             let manifest = try JSONDecoder().decode(Manifest.self, from: data)
             var next: [String: Bool] = [:]
             for row in manifest.tiles where row.probed == true {

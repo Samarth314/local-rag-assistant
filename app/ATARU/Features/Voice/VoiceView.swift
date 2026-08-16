@@ -24,8 +24,6 @@ struct VoiceView: View {
     /// Reported upward so RootView can hide the radial launcher while the
     /// user is typing - the dial used to float on top of the composer.
     @Binding private var composerActive: Bool
-    /// How the orb's accessibility actions navigate. See `orbControl`.
-    @Environment(\.openTile) private var openTile
     @Environment(\.scenePhase) private var scenePhase
     /// "I'm up" - see MorningConfirm. Lives here as well as on the call screen
     /// because a call he half-answered may already be hung up, and the app is
@@ -269,17 +267,9 @@ struct VoiceView: View {
     /// voice is a smaller idea to hold in your head than a separate button
     /// that operates it - the instrument and the control are one object.
     ///
-    /// It is also the app's accessible launcher. The radial dial takes its
-    /// touches from a recogniser on the window and never participates in
-    /// hit-testing, so VoiceOver and Switch Control cannot reach it at all;
-    /// with the destinations menu gone, these named actions are the only route
-    /// between screens for anyone who cannot press-and-sweep. They are the
-    /// floor, not a nicety - do not remove them on the grounds that the dial
-    /// does the same job.
-    ///
-    /// On the orb rather than anywhere else because it is the one element on
-    /// this screen a VoiceOver user is certain to land on, and because it is
-    /// already the app's "this is ATARU" object.
+    /// It used to be the app's accessible launcher as well. That job moved to
+    /// `DestinationActions` in RootView, because this view is conditional -
+    /// `metrics.showsOrb` - and a navigation floor cannot be.
     private func orbControl(side: CGFloat) -> some View {
         OrbView(phase: model.phase, side: side) { [weak model] in
             model?.orbLevel ?? 0
@@ -328,14 +318,12 @@ struct VoiceView: View {
                 Task { await model.beginListening() }
             }
         }
-        // Every destination, as named actions in the rotor. Built from
-        // `HomeTile.allCases`, so a tile added to the enum appears here and in
-        // the dial together and neither can fall behind the other.
-        .accessibilityActions {
-            ForEach(HomeTile.allCases.filter { $0 != .assistant }) { tile in
-                Button("Open \(tile.title)") { openTile(tile) }
-            }
-        }
+        // NO destination actions here any more. They were on the orb, and the
+        // orb is the first thing `AskMetrics` deletes when the screen runs out
+        // of height - so on a small phone at an accessibility text size with
+        // the keyboard up, the app's only accessible navigation disappeared
+        // along with it. They live in `DestinationActions` in RootView now,
+        // which nothing sizes and nothing can take away. See there.
     }
 
     /// The phase, and what is being heard under it.
@@ -544,6 +532,7 @@ private struct ExchangeCard: View {
                     Button(action: replay) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 12))
+                            .hitTarget()
                     }
                     .foregroundStyle(Theme.textSecondary)
                     .accessibilityLabel("Play this answer again")

@@ -913,6 +913,7 @@ struct HomeScreen: View {
                 .background {
                     Circle().fill(Theme.surfaceElevated)
                 }
+                .hitTarget()
         }
         .buttonStyle(.atPress)
     }
@@ -1889,12 +1890,15 @@ private struct WorkspaceDetailScreen: View {
                                           ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(task.done == true
                                                          ? Theme.green : Theme.textTertiary)
+                                        .hitTarget()
                                 }
                                 // The server addresses tasks by their place in
                                 // the list, so a second tap landing while the
                                 // first is in flight would carry an index the
                                 // reply is about to invalidate.
                                 .disabled(isMutating)
+                                .accessibilityLabel(task.done == true
+                                                    ? "Mark not done" : "Mark done")
                                 Text(task.text ?? "")
                                     .font(.ataruBody())
                                     .foregroundStyle(task.done == true

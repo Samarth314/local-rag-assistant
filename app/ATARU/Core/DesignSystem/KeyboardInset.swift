@@ -61,7 +61,7 @@ final class KeyboardInset: ObservableObject {
         duration = Self.duration(of: note)
         guard let end = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey]
                          as? NSValue)?.cgRectValue,
-              let window = Self.activeWindow else {
+              let window = ActiveWindow.current else {
             overlap = 0
             return
         }
@@ -77,11 +77,5 @@ final class KeyboardInset: ObservableObject {
         // A zero duration arrives on a hardware-keyboard change and would make
         // the layout snap.
         return (value ?? 0) > 0 ? value! : 0.25
-    }
-
-    private static var activeWindow: UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        let active = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-        return active?.windows.first { $0.isKeyWindow } ?? active?.windows.first
     }
 }

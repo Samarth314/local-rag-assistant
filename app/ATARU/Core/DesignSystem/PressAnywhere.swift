@@ -177,12 +177,47 @@ struct PressAnywhere: UIViewRepresentable {
             onEnded()
         }
 
-        /// Where a press is turned down: inside a rect that has its own meaning
-        /// for being held, or anywhere over a text input.
+        /// Where a press is turned down: while anything is presented over the
+        /// app, inside a rect that has its own meaning for being held, or
+        /// anywhere over a text input.
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
+            let window = (gesture.view as? UIWindow) ?? gesture.view?.window
+            if isPresentingModally(window) { return false }
             let point = gesture.location(in: gesture.view)
             if exclusions.contains(where: { $0.contains(point) }) { return false }
             return !isOverTextInput(point, in: gesture.view)
+        }
+
+        /// A SHEET IS NOT SOMEWHERE THE LAUNCHER EXISTS.
+        ///
+        /// The recogniser lives on the window, which is the whole reason it
+        /// works over every layer `RootView` draws - and the same reason it
+        /// kept working under layers RootView does not draw. A presented
+        /// controller (Journal compose, the Ask document popup, a Documents
+        /// share or preview, the Settings contact card) sits in its own view
+        /// hierarchy above the root's, but touches still pass through the
+        /// window on their way there. So a hold inside a sheet opened the fan
+        /// invisibly behind it, fired its haptics, and routed `presentedTile`
+        /// underneath on release: the user let go of a modal and found the app
+        /// on a different page.
+        ///
+        /// Asked here rather than plumbed through as a per-sheet flag, because
+        /// the flag has to be right at every one of those call sites and a
+        /// sheet added later would silently start the bug again. The window
+        /// already knows the answer.
+        ///
+        /// Recursive rather than `rootViewController?.presentedViewController`:
+        /// SwiftUI presents from whichever hosting controller owns the view
+        /// that carries the `.sheet`, which inside a `NavigationStack` is a
+        /// descendant of the root and not the root itself.
+        private func isPresentingModally(_ window: UIWindow?) -> Bool {
+            guard let root = window?.rootViewController else { return false }
+            return presents(root)
+        }
+
+        private func presents(_ controller: UIViewController) -> Bool {
+            if controller.presentedViewController != nil { return true }
+            return controller.children.contains(where: presents)
         }
 
         /// A field being *edited* is never the launcher's to take.

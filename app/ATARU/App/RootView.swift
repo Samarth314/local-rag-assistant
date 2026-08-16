@@ -87,6 +87,31 @@ struct RootView: View {
             // producer is how layout loops start.
             .onPreferenceChange(PressExclusionKey.self) { pressExclusions = $0 }
             .ataruBackdrop()
+            // VoiceOver reaches SIBLINGS IN A ZSTACK, not just the top one.
+            // Nothing about drawing a tile screen or the call over Ask removed
+            // Ask from the accessibility tree, so a swipe from the last
+            // element of the layer on top carried straight on into the orb,
+            // the composer and the transcript underneath - controls the user
+            // cannot see and, in the call's case, must not reach. Marking the
+            // top layer `.isModal` is the stated SwiftUI answer and is not
+            // reliable across sibling layers of a ZStack; hiding what is
+            // underneath is. Both are applied: the trait for the platforms
+            // that honour it, the hiding for the guarantee.
+            .accessibilityHidden(isAskCovered)
+
+            // The app's destinations, as named actions, always.
+            //
+            // They used to hang off the orb, and the orb is the first thing
+            // AskMetrics deletes when the screen runs out of height. On a
+            // small phone at an accessibility text size with the keyboard up
+            // the orb is zeroed, so the actions went with it and the app had
+            // no navigation for VoiceOver AT ALL: no dial (it takes its
+            // touches from a window recogniser and is `accessibilityHidden`),
+            // no tab bar, no destinations menu. This element is not sized by
+            // anything, so nothing can take it away.
+            DestinationActions(open: open(tile:))
+                .accessibilityHidden(isAskCovered)
+                .zIndex(0.5)
 
             // A tile screen, drawn in this stack rather than presented as a
             // sheet.
@@ -129,6 +154,11 @@ struct RootView: View {
                     .transition(.asymmetric(insertion: .opacity,
                                             removal: .tileDissolve))
                     .zIndex(1.5)
+                    // Modal over Ask, and itself hidden once a call takes the
+                    // whole surface. A MINIMISED call is deliberately not a
+                    // cover: the bar exists so the app underneath stays usable.
+                    .accessibilityAddTraits(.isModal)
+                    .accessibilityHidden(isCallModal)
             }
 
             // The launcher. Invisible and untouchable until a press is held,
@@ -190,6 +220,9 @@ struct RootView: View {
                                     isMinimized: $isCallMinimized)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .zIndex(3)
+                        // A conversation in progress owns the surface, for
+                        // VoiceOver as much as for a thumb.
+                        .accessibilityAddTraits(.isModal)
                 }
             }
         }
@@ -253,6 +286,14 @@ struct RootView: View {
         .environment(\.openTile, open(tile:))
     }
 
+    /// True while a call has the whole surface. A minimised call is a bar over
+    /// a usable app, which is the opposite of a modal.
+    private var isCallModal: Bool { call.state.isLive && !isCallMinimized }
+
+    /// True when a layer is drawn over the Ask screen. Drives nothing visual -
+    /// the ZStack already handles that - only what VoiceOver may reach.
+    private var isAskCovered: Bool { presentedTile != nil || isCallModal }
+
     /// The one routing table: Ask is the root, everything else is a layer.
     ///
     /// Every path sets `presentedTile`, including to nil — the launcher works
@@ -287,6 +328,53 @@ struct RootView: View {
         // Quicker than the open. A page being put away should be gone the
         // moment the decision is made; a page arriving can afford to arrive.
         withAnimation(.easeOut(duration: 0.22)) { presentedTile = nil }
+    }
+}
+
+/// EVERY DESTINATION, AS NAMED ACTIONS, FOR ANYONE WHO CANNOT PRESS AND SWEEP.
+///
+/// The radial launcher takes its touches from a recogniser on the window and
+/// never participates in hit-testing, so VoiceOver and Switch Control cannot
+/// reach it at all. With no tab bar and no destinations menu, these actions are
+/// the whole of the app's navigation for those users. They are the floor, not a
+/// nicety.
+///
+/// ## Why they live here rather than on the orb
+///
+/// They were attached to the Ask orb, on the sound reasoning that it is the one
+/// element a VoiceOver user is certain to land on. But the orb is also the
+/// first thing `AskMetrics` sacrifices when the screen runs out of height, and
+/// it is deleted outright below `minimumOrb`. Small phone, accessibility text
+/// size, keyboard up: no orb, therefore no actions, therefore no way off the
+/// screen. The app's navigation floor cannot be a child of a layout decision.
+///
+/// ## Why an invisible element rather than a control
+///
+/// The empty navigation bar is a deliberate design position - the launcher is
+/// THE launcher - and this restores the floor without putting a glyph back on
+/// the front screen. It never takes a touch, so a sighted user cannot land on
+/// it; it has a label and custom actions, so VoiceOver can. Top-leading and
+/// 44pt square so it also answers to touch exploration around the corner where
+/// a control would have been.
+private struct DestinationActions: View {
+    let open: (HomeTile) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: Theme.minHitTarget, height: Theme.minHitTarget)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityLabel("Destinations")
+            .accessibilityHint("Use the actions rotor to open another screen.")
+            // Built from `HomeTile.allCases`, so a tile added to the enum
+            // appears here and in the dial together and neither can fall
+            // behind the other.
+            .accessibilityActions {
+                ForEach(HomeTile.allCases.filter { $0 != .assistant }) { tile in
+                    Button("Open \(tile.title)") { open(tile) }
+                }
+            }
     }
 }
 
