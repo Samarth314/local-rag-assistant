@@ -20,6 +20,8 @@ struct VoiceView: View {
     /// Reported upward so RootView can hide the radial launcher while the
     /// user is typing - the dial used to float on top of the composer.
     @Binding private var composerActive: Bool
+    /// How the orb's accessibility actions navigate. See `orbControl`.
+    @Environment(\.openTile) private var openTile
 
     init(composerActive: Binding<Bool> = .constant(false)) {
         // Replaced in `.task` once the environment's service is known; a
@@ -94,28 +96,31 @@ struct VoiceView: View {
             }
             .navigationTitle("Ask")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                // The only route between screens that does not require
-                // press-and-sweep. Not decoration — see TileDestinationsMenu.
-                ToolbarItem(placement: .topBarLeading) { TileDestinationsMenu() }
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink {
-                        SettingsView()
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .accessibilityLabel("Settings")
-                }
-                // NO keyboard accessory bar. "Ask" duplicated the send arrow
-                // sitting inches away in the composer, and "Done" is a control
-                // nobody needs on a phone - tapping away from a field is what
-                // people already do. Both are replaced by
-                // `.dismissesKeyboard(when:)` on everything above the composer;
-                // see DismissesKeyboard.swift for why the old under-the-content
-                // catcher never fired.
-            }
+            // AN EMPTY NAVIGATION BAR, ON PURPOSE.
+            //
+            // It carried two glyphs and neither survived. The grid opened a
+            // dropdown of every destination, duplicating the radial launcher
+            // in a permanent control - and the launcher is THE launcher, held
+            // anywhere on the glass, which is the whole reason the tab bar
+            // went. The gear opened Settings, a page touched about twice a
+            // year, from the app's front screen; it is a tile now, out at the
+            // end of first reach with Morning.
+            //
+            // What the grid was actually load-bearing for was accessibility:
+            // press-and-sweep is unusable by VoiceOver and Switch Control, so
+            // dropping it would have locked those users into whatever screen
+            // the app opened on. That floor moved to the orb rather than
+            // disappearing - see `orbControl`.
+            //
+            // NO keyboard accessory bar either. "Ask" duplicated the send
+            // arrow sitting inches away in the composer, and "Done" is a
+            // control nobody needs on a phone - tapping away from a field is
+            // what people already do. Both are replaced by
+            // `.dismissesKeyboard(when:)` on everything above the composer;
+            // see DismissesKeyboard.swift for why the old under-the-content
+            // catcher never fired.
         }
-        .task(id: ObjectIdentifier(state.service)) {
+        .task(id: state.serviceGeneration) {
             model.update(service: state.service)
         }
         .onChange(of: composerFocused) { _, focused in
@@ -201,6 +206,18 @@ struct VoiceView: View {
     /// The orb IS the talk control. Holding the thing that reacts to your
     /// voice is a smaller idea to hold in your head than a separate button
     /// that operates it - the instrument and the control are one object.
+    ///
+    /// It is also the app's accessible launcher. The radial dial takes its
+    /// touches from a recogniser on the window and never participates in
+    /// hit-testing, so VoiceOver and Switch Control cannot reach it at all;
+    /// with the destinations menu gone, these named actions are the only route
+    /// between screens for anyone who cannot press-and-sweep. They are the
+    /// floor, not a nicety - do not remove them on the grounds that the dial
+    /// does the same job.
+    ///
+    /// On the orb rather than anywhere else because it is the one element on
+    /// this screen a VoiceOver user is certain to land on, and because it is
+    /// already the app's "this is ATARU" object.
     private var orbControl: some View {
         OrbView(phase: model.phase) { [weak model] in
             model?.orbLevel ?? 0
@@ -227,6 +244,14 @@ struct VoiceView: View {
                 model.endListening()
             } else {
                 Task { await model.beginListening() }
+            }
+        }
+        // Every destination, as named actions in the rotor. Built from
+        // `HomeTile.allCases`, so a tile added to the enum appears here and in
+        // the dial together and neither can fall behind the other.
+        .accessibilityActions {
+            ForEach(HomeTile.allCases.filter { $0 != .assistant }) { tile in
+                Button("Open \(tile.title)") { openTile(tile) }
             }
         }
     }

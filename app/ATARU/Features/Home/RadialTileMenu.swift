@@ -2,11 +2,11 @@ import SwiftUI
 
 /// Every surface ATARU has, as one routable set.
 ///
-/// This is the single source of truth for destinations: the radial launcher
-/// and the accessibility menu in the navigation bar are two ways of launching
-/// the SAME set - the dial for muscle memory, the menu for everyone the dial
-/// cannot serve. Every case opens a native screen; nothing routes to a web
-/// page.
+/// This is the single source of truth for destinations. The radial launcher
+/// is the way in; the Ask orb carries the same set as accessibility actions
+/// for everyone the press-and-sweep cannot serve. Both read this enum, so a
+/// tile added here appears in both without another edit. Every case opens a
+/// native screen; nothing routes to a web page.
 ///
 /// Declaration order is reach order: the earlier a tile is listed, the sooner
 /// a thumb gets to it. The inner ring is filled first and in order, so where a
@@ -22,12 +22,16 @@ import SwiftUI
 /// to show: it pushes notifications, which arrive as notifications.
 enum HomeTile: String, CaseIterable, Identifiable {
     // The surfaces holding his own data and the ones that change day to day,
-    // in reach order. `morning` sits at the end of them: it is his own daily
-    // routine rather than a machine or a media server, so it does not belong
-    // with the second group - but it is a setting, dialled the night before
-    // and then left alone, so it has no business in first reach either.
+    // in reach order.
     case assistant, plan, notes, finance, health, journal, documents, home, workspaces
-    case morning
+    // Settings-class: dialled once and then left alone. `morning` is his own
+    // daily routine rather than a machine or a media server, so it does not
+    // belong with the second group - and `settings` is the same shape of
+    // thing, the server and the token and the dictation engine, touched when
+    // something is being set up rather than day to day. Both sit at the end of
+    // first reach: findable without a long sweep, never in the way of the
+    // surfaces that change daily.
+    case morning, settings
     // Genuinely better on a bigger screen, revealed by pushing further out.
     case status, passwords, media, music, whiteboard, remote
 
@@ -51,6 +55,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .journal:       return "Journal"
         case .workspaces:    return "Spaces"
         case .morning:       return "Morning"
+        case .settings:      return "Settings"
         case .documents:     return "Docs"
         case .whiteboard:    return "Canvas"
         case .media:         return "Media"
@@ -72,6 +77,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .journal:       return "book.closed"
         case .workspaces:    return "square.stack.3d.up"
         case .morning:       return "alarm"
+        case .settings:      return "gearshape"
         case .documents:     return "tray.full"
         case .whiteboard:    return "scribble.variable"
         case .media:         return "play.rectangle"
@@ -94,6 +100,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .journal:       return "Write · reflect"
         case .workspaces:    return "Projects · notes"
         case .morning:       return "Call time"
+        case .settings:      return "Server · privacy"
         case .documents:     return "Browse · search"
         case .whiteboard:    return "AI canvas"
         case .media:         return "Jellyfin"
@@ -520,9 +527,11 @@ struct RadialFan: Equatable {
 /// `PressAnywhere`) and the bubbles are pure drawing, so this layer can sit
 /// over the entire app permanently without intercepting a single tap. It also
 /// means the fan is unreachable by VoiceOver and Switch Control, which cannot
-/// press-and-sweep — the destinations menu in the navigation bar exists to be
-/// that path, and must not be removed on the grounds that the dial does the
-/// same job.
+/// press-and-sweep — the Ask orb carries every tile as a named accessibility
+/// action for exactly that reason, and those must not be removed on the
+/// grounds that the dial does the same job. They are the app's floor: with the
+/// tab bar and the destinations menu both gone, they are the only route
+/// between screens that does not require a held thumb.
 struct RadialPressMenu: View {
     /// Off during a call and while the keyboard is up.
     var isEnabled: Bool

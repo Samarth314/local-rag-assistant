@@ -3,10 +3,10 @@ import SwiftUI
 
 /// The app's one screen, and everything that can take it over.
 ///
-/// There is no tab bar and no visible launcher. Two root screens swap in
-/// place, every other destination arrives as a layer over them, and the way
-/// between them is a thumb held anywhere on the glass — see `RadialPressMenu`.
-/// What is left is the content and nothing else.
+/// There is no tab bar and no visible launcher. Ask is the root, every other
+/// destination arrives as a layer over it, and the way between them is a thumb
+/// held anywhere on the glass — see `RadialPressMenu`. What is left is the
+/// content and nothing else.
 ///
 /// The layering is load-bearing, bottom to top: the root screen, a tile
 /// screen, the launcher, the call. The launcher has to outrank the tile
@@ -14,7 +14,6 @@ import SwiftUI
 /// everything because a conversation in progress owns the surface.
 struct RootView: View {
     @EnvironmentObject private var state: AppState
-    @State private var selection: Tab = .ask
     /// Lives here rather than in the call screen: a minimised call still exists,
     /// so the state has to outlive that view being torn down.
     @State private var isCallMinimized = false
@@ -47,14 +46,18 @@ struct RootView: View {
         session = stack.session
     }
 
-    /// The two screens that are roots rather than layers. Everything else in
-    /// `HomeTile` arrives as a tile screen over one of these.
-    ///
-    /// There was a third, `tiles`, backing a scrollable grid of every
-    /// destination. The radial launcher replaced it and nothing ever assigned
-    /// the case again, so the grid had been unreachable since the tab bar was
-    /// dropped - see `TileDestinationsMenu` for the accessible way in.
-    enum Tab: Hashable { case ask, library }
+    // THE ROOT IS ASK, AND ONLY ASK.
+    //
+    // There used to be a `Tab` enum with two cases, `ask` and `library`, and
+    // `open(tile:)` intercepted `.documents` into the second one. That made
+    // the document library the one destination in `HomeTile` that was not a
+    // tile screen: no host chrome, and - the part that was actually wrong -
+    // no swipe to close, because closing it meant switching a root rather
+    // than dismissing a layer. There was nothing to dismiss, so the page had
+    // no way out but the launcher.
+    //
+    // It is a tile now like everything else. `presentedTile` is the whole of
+    // the routing state, and every destination behaves identically.
 
     /// True while the Ask composer owns the keyboard. Reported up from
     /// VoiceView so the radial launcher can get out of the way - the dial
@@ -78,12 +81,7 @@ struct RootView: View {
             // bottom at all. Every destination is a held thumb away, so the
             // screen belongs entirely to its content and the app looks like
             // almost nothing until someone reaches for it.
-            Group {
-                switch selection {
-                case .ask:     VoiceView(composerActive: $isComposerActive)
-                case .library: DocumentsView()
-                }
-            }
+            VoiceView(composerActive: $isComposerActive)
             // Read from the content only, and applied to a sibling: a
             // preference consumed by something that could resize its own
             // producer is how layout loops start.
@@ -147,7 +145,7 @@ struct RootView: View {
                 // silently killed the launcher on every tile page. A tile
                 // screen has nothing a hold means something else on.
                 exclusions: presentedTile == nil ? pressExclusions : [],
-                current: presentedTile ?? currentTile,
+                current: presentedTile ?? .assistant,
                 onSelect: open(tile:)
             )
             .zIndex(2)
@@ -213,17 +211,29 @@ struct RootView: View {
         .task {
             if PendingCallRequest.take() { call.call() }
         }
-        .task { await state.refreshConnection() }
-        // Demo ⇄ Live flips after launch. Also re-registers the push token —
-        // a token registered with Demo reaches nothing.
-        .task(id: ObjectIdentifier(state.service)) {
+        // Not `await refreshConnection()` any more. That was the single probe
+        // that ran before the tailnet was up and then published its negative
+        // forever; this starts the retry ladder instead. See
+        // `AppState.probeConnection`.
+        .task {
+            state.probeConnection()
+            // UI suite only, and nil in every other run: XCUITest can drive
+            // neither the launcher nor the orb's accessibility actions, so a
+            // test that needs a tile page is put on it. See RuntimeMode.
+            if let tile = RuntimeMode.startTile { open(tile: tile) }
+        }
+        // Demo ⇄ Live flips after launch. Keyed on the generation counter, NOT
+        // on `ObjectIdentifier(state.service)`: a replacement service can land
+        // on the freed address of the one it replaced, which reads as no
+        // change at all and leaves every one of these pointed at the old
+        // backend. See `AppState.serviceGeneration`.
+        .task(id: state.serviceGeneration) {
             CallStack.shared.configure(service: state.service)
             // Transcription goes to this server too, so it has to follow a
             // Demo/Live flip along with everything else in here.
             SpeechDictation.sharedService = state.service
-            // And the notification token: one registered with Demo reaches
-            // nothing, exactly like the VoIP one.
-            RemotePushService.shared.update(service: state.service)
+            // The notification token follows the backend from `AppState`
+            // itself now - see `rebuildService` - so it is not repeated here.
             // Warm the name roster here, where waiting costs nothing. Fetching
             // it when the talk button goes down delayed the microphone past
             // the user's release.
@@ -237,21 +247,11 @@ struct RootView: View {
         .environment(\.openTile, open(tile:))
     }
 
-    /// The tile the current screen already is, so the launcher can leave it
-    /// out.
-    private var currentTile: HomeTile? {
-        switch selection {
-        case .ask:     return .assistant
-        case .library: return .documents
-        }
-    }
-
-    /// One routing table for both launchers: root screens for the two that
-    /// are one, a tile layer for everything else.
+    /// The one routing table: Ask is the root, everything else is a layer.
     ///
     /// Every path sets `presentedTile`, including to nil — the launcher works
     /// from inside a tile screen now, so "go to Ask" arriving while Finance
-    /// is up has to take Finance down as well as change what is behind it.
+    /// is up has to take Finance down.
     private func open(tile: HomeTile) {
         // A tile screen is a LAYER over the root, not a presentation, so
         // VoiceView stays mounted underneath with its focus intact. Nothing
@@ -273,16 +273,7 @@ struct RootView: View {
         if tile == .media, ExternalApp.swiftfin.open() { return }
 
         withAnimation(.easeInOut(duration: 0.24)) {
-            switch tile {
-            case .assistant:
-                presentedTile = nil
-                selection = .ask
-            case .documents:
-                presentedTile = nil
-                selection = .library
-            default:
-                presentedTile = tile
-            }
+            presentedTile = tile == .assistant ? nil : tile
         }
     }
 

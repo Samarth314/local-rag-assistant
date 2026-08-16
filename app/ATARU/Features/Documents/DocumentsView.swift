@@ -1,6 +1,13 @@
 import SwiftUI
 
 /// The document library: everything ATARU has indexed.
+///
+/// A tile screen like every other one since 2026-08-16. It used to be the
+/// app's second ROOT - `RootView` swapped it in for the Ask page rather than
+/// layering it over - which made it the only destination with no host chrome
+/// and, more to the point, nothing to swipe away. It brought its own
+/// NavigationStack for that reason; `TileScreenHost` supplies one now, and a
+/// second stack inside it would draw two navigation bars.
 struct DocumentsView: View {
     @EnvironmentObject private var state: AppState
     @StateObject private var model: DocumentsViewModel
@@ -10,26 +17,24 @@ struct DocumentsView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Ataru.backdrop.ignoresSafeArea()
-                content
-            }
-            .navigationTitle("Library")
-            .navigationBarTitleDisplayMode(.large)
-            .searchable(text: $model.query, prompt: "Search titles and paths")
-            .toolbar {
-                // Without this the Library is a dead end for anyone who
-                // cannot press-and-sweep. See TileDestinationsMenu.
-                ToolbarItem(placement: .topBarLeading) { TileDestinationsMenu() }
-                ToolbarItem(placement: .topBarTrailing) { sortMenu }
-            }
-            .refreshable { await model.refresh() }
-            .navigationDestination(for: IndexedDocument.self) { document in
-                DocumentDetailView(document: document)
-            }
+        ZStack {
+            Ataru.backdrop.ignoresSafeArea()
+            content
         }
-        .task(id: ObjectIdentifier(state.service)) {
+        .navigationTitle("Library")
+        // Inline, not large. A large title inside the host sits directly under
+        // the grab bar and pushes the filters most of a thumb's reach down the
+        // page; every other tile screen is inline.
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $model.query, prompt: "Search titles and paths")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) { sortMenu }
+        }
+        .refreshable { await model.refresh() }
+        .navigationDestination(for: IndexedDocument.self) { document in
+            DocumentDetailView(document: document)
+        }
+        .task(id: state.serviceGeneration) {
             model.update(service: state.service)
             if model.state == .idle { model.load() }
         }
@@ -210,5 +215,7 @@ private struct CategoryChip: View {
 }
 
 #Preview {
-    DocumentsView().environmentObject(AppState())
+    NavigationStack {
+        DocumentsView().environmentObject(AppState())
+    }
 }
