@@ -14,8 +14,19 @@ struct NotesScreen: View {
     var body: some View {
         ScrollView {
             LazyVStack(spacing: Theme.Space.m) {
+                if let failure = store.failure {
+                    // Never the empty state on top of a file problem: "No
+                    // notes yet" over an unreadable file says the notes are
+                    // gone when they are sitting on the disk.
+                    Label(failure, systemImage: "exclamationmark.triangle")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, Theme.Space.s)
+                }
                 if store.notes.isEmpty {
-                    empty
+                    if store.failure == nil { empty }
                 } else {
                     ForEach(store.notes) { note in
                         NavigationLink(value: note) {
@@ -38,7 +49,9 @@ struct NotesScreen: View {
         .safeAreaInset(edge: .bottom) {
             NoteRecorderBar(recorder: recorder) { note in
                 store.add(note)
-                justSaved = note
+                // "Saved" only when it was. A write that failed puts its own
+                // line at the top of the list instead.
+                justSaved = store.failure == nil ? note : nil
             }
         }
         .overlay(alignment: .top) {

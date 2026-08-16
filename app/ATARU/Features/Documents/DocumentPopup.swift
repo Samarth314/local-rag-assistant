@@ -47,13 +47,24 @@ struct DocumentPopup: View {
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
         .task(id: document.id) { await load() }
+        // QuickLook reads the file for as long as this popup is up, and the
+        // download store's purge runs on backgrounding. Held until it closes.
+        .onDisappear {
+            guard let url = payload?.url else { return }
+            Task { await DocumentDownloadStore.shared.release(url) }
+        }
     }
 
     private func load() async {
+        if let previous = payload?.url {
+            await DocumentDownloadStore.shared.release(previous)
+        }
         payload = nil
         failure = nil
         do {
-            payload = try await service.documentContent(id: document.id)
+            let fetched = try await service.documentContent(id: document.id)
+            await DocumentDownloadStore.shared.retain(fetched.url)
+            payload = fetched
         } catch {
             // Say what happened. The document is on the wall display either
             // way, so this is a degraded path, not a dead end.

@@ -106,6 +106,21 @@ enum TileFetchError: LocalizedError, Equatable {
     case status(Int)
     /// The server answered with something this page cannot read.
     case undecodable
+    /// Nobody was still asking. A newer tap replaced this request, or the page
+    /// went away while it was in flight.
+    ///
+    /// THE BUG THIS EXISTS TO FIX. URLSession reports a cancelled request as
+    /// `URLError.cancelled` (-999), a plain `NSURLErrorDomain` error - so it
+    /// fell through this classifier's `default` and came out `.unreachable`,
+    /// which is a claim about the network. Three `catch is CancellationError`
+    /// arms were written to swallow it and none of them ever ran, because what
+    /// arrives is a URL error and not Swift's. Stepping a thermostat quickly -
+    /// where every tap cancels the last request by design - therefore printed
+    /// "Couldn't refresh - no answer from the server" on a page whose own
+    /// requests were landing fine.
+    ///
+    /// It is never shown. `isCancellation` is what every catch site asks.
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -117,6 +132,9 @@ enum TileFetchError: LocalizedError, Equatable {
             return "The server answered with HTTP \(code)."
         case .undecodable:
             return "The server answered with something this page couldn't read."
+        case .cancelled:
+            // Nothing to say: nobody is waiting on this request any more.
+            return nil
         }
     }
 
@@ -129,11 +147,13 @@ enum TileFetchError: LocalizedError, Equatable {
         case .timedOut:     return "Refresh timed out."
         case .status(let code): return "Couldn't refresh - the server said HTTP \(code)."
         case .undecodable:  return "Couldn't refresh - unreadable answer."
+        case .cancelled:    return ""
         }
     }
 
     static func from(_ error: Error, timeout: TimeInterval) -> TileFetchError {
         if let already = error as? TileFetchError { return already }
+        if error is CancellationError { return .cancelled }
         let ns = error as NSError
         guard ns.domain == NSURLErrorDomain else {
             // A decoding error is not a network error, and saying so is the
@@ -141,9 +161,23 @@ enum TileFetchError: LocalizedError, Equatable {
             return .undecodable
         }
         switch ns.code {
+        case NSURLErrorCancelled: return .cancelled
         case NSURLErrorTimedOut: return .timedOut(seconds: Int(timeout))
         default: return .unreachable
         }
+    }
+
+    /// Whether an error is just "nobody is asking any more".
+    ///
+    /// What every catch on these screens checks before reporting anything. A
+    /// cancelled request is not an event: it happens on every rapid re-tap and
+    /// every time a tile screen is closed mid-fetch, and both of those used to
+    /// leave a network complaint on the page.
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let fetch = error as? TileFetchError { return fetch == .cancelled }
+        let ns = error as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
     }
 }
 
@@ -188,16 +222,19 @@ enum TileFetch {
             } catch {
                 throw TileFetchError.undecodable
             }
-        } catch is CancellationError {
-            throw CancellationError()
         } catch {
             let classified = TileFetchError.from(error, timeout: timeout)
-            // The path only, never the body: these responses are vault content.
-            tileLog.error("""
-                \(request.httpMethod ?? "GET", privacy: .public) \
-                \(request.url?.path ?? "?", privacy: .public) failed: \
-                \(classified.errorDescription ?? "", privacy: .public)
-                """)
+            // A cancelled request is not a failure and does not belong in the
+            // log next to ones that are.
+            if classified != .cancelled {
+                // The path only, never the body: these responses are vault
+                // content.
+                tileLog.error("""
+                    \(request.httpMethod ?? "GET", privacy: .public) \
+                    \(request.url?.path ?? "?", privacy: .public) failed: \
+                    \(classified.errorDescription ?? "", privacy: .public)
+                    """)
+            }
             throw classified
         }
     }
@@ -225,12 +262,34 @@ enum TileFetch {
 ///
 /// First ever open with nothing cached goes straight to the content skeleton on
 /// the backdrop - never a differently coloured pane.
+///
+/// ## What is actually in these files, and the decision taken about it
+///
+/// Vault content: the Finance payload is net worth and every merchant, Health
+/// is markers and med names, Journal is entry previews. It is written as plain
+/// JSON into Caches, which is inside the app container and so unreadable by
+/// other apps and absent from backups - but it is also the app's own standing
+/// rule that server responses do not accumulate anywhere.
+///
+/// Two things follow from that and both are done here rather than left as a
+/// comment. Every file is written with `.completeFileProtection`, so it is
+/// unreadable while the phone is locked - which costs nothing, because the
+/// only moment anything reads it is a tile opening in the foreground. And
+/// `purge` is wired into the same "delete what is on this phone" path as the
+/// downloaded documents, so Settings' button and every backgrounding clear
+/// these too. Moving the whole cache into a separate protected container was
+/// the alternative and buys nothing over the file-level class.
 enum TileCache {
 
     private struct Envelope<Payload: Codable>: Codable {
         let payload: Payload
         let savedAt: Date
     }
+
+    /// Every `kind` written by the screens in TileDataScreens, so `purge` can
+    /// find the files again.
+    private static let kinds = ["finance", "health", "home",
+                                "status", "journal", "workspaces"]
 
     /// Derived from the backend URL by substitution, NOT by `hashValue` -
     /// String hashing is seeded per process, so a hashed filename would miss
@@ -246,21 +305,49 @@ enum TileCache {
         return dir.appending(path: "\(kind)-\(slug).json")
     }
 
+    /// Reads the last payload for a screen.
+    ///
+    /// Async, and off the main actor, because this is a synchronous file read
+    /// plus a JSON decode of a whole dashboard - and it was called from every
+    /// screen's `.task`, which runs on the main actor. That is a disk read on
+    /// the frame the tile opens, which is the one frame this cache exists to
+    /// make fast.
     static func load<Payload: Codable>(_ type: Payload.Type, kind: String,
-                                       for root: URL?) -> (payload: Payload, savedAt: Date)? {
-        guard let root, let url = fileURL(kind: kind, root: root),
-              let data = try? Data(contentsOf: url),
-              let envelope = try? JSONDecoder().decode(Envelope<Payload>.self, from: data)
-        else { return nil }
-        return (envelope.payload, envelope.savedAt)
+                                       for root: URL?) async -> (payload: Payload, savedAt: Date)? {
+        guard let root, let url = fileURL(kind: kind, root: root) else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            guard let data = try? Data(contentsOf: url),
+                  let envelope = try? JSONDecoder().decode(Envelope<Payload>.self, from: data)
+            else { return nil }
+            return (envelope.payload, envelope.savedAt)
+        }.value
     }
 
+    /// Writes the last payload. Fire and forget, and never on the main actor:
+    /// nothing on screen is waiting for this to land.
     static func save<Payload: Codable>(_ payload: Payload, kind: String, for root: URL) {
-        guard let url = fileURL(kind: kind, root: root),
-              let data = try? JSONEncoder().encode(
-                Envelope(payload: payload, savedAt: Date()))
+        guard let url = fileURL(kind: kind, root: root) else { return }
+        Task.detached(priority: .utility) {
+            guard let data = try? JSONEncoder().encode(
+                Envelope(payload: payload, savedAt: Date())) else { return }
+            // Unreadable while the phone is locked. See the note above on what
+            // these files hold.
+            try? data.write(to: url, options: [.atomic, .completeFileProtection])
+        }
+    }
+
+    /// Drops every cached payload, for the same reason downloaded documents
+    /// are dropped: this is vault content sitting on the phone, and "delete
+    /// what ATARU has put here" has to mean all of it.
+    static func purge() {
+        guard let dir = FileManager.default.urls(for: .cachesDirectory,
+                                                 in: .userDomainMask).first,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path)
         else { return }
-        try? data.write(to: url, options: .atomic)
+        for name in names where name.hasSuffix(".json")
+            && kinds.contains(where: { name.hasPrefix("\($0)-") }) {
+            try? FileManager.default.removeItem(at: dir.appending(path: name))
+        }
     }
 }
 

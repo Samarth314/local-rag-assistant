@@ -67,11 +67,11 @@ struct SettingsView: View {
             }
 
             Section("On this device") {
-                Button("Delete downloaded documents", role: .destructive) {
-                    state.purgeDownloads()
+                Button("Delete downloaded files and cached pages", role: .destructive) {
+                    state.purgeDownloads(includingCachedTiles: true)
                     Haptics.fire(.success)
                 }
-                Text("Documents are downloaded only when you preview or send them, and are deleted automatically when ATARU goes to the background.")
+                Text("Documents are downloaded only when you preview or send them, and are deleted automatically when ATARU goes to the background. This also clears the last page each tile drew from, which is kept so a tile opens with something on it.")
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -190,11 +190,12 @@ struct SettingsView: View {
         guard validation.isValid else { return }
         var configuration = state.configuration
         configuration.baseURLString = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Saving the token first, so the service is rebuilt once with both the
-        // new address and the new credential. `setToken` is also what
-        // re-registers push - see AppState.rebuildService.
-        state.setToken(token.isEmpty ? nil : token)
-        state.configuration = configuration
+        // ONE change, not two. Setting the token and then the address rebuilt
+        // the service twice, and the first rebuild paired the new token with
+        // the OLD address - which is where it then registered push. See
+        // AppState.apply.
+        state.apply(configuration: configuration,
+                    token: token.isEmpty ? nil : token)
         Task {
             await state.refreshConnection()
             Haptics.fire(state.connection.isConnected ? .success : .warning)

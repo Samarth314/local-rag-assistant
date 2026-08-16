@@ -5,6 +5,18 @@ final class PlanViewModel: ObservableObject {
     @Published var plan: DailyPlan = .empty()
     @Published var errorMessage: String?
     @Published var isLoading = false
+    /// True while a row change is in flight.
+    ///
+    /// THE ROW THIS PROTECTS. The plan API addresses items by their POSITION -
+    /// `{section, index}` is the whole of it, there is no id on a `PlanItem`
+    /// and none in the reply - and every mutation returns a freshly reshuffled
+    /// list. So two quick taps meant the second one carried an index computed
+    /// against a list the first was in the middle of replacing, and the row
+    /// that got removed or ticked was not the row that was touched. Nothing in
+    /// the API can fix that from here, so the rows are simply not tappable
+    /// while one change is outstanding: a mutation is a round trip and the
+    /// list is correct again the moment it lands.
+    @Published private(set) var isMutating = false
 
     private var service: ATARUService?
 
@@ -19,27 +31,42 @@ final class PlanViewModel: ObservableObject {
         await run { try await service.plan() }
     }
 
-    func add(_ text: String, top3: Bool) async {
-        guard let service else { return }
-        await run { try await service.planAdd(text, top3: top3) }
+    /// Returns whether the server took it, so the field is only cleared when
+    /// the text has landed somewhere other than the field.
+    @discardableResult
+    func add(_ text: String, top3: Bool) async -> Bool {
+        guard let service, !isMutating else { return false }
+        return await mutate { try await service.planAdd(text, top3: top3) }
     }
 
     func toggle(section: String, index: Int, done: Bool) async {
-        guard let service else { return }
-        await run { try await service.planSetDone(section: section, index: index, done: done) }
+        guard let service, !isMutating else { return }
+        await mutate { try await service.planSetDone(section: section, index: index, done: done) }
     }
 
     func remove(section: String, index: Int) async {
-        guard let service else { return }
-        await run { try await service.planRemove(section: section, index: index) }
+        guard let service, !isMutating else { return }
+        await mutate { try await service.planRemove(section: section, index: index) }
     }
 
-    private func run(_ op: () async throws -> DailyPlan) async {
+    private func mutate(_ op: () async throws -> DailyPlan) async -> Bool {
+        isMutating = true
+        defer { isMutating = false }
+        return await run(op)
+    }
+
+    @discardableResult
+    private func run(_ op: () async throws -> DailyPlan) async -> Bool {
         do {
             plan = try await op()
             errorMessage = nil
+            return true
+        } catch is CancellationError {
+            return false
         } catch {
-            errorMessage = "Couldn't reach the plan - check the connection in Settings."
+            errorMessage = (error as? APIError)?.localizedDescription
+                ?? "Couldn't reach the plan - check the connection in Settings."
+            return false
         }
     }
 }
@@ -98,7 +125,12 @@ struct PlanView: View {
             }
         }
         .refreshable { await model.refresh() }
-        .task(id: ObjectIdentifier(state.service)) {
+        // Keyed on the generation, never on `ObjectIdentifier(state.service)`
+        // - that is the object's ADDRESS, and a replacement service can be
+        // handed the address the old one just freed, in which case the id does
+        // not change and this task never re-runs. Every other screen moved off
+        // it; this was the last one on it. See AppState.serviceGeneration.
+        .task(id: state.serviceGeneration) {
             model.update(service: state.service)
             await model.refresh()
         }
@@ -140,6 +172,7 @@ struct PlanView: View {
                                 .font(.system(size: 20, weight: .light))
                                 .foregroundStyle(item.done ? Theme.green : Theme.textTertiary)
                         }
+                        .disabled(model.isMutating)
                         Text(item.text)
                             .font(.ataruBody())
                             .foregroundStyle(item.done ? Theme.textTertiary : Theme.textPrimary)
@@ -153,8 +186,13 @@ struct PlanView: View {
                                 .foregroundStyle(Theme.textTertiary)
                         }
                         .accessibilityLabel("Remove \(item.text)")
+                        // Every row addresses the server by index, so no row
+                        // may be touched while an earlier change is still
+                        // reshuffling the list. See PlanViewModel.isMutating.
+                        .disabled(model.isMutating)
                     }
                     .padding(.vertical, 2)
+                    .opacity(model.isMutating ? 0.55 : 1)
                 }
 
                 if showInput {
@@ -185,11 +223,14 @@ struct PlanView: View {
         }
     }
 
+    /// The field is cleared by the server taking the item, not by the tap: a
+    /// failed add used to empty the field and leave the text nowhere.
     private func submit(_ input: Binding<String>, isTop3: Bool) {
         let text = input.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        input.wrappedValue = ""
+        guard !text.isEmpty, !model.isMutating else { return }
         focusedField = nil
-        Task { await model.add(text, top3: isTop3) }
+        Task {
+            if await model.add(text, top3: isTop3) { input.wrappedValue = "" }
+        }
     }
 }

@@ -221,6 +221,13 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
     /// there was nothing to confirm. A missing route (an older backend) throws
     /// `notFound` from `perform`, and the caller treats that as "not recorded"
     /// for the same reason.
+    ///
+    /// A 2xx carrying something this cannot read is a THIRD thing and now says
+    /// so. It used to fall through `try?` into `false`, which the button
+    /// renders as "No call to confirm right now" - a specific claim about the
+    /// server's state, made on the basis of not having understood the server
+    /// at all. At seven in the morning that is the difference between "the
+    /// calls will stop" and a redial ladder that is still running.
     @discardableResult
     func confirmMorningCall() async throws -> Bool {
         guard let url = endpoints.url("api/morning/confirm") else {
@@ -229,7 +236,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         var request = self.request(for: url)
         request.httpMethod = "POST"
         let (data, _) = try await perform(request)
-        return (try? decode(DTO.MorningConfirmReply.self, from: data))?.confirmed ?? false
+        return try decode(DTO.MorningConfirmReply.self, from: data).confirmed ?? false
     }
 
     func morningCallState() async throws -> MorningCallState {

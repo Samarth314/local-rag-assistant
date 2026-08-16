@@ -34,9 +34,15 @@ final class AppState: ObservableObject {
         didSet {
             guard configuration != oldValue else { return }
             persist()
+            // Suppressed only while `apply` is staging both fields, which
+            // rebuilds once itself.
+            guard !isStaging else { return }
             rebuildService()
         }
     }
+
+    /// True while `apply` is setting the token and the address together.
+    private var isStaging = false
 
     private let defaults: UserDefaults
     private let tokenStore: TokenStoring
@@ -101,6 +107,26 @@ final class AppState: ObservableObject {
 
     func setToken(_ value: String?) {
         tokenStore.token = value
+        rebuildService()
+    }
+
+    /// Saves a new address and a new token as one change.
+    ///
+    /// THE BUG THIS FIXES. Settings used to call `setToken` and then assign
+    /// `configuration`, and each of those rebuilds the service on its own. The
+    /// FIRST rebuild therefore paired the NEW token with the OLD base URL -
+    /// and `rebuildService` registers the push token, so moving the app to a
+    /// second server handed that server's credential to the one being left
+    /// behind before anything reached the new address. It also bumped
+    /// `serviceGeneration` twice, so every `.task(id:)` in the app ran its
+    /// whole load twice on one tap of Save.
+    ///
+    /// Both fields are staged, then one rebuild, then one generation.
+    func apply(configuration newConfiguration: AppConfiguration, token newToken: String?) {
+        isStaging = true
+        tokenStore.token = newToken
+        configuration = newConfiguration
+        isStaging = false
         rebuildService()
     }
 
@@ -198,8 +224,21 @@ final class AppState: ObservableObject {
         (error as? APIError)?.localizedDescription ?? error.localizedDescription
     }
 
-    /// Drops every document this app has pulled onto the phone.
-    func purgeDownloads() {
+    /// Drops what this app has pulled onto the phone.
+    ///
+    /// TWO CALLERS, and they do not mean the same thing. Backgrounding drops
+    /// the downloaded document files, which is what the Settings copy has
+    /// always promised. Settings' own button is a person saying "delete what
+    /// is on this phone", and that has to include the tile screens' cached
+    /// payloads - finance, health and journal among them - or the button is
+    /// not the claim it appears to be.
+    ///
+    /// The tile cache is deliberately NOT dropped on backgrounding: its whole
+    /// job is to have something to draw on the next cold open, and clearing it
+    /// every time the app leaves the foreground would delete it before it is
+    /// ever read. It is written locked-device-protected instead. See TileCache.
+    func purgeDownloads(includingCachedTiles: Bool = false) {
+        if includingCachedTiles { TileCache.purge() }
         Task { await DocumentDownloadStore.shared.purge() }
     }
 

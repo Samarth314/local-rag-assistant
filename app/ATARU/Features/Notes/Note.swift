@@ -99,14 +99,30 @@ extension String {
 /// documented contract of Application Support and the opposite of Caches,
 /// which `HomeCache` uses precisely because a lost cache costs nothing.
 ///
-/// Nothing is uploaded. A note never becomes a question, never reaches the
-/// assistant, and never leaves the phone — see `NoteDigest` for why the
-/// summary is built locally.
+/// Nothing is uploaded unless the user asks for it. A note never becomes a
+/// question and never reaches the assistant on its own - see `NoteDigest` for
+/// why the summary is built locally. The single exception is deliberate and
+/// manual: "Find tasks" on the note detail sends that one transcript to the
+/// configured ATARU server, and the button says so. Nothing on this path runs
+/// without a tap.
 @MainActor
 final class NoteStore: ObservableObject {
     @Published private(set) var notes: [Note] = []
+    /// What went wrong with the file, if anything. Nil is the normal case.
+    ///
+    /// Notes are the only thing in the app the user authored, so a read or
+    /// write that failed has to be visible: an unreadable file rendering as
+    /// "No notes yet" tells someone their notes are gone when they are not,
+    /// and a failed write behind a "Saved" toast loses the note silently.
+    @Published private(set) var failure: String?
 
     private let fileURL: URL?
+    private let fileManager = FileManager.default
+    /// Set when `load` found a file it could not read. The next write moves it
+    /// aside rather than overwriting it - whatever is in there is the only
+    /// copy, and a decoder that cannot read it today is not proof it is worth
+    /// destroying.
+    private var isUnreadable = false
 
     init(fileURL: URL? = NoteStore.defaultFileURL()) {
         self.fileURL = fileURL
@@ -134,15 +150,21 @@ final class NoteStore: ObservableObject {
         save()
     }
 
-    /// Replaces a note's seeded items with the ones the server parsed.
+    /// Takes on the server's parse, keeping every box the user already ticked.
     ///
     /// Only ever called with a non-empty list. An empty parse means the model
     /// found nothing actionable, and wiping the user's checkboxes on that
     /// basis is worse than leaving the bullets they can already tick.
+    ///
+    /// The straight assignment this replaced also threw away identity: every
+    /// parsed row arrived with a fresh UUID and `isDone: false`, so a note
+    /// worked through before the parse came back came out of it with every box
+    /// clear and no way to tell that had happened. Rows whose text is
+    /// unchanged keep their id and their ticked state; see `NoteTask.merge`.
     func adopt(_ tasks: [NoteTask], for note: Note) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }),
               !tasks.isEmpty else { return }
-        notes[index].tasks = tasks
+        notes[index].tasks = NoteTask.merge(parsed: tasks, into: notes[index].tasks)
         notes[index].isParsed = true
         save()
     }
@@ -173,14 +195,52 @@ final class NoteStore: ObservableObject {
     }
 
     private func load() {
-        guard let fileURL, let data = try? Data(contentsOf: fileURL),
-              let stored = try? JSONDecoder().decode([Note].self, from: data)
-        else { return }
+        guard let fileURL else {
+            failure = "There is nowhere on this phone to keep notes."
+            return
+        }
+        // No file is the first launch, and the empty state is the truth.
+        guard fileManager.fileExists(atPath: fileURL.path) else { return }
+        guard let data = try? Data(contentsOf: fileURL) else {
+            isUnreadable = true
+            failure = "Couldn't open your notes file. Nothing has been changed."
+            return
+        }
+        guard let stored = try? JSONDecoder().decode([Note].self, from: data) else {
+            isUnreadable = true
+            failure = "Your notes file couldn't be read. It is still on the phone and nothing has been overwritten."
+            return
+        }
         notes = stored.sorted { $0.createdAt > $1.createdAt }
     }
 
     private func save() {
-        guard let fileURL, let data = try? JSONEncoder().encode(notes) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        guard let fileURL else {
+            failure = "There is nowhere on this phone to keep notes."
+            return
+        }
+        // A file that would not decode is moved aside, never written over: it
+        // is the only copy of whatever it holds.
+        if isUnreadable {
+            let stamp = ISO8601DateFormatter().string(from: Date())
+                .replacingOccurrences(of: ":", with: "-")
+            let aside = fileURL.deletingLastPathComponent()
+                .appending(path: "notes-unreadable-\(stamp).json")
+            guard (try? fileManager.moveItem(at: fileURL, to: aside)) != nil else {
+                failure = "Couldn't save - the existing notes file is unreadable and could not be moved aside."
+                return
+            }
+            isUnreadable = false
+        }
+        guard let data = try? JSONEncoder().encode(notes) else {
+            failure = "Couldn't save this note."
+            return
+        }
+        do {
+            try data.write(to: fileURL, options: .atomic)
+            failure = nil
+        } catch {
+            failure = "Couldn't save to the phone. The note is still on screen."
+        }
     }
 }

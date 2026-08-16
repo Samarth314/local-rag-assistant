@@ -23,6 +23,9 @@ struct NoteDetailView: View {
     @State private var pane: Pane = .notes
     @State private var isConfirmingDelete = false
     @State private var isParsing = false
+    /// What the last parse attempt did, when it did not work. One line under
+    /// the button, never an alert.
+    @State private var parseNote: String?
     @EnvironmentObject private var state: AppState
     @Environment(\.dismiss) private var dismiss
 
@@ -52,27 +55,6 @@ struct NoteDetailView: View {
         }
         .navigationTitle(note.title)
         .navigationBarTitleDisplayMode(.inline)
-        // Progressive enhancement, and it must stay that way: the note already
-        // has tickable items from its own bullets, so this only ever upgrades
-        // them. A backend without the route throws notFound, nothing changes,
-        // and the user never learns there was a server involved.
-        .task {
-            guard !live.isParsed, !live.tasks.isEmpty else { return }
-            isParsing = true
-            defer { isParsing = false }
-            do {
-                let parsed = try await state.service.parseTasks(transcript: live.transcript)
-                if parsed.isEmpty {
-                    store.markParsed(live)
-                } else {
-                    store.adopt(parsed, for: live)
-                }
-            } catch {
-                // Left unparsed on purpose, so the next launch tries again -
-                // the server being down once should not cost this note its
-                // structure forever.
-            }
-        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
@@ -134,6 +116,8 @@ struct NoteDetailView: View {
                         }
                     }
                 }
+
+                findTasks
             }
 
             Text(note.createdAt, format: .dateTime.weekday(.wide).month().day()
@@ -144,6 +128,76 @@ struct NoteDetailView: View {
         }
         .padding(.horizontal, Theme.Space.screen)
         .padding(.bottom, Theme.Space.l)
+    }
+
+    /// The one thing on this screen that touches the network, behind a tap.
+    ///
+    /// THE BUG THIS FIXES. This ran automatically, from the view's `.task`:
+    /// merely opening a note POSTed the whole dictation transcript to
+    /// `api/parse-tasks` - no tap, no prompt, nothing on screen saying it had
+    /// happened - while the file's own documentation promised a note "never
+    /// leaves the phone". One of those two had to change, and the promise is
+    /// the one worth keeping: a notes app that uploads what you said because
+    /// you looked at it is not a notes app.
+    ///
+    /// So it is a button, it says where the transcript goes, and a note that
+    /// is never tapped is never sent. The seeded checkboxes below are what a
+    /// note has without any of this, which is why the feature can be optional
+    /// at all.
+    @ViewBuilder
+    private var findTasks: some View {
+        if !live.isParsed {
+            VStack(alignment: .leading, spacing: Theme.Space.xxs) {
+                Button {
+                    Task { await parse() }
+                } label: {
+                    Label(isParsing ? "Finding tasks…" : "Find tasks",
+                          systemImage: "sparkles")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.cyan)
+                }
+                .buttonStyle(.plain)
+                .disabled(isParsing || live.transcript.nilIfBlank == nil)
+                .accessibilityIdentifier("note-find-tasks")
+
+                Text("Sends this note's transcript to your ATARU server, which reads it for dates and steps. Nothing is sent until you tap.")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let parseNote {
+                    Text(parseNote)
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.top, Theme.Space.xxs)
+        }
+    }
+
+    private func parse() async {
+        guard !isParsing else { return }
+        isParsing = true
+        parseNote = nil
+        defer { isParsing = false }
+        do {
+            let parsed = try await state.service.parseTasks(transcript: live.transcript)
+            if parsed.isEmpty {
+                // Parsed, found nothing. Marked so the button retires rather
+                // than inviting the same round trip again.
+                store.markParsed(live)
+                parseNote = "Nothing more to pull out of this one."
+            } else {
+                store.adopt(parsed, for: live)
+                Haptics.fire(.success)
+            }
+        } catch {
+            // Left unparsed, so the button stays and a second attempt costs a
+            // tap - the server being down once should not retire the offer.
+            parseNote = (error as? APIError)?.localizedDescription
+                ?? error.localizedDescription
+        }
     }
 
     @ViewBuilder

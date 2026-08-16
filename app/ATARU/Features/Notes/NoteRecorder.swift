@@ -83,8 +83,17 @@ final class NoteRecorder: ObservableObject {
         // Diarisation runs here, once, after the user has stopped talking -
         // never during the recording. It is nil for the ordinary case of one
         // person talking, which is the point: see SpeakerSplit.
-        let turns = SpeakerSplit.turns(words: dictation.timedWords,
-                                       samples: dictation.lastCapture)
+        //
+        // OFF THE MAIN ACTOR. One pass of squares over the whole capture is
+        // milliseconds on a short note and not on a long one: the buffer is
+        // 16 kHz mono floats, so about 4 MB per minute, and a twenty-minute
+        // meeting is 80 MB of arithmetic between two frames. It needs nothing
+        // from the main actor, so it does not run there.
+        let words = dictation.timedWords
+        let samples = dictation.lastCapture
+        let turns = await Task.detached(priority: .userInitiated) {
+            SpeakerSplit.turns(words: words, samples: samples)
+        }.value
         let note = Note(transcript: transcript, duration: duration, turns: turns)
         // A note with no bullets means the digest could not find a single
         // usable point — two words, or pure filler. Saving it would put an
