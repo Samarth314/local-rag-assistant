@@ -98,7 +98,7 @@ private struct NoteCard: View {
                 HStack(spacing: Theme.Space.xs) {
                     Text(note.createdAt, format: .dateTime.month().day().hour().minute())
                     Text("·")
-                    Text("\(note.digest.bullets.count) point\(note.digest.bullets.count == 1 ? "" : "s")")
+                    Text(progress)
                     if note.duration >= 1 {
                         Text("·")
                         Text(Self.length.string(from: note.duration) ?? "")
@@ -111,6 +111,15 @@ private struct NoteCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.Space.m)
         }
+    }
+
+    /// Done out of total, because a note you have half worked through is a
+    /// different thing from one you have not opened.
+    private var progress: String {
+        let total = note.tasks.count
+        guard total > 0 else { return "no items" }
+        let done = note.tasks.filter(\.isDone).count
+        return done == 0 ? "\(total) to do" : "\(done)/\(total) done"
     }
 
     private static let length: DateComponentsFormatter = {

@@ -14,6 +14,13 @@ struct Note: Identifiable, Codable, Hashable {
     /// and means "one speaker, or no way to tell" - see SpeakerSplit, which
     /// declines rather than guesses.
     var turns: [SpeakerSplit.Turn]?
+    /// The tickable items. Seeded from the digest's own points so a note is
+    /// actionable the instant it is saved, then replaced by the parsed version
+    /// if the backend has the route. See NoteStore.adopt.
+    var tasks: [NoteTask]
+    /// True once the server's parse has been applied, so a note is not asked
+    /// to parse twice.
+    var isParsed: Bool
 
     /// True when the note is a conversation rather than a monologue.
     var hasMultipleSpeakers: Bool {
@@ -31,6 +38,8 @@ struct Note: Identifiable, Codable, Hashable {
         self.digest = digest
         self.duration = duration
         self.turns = turns
+        self.tasks = NoteTask.fromBullets(digest.bullets)
+        self.isParsed = false
         self.title = Note.derivedTitle(from: digest, transcript: transcript)
     }
 
@@ -46,6 +55,29 @@ struct Note: Identifiable, Codable, Hashable {
         let head = words.prefix(7).joined(separator: " ")
             .trimmingCharacters(in: CharacterSet(charactersIn: " .,;:"))
         return words.count > 7 ? head + "…" : head
+    }
+}
+
+extension Note {
+    /// Notes written before tasks existed decode with none, rather than
+    /// failing and taking the whole file with them - `notes.json` is a single
+    /// document, so one undecodable note loses every note the user has.
+    enum CodingKeys: String, CodingKey {
+        case id, title, createdAt, transcript, digest, duration, turns, tasks, isParsed
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        transcript = try container.decode(String.self, forKey: .transcript)
+        digest = try container.decode(NoteDigest.self, forKey: .digest)
+        duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
+        turns = try container.decodeIfPresent([SpeakerSplit.Turn].self, forKey: .turns)
+        tasks = try container.decodeIfPresent([NoteTask].self, forKey: .tasks)
+            ?? NoteTask.fromBullets(digest.bullets)
+        isParsed = try container.decodeIfPresent(Bool.self, forKey: .isParsed) ?? false
     }
 }
 
@@ -101,6 +133,37 @@ final class NoteStore: ObservableObject {
         notes.removeAll { $0.id == note.id }
         save()
     }
+
+    /// Replaces a note's seeded items with the ones the server parsed.
+    ///
+    /// Only ever called with a non-empty list. An empty parse means the model
+    /// found nothing actionable, and wiping the user's checkboxes on that
+    /// basis is worse than leaving the bullets they can already tick.
+    func adopt(_ tasks: [NoteTask], for note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }),
+              !tasks.isEmpty else { return }
+        notes[index].tasks = tasks
+        notes[index].isParsed = true
+        save()
+    }
+
+    /// Marks a parse attempt finished without changing anything, so a note
+    /// whose server found nothing is not asked again on every appearance.
+    func markParsed(_ note: Note) {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+        notes[index].isParsed = true
+        save()
+    }
+
+    func setTask(_ task: NoteTask, done: Bool, in note: Note) {
+        guard let noteIndex = notes.firstIndex(where: { $0.id == note.id }),
+              let taskIndex = notes[noteIndex].tasks.firstIndex(where: { $0.id == task.id })
+        else { return }
+        notes[noteIndex].tasks[taskIndex].isDone = done
+        save()
+    }
+
+    func note(id: UUID) -> Note? { notes.first { $0.id == id } }
 
     func rename(_ note: Note, to title: String) {
         guard let index = notes.firstIndex(where: { $0.id == note.id }),

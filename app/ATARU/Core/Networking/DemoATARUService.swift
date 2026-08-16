@@ -101,6 +101,24 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         return Self.planState
     }
 
+    /// Demo parses locally, so the Notes screen has something to show without
+    /// a backend: anything that reads as an instruction becomes a task, and
+    /// the rest of the note stays a note. Deliberately dumber than the real
+    /// route - it is a fixture, not a second implementation to keep in step.
+    func parseTasks(transcript: String) async throws -> [NoteTask] {
+        try await pause()
+        let verbs = ["call", "email", "book", "buy", "send", "pay", "check",
+                     "renew", "fix", "write", "ask", "order", "pick up",
+                     "remember to", "need to", "finish", "review", "schedule"]
+        return NoteDigest.points(in: transcript).compactMap { point in
+            let lowered = point.lowercased()
+            guard verbs.contains(where: { lowered.contains($0) }) else { return nil }
+            return NoteTask(title: point,
+                            category: lowered.contains("pay")
+                                || lowered.contains("bank") ? "Finance" : "Personal")
+        }
+    }
+
     func plan() async throws -> DailyPlan {
         try await pause()
         return withPlan { $0 }

@@ -219,6 +219,21 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         let date: String?
     }
 
+    // MARK: - Notes
+
+    func parseTasks(transcript: String) async throws -> [NoteTask] {
+        guard let url = endpoints.url("api/parse-tasks") else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            ParseTasksDTO.Request(transcript: transcript))
+        let (data, _) = try await perform(request)
+        // Every row the model got wrong is dropped, not the whole reply: one
+        // task returned without a title should not cost the user the other six.
+        return try decode(ParseTasksDTO.Reply.self, from: data).tasks.compactMap(\.domain)
+    }
+
     // MARK: - Calls
 
     func registerVoIPToken(_ token: String, environment: String) async throws {

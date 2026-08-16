@@ -81,6 +81,14 @@ protocol ATARUService: AnyObject, Sendable {
     /// `setMorningSchedule` for why the default throws rather than guessing.
     func morningSchedule() async throws -> MorningSchedule
 
+    /// Turns a dictated note into structured, tickable tasks.
+    ///
+    /// The transcript goes up as TEXT and structure comes back - the server
+    /// owns the model, exactly as in FlowList. Audio is never involved: see
+    /// SpeechDictation.finishLocally for why a note's capture path ends at the
+    /// recogniser.
+    func parseTasks(transcript: String) async throws -> [NoteTask]
+
     /// Sets the call time, for `date` or - when that is nil - for tomorrow.
     ///
     /// Deliberately has NO default implementation that pretends to succeed. A
@@ -141,6 +149,16 @@ extension ATARUService {
     /// available yet", and it is also exactly what a server that has not
     /// deployed the route yet returns on its own.
     func morningSchedule() async throws -> MorningSchedule {
+        throw APIError.notFound
+    }
+
+    /// Backends without the route say so, rather than returning no tasks.
+    ///
+    /// The distinction matters to the caller: "this server cannot parse tasks"
+    /// leaves the note's own bullets standing as checkboxes, while an empty
+    /// array would mean "parsed it, found nothing" and replace them with
+    /// nothing. See NoteStore.adopt.
+    func parseTasks(transcript: String) async throws -> [NoteTask] {
         throw APIError.notFound
     }
 
