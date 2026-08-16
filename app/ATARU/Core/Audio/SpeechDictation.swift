@@ -214,6 +214,31 @@ final class SpeechDictation: NSObject, ObservableObject {
     private var sessionActive = false
     private var releaseSession: Task<Void, Never>?
 
+    /// Whether this recogniser may configure, activate and deactivate the
+    /// shared audio session. True on the Ask tab, where nobody else owns it.
+    ///
+    /// FALSE DURING A CALL, and that is the whole reason this exists.
+    /// `start()` set `.playAndRecord` / `.spokenAudio` with `.duckOthers` and
+    /// `.defaultToSpeaker`, and activated - which is a point-by-point undo of
+    /// what `CallService.configureAudioSession` deliberately chose:
+    ///
+    ///  - `.voiceChat` (echo cancellation, the mode a phone call wants) became
+    ///    `.spokenAudio`, so the caller heard ATARU's own answers fed back.
+    ///  - `.defaultToSpeaker` made the speaker the session's DEFAULT route, so
+    ///    clearing the override landed on the speaker again and the call
+    ///    screen's speaker toggle had no off position - the exact bug
+    ///    `configureAudioSession`'s comment says it exists to avoid.
+    ///  - `.allowBluetooth` was dropped, so AirPods fell back to the built-in
+    ///    microphone.
+    ///  - and it activated the session, which under CallKit is the system's
+    ///    job and fighting it loses the route.
+    ///
+    /// All of it landed on the FIRST turn of every call, because that is the
+    /// first `start()`. `AnswerPlayer` and `StreamingAnswerPlayer` each have
+    /// this same opt-out for the same reason; dictation was the one path that
+    /// still reached for the session mid-call.
+    var managesAudioSession = true
+
     /// Asks for microphone and speech permission.
     ///
     /// Static so onboarding can ask before any dictation object exists; the
@@ -255,13 +280,16 @@ final class SpeechDictation: NSObject, ObservableObject {
         // that gap was being paid on every single one.
         releaseSession?.cancel()
         releaseSession = nil
-        if !sessionActive {
+        // During a call the session belongs to CallKit and is already
+        // configured for voice; this only starts the engine on top of it.
+        if managesAudioSession, !sessionActive {
             do {
                 let audioSession = AVAudioSession.sharedInstance()
                 try audioSession.setCategory(.playAndRecord, mode: .spokenAudio,
                                              options: [.duckOthers, .defaultToSpeaker])
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
                 sessionActive = true
+                AudioSessionOwner.shared.markActive()
             } catch {
                 throw Failure.engine(error.localizedDescription)
             }
@@ -567,6 +595,9 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// call the next turn is seconds away, so the session is held briefly and
     /// released only if nothing else needs it.
     private func scheduleSessionRelease() {
+        // Never during a call: the session being released would be CallKit's,
+        // and deactivating it mid-call drops the route for everyone.
+        guard managesAudioSession else { return }
         releaseSession?.cancel()
         releaseSession = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))

@@ -34,6 +34,9 @@ final class CallSessionModel: ObservableObject {
     @Published private(set) var exchanges: [VoiceExchange] = []
     /// Mirrors `CallService.isMuted`, driven through `onMuteChanged`.
     @Published private(set) var isMuted = false
+    /// The system has the audio route - an alarm, Siri, a cellular call over
+    /// the top of this one. Held, not ended: see `setInterrupted`.
+    @Published private(set) var isInterrupted = false
 
     let dictation = SpeechDictation()
     let player = AnswerPlayer()
@@ -57,6 +60,12 @@ final class CallSessionModel: ObservableObject {
         // forces the loudspeaker on — the "speaker button does nothing" bug.
         player.managesAudioSession = false
         streamPlayer.managesAudioSession = false
+        // And the recogniser, which was the one path still reaching for the
+        // session mid-call: it set `.playAndRecord`/`.spokenAudio` with
+        // `.defaultToSpeaker`, no Bluetooth and no echo cancellation, and
+        // activated it - on the FIRST turn of every call. See
+        // `SpeechDictation.managesAudioSession`.
+        dictation.managesAudioSession = false
     }
 
     /// What drives the orb: the caller's voice while listening, ATARU's own
@@ -96,6 +105,10 @@ final class CallSessionModel: ObservableObject {
         stream = nil
         phase = .idle
         heard = ""
+        // The call is over, so a route the system had borrowed is no longer
+        // this session's problem. Left set, the next call's loop would park in
+        // the interrupted wait and never listen.
+        isInterrupted = false
     }
 
     // MARK: - The loop
@@ -140,6 +153,10 @@ final class CallSessionModel: ObservableObject {
         var emptyTurns = 0
         while !Task.isCancelled {
             guard let question = await listenForOneTurn() else {
+                // A turn the SYSTEM took away is not a caller who has walked
+                // off. Counting it would let a run of alarms spend the empty
+                // budget and hang up a call he is still on.
+                if isInterrupted { continue }
                 emptyTurns += 1
                 if emptyTurns >= Self.emptyTurnLimit {
                     onFarewell?()
@@ -185,12 +202,36 @@ final class CallSessionModel: ObservableObject {
         // up on its next pass, so one place decides when to record.
     }
 
+    /// The audio route was taken away, or handed back.
+    ///
+    /// Deliberately NOT `end()`. An interruption is temporary - a ten-second
+    /// alarm at 7:00 against a call at 7:00 is the collision this is for - and
+    /// ending the session would hang up the morning call over it. The turn
+    /// loop parks in the same wait `isMuted` uses and picks the conversation
+    /// back up when the route returns.
+    ///
+    /// Without this the loop kept listening to a microphone the system had
+    /// already stopped: it heard nothing for the full 20-second turn budget,
+    /// counted an empty turn, and three of those hang the call up.
+    func setInterrupted(_ interrupted: Bool) {
+        guard isInterrupted != interrupted else { return }
+        isInterrupted = interrupted
+        guard interrupted else { return }
+        // Whatever was mid-flight is gone with the route; drop it rather than
+        // letting a half-captured turn become a question.
+        dictation.cancel()
+        player.stop()
+        streamPlayer.stop()
+        if phase != .idle { phase = .idle }
+    }
+
     /// Records until the caller stops talking. Returns nil if the turn produced
     /// nothing, which ends the loop rather than spinning on an empty mic.
     private func listenForOneTurn() async -> String? {
         // Wait rather than record into a void. A muted call holds the line open
-        // and picks up the moment it is unmuted.
-        while isMuted, !Task.isCancelled {
+        // and picks up the moment it is unmuted - and an interrupted one waits
+        // in exactly the same place, for the same reason.
+        while isMuted || isInterrupted, !Task.isCancelled {
             if phase != .idle { phase = .idle }
             try? await Task.sleep(for: .milliseconds(200))
         }
@@ -222,8 +263,10 @@ final class CallSessionModel: ObservableObject {
         while !Task.isCancelled, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(120))
             // Muted mid-sentence: drop what was heard rather than answering
-            // half a question the user decided not to finish asking.
-            if isMuted { _ = dictation.stop(); return nil }
+            // half a question the user decided not to finish asking. An
+            // interruption mid-sentence is the same discard, and `run()` knows
+            // not to count it as a silent caller.
+            if isMuted || isInterrupted { _ = dictation.stop(); return nil }
 
             let current = dictation.transcript
             if current != lastTranscript {
