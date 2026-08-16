@@ -65,6 +65,20 @@ final class StreamingAnswerPlayer {
         // that is already armed but has not fired.
         AudioSessionOwner.shared.retain()
         sessionHeld = true
+        // ... and give it straight back if this method throws. Three sites
+        // below can: the two session calls, the format guard, and
+        // `engine.start()`. Each left the retain standing with no `teardown()`
+        // to ever undo it (teardown only runs once `isActive` is set, which is
+        // the last line here), so a single failed `begin` pinned the holder
+        // count above zero for the life of the process - and from then on
+        // NOTHING would ever deactivate the session again.
+        var opened = false
+        defer {
+            if !opened, sessionHeld {
+                sessionHeld = false
+                AudioSessionOwner.shared.release()
+            }
+        }
         if managesAudioSession {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
@@ -95,6 +109,8 @@ final class StreamingAnswerPlayer {
         inputEnded = false
         onDrained = nil
         isActive = true
+        // Past every throwing site: the hold is now teardown's to give back.
+        opened = true
     }
 
     /// Schedules one chunk of little-endian signed 16-bit PCM.
