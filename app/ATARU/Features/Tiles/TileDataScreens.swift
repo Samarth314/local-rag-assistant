@@ -5,6 +5,14 @@ import SwiftUI
 // JSON API (prod or dev, per TileBackend) with all-optional decoders - the
 // backends have documented failure variants where most keys vanish, so
 // nothing here force-unwraps a payload field.
+//
+// Which is also why every list below is keyed by POSITION rather than by a
+// field. `id: \.entity_id`, `id: \.slug`, `id: \.key` all read naturally and
+// all have the same defect against these decoders: the key is optional, so two
+// rows that arrive without one are both keyed `nil`, and a ForEach handed the
+// same id twice draws a single row. Silently losing a device, a workspace or a
+// lab marker is the failure mode, and it happens exactly when the payload is
+// already degraded.
 
 // MARK: - Shared bits
 
@@ -157,8 +165,10 @@ struct FinanceScreen: View {
                             Text(money(total))
                                 .font(.system(size: 34, weight: .thin))
                                 .foregroundStyle(Theme.textPrimary)
-                            ForEach((networth.breakdown ?? [])
-                                .filter { $0.family != nil }, id: \.family) { account in
+                            // By position. Two accounts in the same family
+                            // are one row when the family name is the id.
+                            ForEach(Array((networth.breakdown ?? []).enumerated()),
+                                    id: \.offset) { _, account in
                                 HStack {
                                     Text(account.family ?? "")
                                         .font(.ataruBody())
@@ -193,8 +203,11 @@ struct FinanceScreen: View {
                                 }
                             }
                             Chart {
-                                ForEach(Array(zip(months, totals).suffix(12)),
-                                        id: \.0) { month, total in
+                                // By position: a repeated month label would
+                                // otherwise draw one bar for two months.
+                                ForEach(Array(zip(months, totals).suffix(12).enumerated()),
+                                        id: \.offset) { _, pair in
+                                    let (month, total) = pair
                                     BarMark(
                                         x: .value("Month", String(month.suffix(2))),
                                         y: .value("Spend", total))
@@ -205,8 +218,8 @@ struct FinanceScreen: View {
                             .chartYAxis {
                                 AxisMarks { AxisValueLabel().font(.system(size: 9)) }
                             }
-                            ForEach((spending.latest_by_cat ?? []).prefix(6),
-                                    id: \.category) { row in
+                            ForEach(Array((spending.latest_by_cat ?? [])
+                                .prefix(6).enumerated()), id: \.offset) { _, row in
                                 HStack {
                                     Text(row.category ?? "")
                                         .font(.ataruBody())
@@ -232,7 +245,7 @@ struct FinanceScreen: View {
                                     .font(.ataruCaption())
                                     .foregroundStyle(Theme.textSecondary)
                             }
-                            ForEach(active, id: \.service) { sub in
+                            ForEach(Array(active.enumerated()), id: \.offset) { _, sub in
                                 HStack {
                                     Text(sub.service ?? "")
                                         .font(.ataruBody())
@@ -257,7 +270,7 @@ struct FinanceScreen: View {
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
         .task {
-            restore()
+            await restore()
             await load()
         }
     }
@@ -265,9 +278,9 @@ struct FinanceScreen: View {
     private var root: URL? { TileBackend.current(from: state).apiRoot(.finance) }
 
     /// Draw the last known numbers first, then go and check them.
-    private func restore() {
+    private func restore() async {
         guard payload == nil,
-              let cached = TileCache.load(FinanceDTO.Payload.self,
+              let cached = await TileCache.load(FinanceDTO.Payload.self,
                                           kind: "finance", for: root) else { return }
         payload = cached.payload
         cachedAt = cached.savedAt
@@ -284,7 +297,12 @@ struct FinanceScreen: View {
                 cachedAt = nil
             }
             TileCache.save(fresh, kind: "finance", for: root)
-        } catch { failed = true }
+        } catch {
+            // A load cancelled by the page closing, or by a newer one, has
+            // nothing to report. See TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return }
+            failed = true
+        }
     }
 
     private func money(_ value: Double) -> String {
@@ -391,7 +409,7 @@ struct HealthScreen: View {
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             SectionHeader(text: "Markers")
-                            ForEach(markers, id: \.key) { marker in
+                            ForEach(Array(markers.enumerated()), id: \.offset) { _, marker in
                                 HStack(spacing: Theme.Space.s) {
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(marker.name ?? "")
@@ -432,7 +450,7 @@ struct HealthScreen: View {
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             SectionHeader(text: "Active meds")
-                            ForEach(meds, id: \.med) { med in
+                            ForEach(Array(meds.enumerated()), id: \.offset) { _, med in
                                 VStack(alignment: .leading, spacing: 1) {
                                     Text("\(med.med ?? "") \(med.strength ?? "")")
                                         .font(.ataruBody())
@@ -483,7 +501,7 @@ struct HealthScreen: View {
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
         .task {
-            restore()
+            await restore()
             await load()
         }
     }
@@ -497,9 +515,9 @@ struct HealthScreen: View {
 
     private var root: URL? { TileBackend.current(from: state).apiRoot(.health) }
 
-    private func restore() {
+    private func restore() async {
         guard payload == nil,
-              let cached = TileCache.load(HealthDTO.Payload.self,
+              let cached = await TileCache.load(HealthDTO.Payload.self,
                                           kind: "health", for: root) else { return }
         payload = cached.payload
         cachedAt = cached.savedAt
@@ -516,7 +534,12 @@ struct HealthScreen: View {
                 cachedAt = nil
             }
             TileCache.save(fresh, kind: "health", for: root)
-        } catch { failed = true }
+        } catch {
+            // A load cancelled by the page closing, or by a newer one, has
+            // nothing to report. See TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return }
+            failed = true
+        }
     }
 }
 
@@ -549,7 +572,11 @@ private enum HomeDTO {
         let hvac_action: String?
         let humidity: Double?
 
-        var id: String { entity_id ?? name ?? UUID().uuidString }
+        /// Deterministic, always. This returned `UUID().uuidString` when both
+        /// keys were nil - a NEW id on every single access, so SwiftUI saw a
+        /// different row every time it read one and could never match a
+        /// thermostat to the card it had already drawn.
+        var id: String { entity_id ?? name ?? "unidentified-thermostat" }
 
         /// A band rather than a single setpoint. The POST contract carries one
         /// `temperature`, so a band cannot be set from here - the card shows it
@@ -667,7 +694,10 @@ struct HomeScreen: View {
                 // page to check. Nothing at all when the list is empty or
                 // absent - see HomeDTO.Climate.
                 if let climate = payload?.climate, !climate.isEmpty {
-                    ForEach(climate) { thermostat in
+                    // By position, not by id: two thermostats that both came
+                    // back without an entity_id share a fallback id, and a
+                    // ForEach given the same id twice draws one row.
+                    ForEach(Array(climate.enumerated()), id: \.offset) { _, thermostat in
                         climateCard(thermostat)
                     }
                 }
@@ -676,7 +706,11 @@ struct HomeScreen: View {
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             SectionHeader(text: "Devices")
-                            ForEach(devices, id: \.entity_id) { device in
+                            // By position: `entity_id` is optional, and two
+                            // rows missing it are both keyed nil - which
+                            // collapses them into one row on screen.
+                            ForEach(Array(devices.enumerated()),
+                                    id: \.offset) { _, device in
                                 HStack {
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(device.name ?? device.entity_id ?? "")
@@ -730,7 +764,9 @@ struct HomeScreen: View {
             // used to sit completely blank for the whole round trip - nothing
             // renders until `payload` is non-nil - which on a tailnet round
             // trip to the mini is exactly the "takes a moment" he reported.
-            if payload == nil, let cached = TileCache.load(HomeDTO.Payload.self, kind: "home", for: root) {
+            if payload == nil,
+               let cached = await TileCache.load(HomeDTO.Payload.self,
+                                                 kind: "home", for: root) {
                 payload = cached.payload
                 cachedAt = cached.savedAt
             }
@@ -774,6 +810,9 @@ struct HomeScreen: View {
             TileCache.save(fresh, kind: "home", for: root)
             return true
         } catch {
+            // A cancelled refresh is not a failure and must not draw one. See
+            // TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return false }
             withAnimation(.easeOut(duration: 0.2)) {
                 failure = error as? TileFetchError ?? .unreachable
             }
@@ -959,26 +998,96 @@ struct HomeScreen: View {
                 revertClimate(entity, note: error)
                 return
             }
-            // Silent reconcile. The verified object when the server nests one,
-            // otherwise a plain refresh - and if THAT fails the optimistic
-            // value stays, because the setpoint is known to have landed.
-            if reply.climate != nil {
-                await load()
-            } else if await load() == false {
-                return
-            }
-            guard !Task.isCancelled else { return }
+            // The verified object, USED. It was decoded, nil-tested, and then
+            // thrown away - the one thing in the reply that says what the
+            // thermostat actually is now.
+            if let confirmed = reply.climate { merge(confirmed) }
+            guard await settle(entity, temperature: temperature, mode: mode) else { return }
             withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                pendingTarget[entity] = nil
-                pendingMode[entity] = nil
+                // Only the fields this request was about, and only if a later
+                // tap has not moved them somewhere else.
+                if temperature != nil, pendingTarget[entity] == temperature {
+                    pendingTarget[entity] = nil
+                }
+                if mode != nil, pendingMode[entity] == mode {
+                    pendingMode[entity] = nil
+                }
             }
-        } catch is CancellationError {
-            return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !TileFetchError.isCancellation(error) else { return }
             revertClimate(entity, note: (error as? TileFetchError)?.refreshNote
                           ?? "That didn't reach the thermostat.")
         }
+    }
+
+    /// Refreshes until the server agrees with what was just asked for, or the
+    /// window runs out.
+    ///
+    /// THE SNAP-BACK. Home Assistant answers a write before the device has
+    /// settled, so the very next `/api/home` still reports the OLD state. The
+    /// optimistic value was cleared on that answer unconditionally, so the
+    /// switch (or the setpoint) jumped back to where it had been and then
+    /// flipped forward again a refresh later. Nothing was wrong except the
+    /// moment the app chose to stop believing the user.
+    ///
+    /// Returns false when the caller should leave the optimistic value alone:
+    /// the request was cancelled, or the refresh itself failed - the write is
+    /// known to have landed, and snapping the control back because a SEPARATE
+    /// request did not answer is a lie in the other direction.
+    private func settle(_ entity: String, temperature: Double? = nil,
+                        mode: String? = nil, switchedOn: Bool? = nil) async -> Bool {
+        let deadline = Date().addingTimeInterval(Self.settleWindow)
+        while true {
+            guard await load() else { return false }
+            guard !Task.isCancelled else { return false }
+            if agrees(entity, temperature: temperature, mode: mode,
+                      switchedOn: switchedOn) { return true }
+            // Past the window the server has said the same thing long enough
+            // that it is the answer, whatever was asked for.
+            guard Date() < deadline else { return true }
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return false }
+        }
+    }
+
+    /// How long the page will keep asking before it takes the server's word
+    /// for it. Long enough for a relay and a state report, short enough that a
+    /// control cannot sit wrong for a noticeable time.
+    private static let settleWindow: TimeInterval = 3
+
+    private func agrees(_ entity: String, temperature: Double?, mode: String?,
+                        switchedOn: Bool?) -> Bool {
+        if let switchedOn {
+            let device = payload?.devices?.first { $0.entity_id == entity }
+            return device?.state == (switchedOn ? "on" : "off")
+        }
+        guard let row = payload?.climate?.first(where: { $0.entity_id == entity })
+        else { return false }
+        if let temperature, row.target_temp != temperature { return false }
+        if let mode, row.hvac_mode != mode { return false }
+        return true
+    }
+
+    /// Puts a server-verified thermostat into the payload on screen.
+    private func merge(_ climate: HomeDTO.Climate) {
+        guard let payload, let list = payload.climate, let entity = climate.entity_id,
+              let index = list.firstIndex(where: { $0.entity_id == entity })
+        else { return }
+        var updated = list
+        updated[index] = climate
+        self.payload = HomeDTO.Payload(ok: payload.ok, error: payload.error,
+                                       devices: payload.devices, climate: updated)
+    }
+
+    /// Puts a server-verified device into the payload on screen.
+    private func merge(_ device: HomeDTO.Device) {
+        guard let payload, let devices = payload.devices, let entity = device.entity_id,
+              let index = devices.firstIndex(where: { $0.entity_id == entity })
+        else { return }
+        var updated = devices
+        updated[index] = device
+        self.payload = HomeDTO.Payload(ok: payload.ok, error: payload.error,
+                                       devices: updated, climate: payload.climate)
     }
 
     private func revertClimate(_ entity: String, note: String) {
@@ -1025,20 +1134,20 @@ struct HomeScreen: View {
                 revert(entity, note: error)
                 return
             }
-            // The switch already shows the right thing, so this refresh is
-            // only about the rest of the card - brightness, power draw. If it
-            // fails, the optimistic value STAYS: the toggle is known to have
-            // worked, and snapping the switch back because a separate request
-            // did not answer would be a lie in the other direction.
-            let refreshed = await load()
-            guard !Task.isCancelled, refreshed else { return }
+            // The verified device, USED. `ToggleReply.device` was decoded and
+            // never read once, so the one authoritative statement in the reply
+            // went in the bin and the switch waited on a refresh instead.
+            if let device = reply.device { merge(device) }
+            // The switch already shows the right thing, so the refresh below
+            // is about the rest of the row - brightness, power draw - and
+            // about waiting for the state to actually settle. See `settle`.
+            guard await settle(entity, switchedOn: on) else { return }
             withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
-                optimistic[entity] = nil
+                // Not if a later tap has already claimed this switch.
+                if optimistic[entity] == on { optimistic[entity] = nil }
             }
-        } catch is CancellationError {
-            return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !TileFetchError.isCancellation(error) else { return }
             revert(entity, note: (error as? TileFetchError)?.refreshNote
                    ?? "That didn't reach the device.")
         }
@@ -1159,7 +1268,7 @@ struct StatusScreen: View {
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             SectionHeader(text: "Services")
-                            ForEach(services, id: \.name) { service in
+                            ForEach(Array(services.enumerated()), id: \.offset) { _, service in
                                 HStack {
                                     Circle()
                                         .fill(service.up == true ? Theme.green : Theme.red)
@@ -1205,7 +1314,7 @@ struct StatusScreen: View {
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
         .task {
-            restore()
+            await restore()
             await load()
         }
     }
@@ -1223,9 +1332,9 @@ struct StatusScreen: View {
 
     private var root: URL? { TileBackend.current(from: state).apiRoot(.status) }
 
-    private func restore() {
+    private func restore() async {
         guard payload == nil,
-              let cached = TileCache.load(StatusDTO.Payload.self,
+              let cached = await TileCache.load(StatusDTO.Payload.self,
                                           kind: "status", for: root) else { return }
         payload = cached.payload
         cachedAt = cached.savedAt
@@ -1242,7 +1351,12 @@ struct StatusScreen: View {
                 cachedAt = nil
             }
             TileCache.save(fresh, kind: "status", for: root)
-        } catch { failed = true }
+        } catch {
+            // A load cancelled by the page closing, or by a newer one, has
+            // nothing to report. See TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return }
+            failed = true
+        }
     }
 }
 
@@ -1305,7 +1419,7 @@ struct JournalScreen: View {
                     }
                 }
 
-                ForEach(entries, id: \.path) { entry in
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
                     NavigationLink {
                         JournalEntryScreen(path: entry.path ?? "")
                     } label: {
@@ -1361,16 +1475,16 @@ struct JournalScreen: View {
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
         .task {
-            restore()
+            await restore()
             await load()
         }
     }
 
     private var root: URL? { TileBackend.current(from: state).apiRoot(.journal) }
 
-    private func restore() {
+    private func restore() async {
         guard entries.isEmpty,
-              let cached = TileCache.load(JournalDTO.List.self,
+              let cached = await TileCache.load(JournalDTO.List.self,
                                           kind: "journal", for: root) else { return }
         entries = cached.payload.entries ?? []
         cachedAt = cached.savedAt
@@ -1387,7 +1501,12 @@ struct JournalScreen: View {
                 cachedAt = nil
             }
             TileCache.save(list, kind: "journal", for: root)
-        } catch { failed = true }
+        } catch {
+            // A load cancelled by the page closing, or by a newer one, has
+            // nothing to report. See TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return }
+            failed = true
+        }
     }
 }
 
@@ -1395,17 +1514,35 @@ private struct JournalEntryScreen: View {
     @EnvironmentObject private var state: AppState
     let path: String
     @State private var detail: JournalDTO.Detail?
+    /// Nil until the fetch has answered one way or the other.
+    ///
+    /// The `try?` this replaced rendered an entry that failed to load as an
+    /// entry with no date and no text - a blank page, indistinguishable from a
+    /// journal entry that is genuinely empty, on the screen where "it is gone"
+    /// is the worst thing the app could imply.
+    @State private var failure: String?
+    @State private var isLoading = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
-                Text(detail?.date ?? "")
-                    .font(.ataruMono(11))
-                    .foregroundStyle(Theme.textTertiary)
-                Text(detail?.body ?? "")
-                    .font(.ataruBody())
-                    .foregroundStyle(Theme.textPrimary)
-                    .textSelection(.enabled)
+                if let detail {
+                    Text(detail.date ?? "")
+                        .font(.ataruMono(11))
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(detail.body ?? "")
+                        .font(.ataruBody())
+                        .foregroundStyle(Theme.textPrimary)
+                        .textSelection(.enabled)
+                } else if let failure {
+                    ErrorBanner(message: failure)
+                } else if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.textTertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Theme.Space.l)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(Theme.Space.screen)
@@ -1413,15 +1550,33 @@ private struct JournalEntryScreen: View {
         .ataruBackdrop()
         .navigationTitle(detail?.title ?? "Entry")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            guard let root = TileBackend.current(from: state).apiRoot(.journal),
-                  var comps = URLComponents(
-                    url: root.appending(path: "api/entry"),
-                    resolvingAgainstBaseURL: false) else { return }
-            comps.queryItems = [URLQueryItem(name: "path", value: path)]
-            guard let url = comps.url else { return }
-            detail = try? await TileFetch.get(JournalDTO.Detail.self, url)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard let root = TileBackend.current(from: state).apiRoot(.journal),
+              var comps = URLComponents(
+                url: root.appending(path: "api/entry"),
+                resolvingAgainstBaseURL: false) else {
+            isLoading = false
+            failure = ScreenState.loadFailed
+            return
         }
+        comps.queryItems = [URLQueryItem(name: "path", value: path)]
+        guard let url = comps.url else {
+            isLoading = false
+            failure = ScreenState.loadFailed
+            return
+        }
+        do {
+            detail = try await TileFetch.get(JournalDTO.Detail.self, url)
+            failure = nil
+        } catch {
+            guard !TileFetchError.isCancellation(error) else { return }
+            failure = (error as? TileFetchError)?.errorDescription
+                ?? ScreenState.loadFailed
+        }
+        isLoading = false
     }
 }
 
@@ -1431,10 +1586,25 @@ private struct JournalComposeScreen: View {
     @State private var title = ""
     @State private var body_ = ""
     @State private var saving = false
+    /// Why the last save did not happen. On screen, above the text, which is
+    /// still exactly where the user left it.
+    @State private var failure: String?
+
+    /// Anything typed. A swipe-down cannot take an unsaved entry with it.
+    private var isDirty: Bool {
+        title.nilIfBlank != nil || body_.nilIfBlank != nil
+    }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: Theme.Space.s) {
+                if let failure {
+                    Label(failure, systemImage: "exclamationmark.triangle")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 TextField("Title", text: $title)
                     .font(.ataruLabel())
                     .padding(Theme.Space.m)
@@ -1467,16 +1637,42 @@ private struct JournalComposeScreen: View {
             }
         }
         .preferredColorScheme(.dark)
+        // A journal entry is typed, not fetched: a swipe that dismisses this
+        // sheet while there is text in it destroys the only copy. Cancel is
+        // still one tap away and is the deliberate way out.
+        .interactiveDismissDisabled(isDirty)
     }
 
+    /// Saves, and says so when it does not.
+    ///
+    /// This used to be `try?` with a dismiss on `ok == true`, which meant a
+    /// failed save did NOTHING AT ALL: no message, no dismissal, a Save button
+    /// that went back to saying "Save". The only reading available to the user
+    /// was that the tap had missed.
     private func save() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.journal) else { return }
+        guard let root = TileBackend.current(from: state).apiRoot(.journal) else {
+            failure = "No journal server is configured - check the address in Settings."
+            return
+        }
         saving = true
+        failure = nil
         defer { saving = false }
-        let reply = try? await TileFetch.post(
-            JournalDTO.CreateReply.self, root.appending(path: "api/entry"),
-            body: JournalDTO.CreateBody(title: title, body: body_))
-        if reply?.ok == true { dismiss() }
+        do {
+            let reply = try await TileFetch.post(
+                JournalDTO.CreateReply.self, root.appending(path: "api/entry"),
+                body: JournalDTO.CreateBody(title: title, body: body_))
+            guard reply.ok == true else {
+                failure = "The server didn't accept the entry. It is still here."
+                return
+            }
+            dismiss()
+        } catch {
+            guard !TileFetchError.isCancellation(error) else { return }
+            // The text stays on screen, always. Whatever went wrong, the one
+            // thing that must not happen is losing what was written.
+            failure = (error as? TileFetchError)?.errorDescription
+                ?? "Couldn't save the entry. It is still here."
+        }
     }
 }
 
@@ -1557,7 +1753,7 @@ struct WorkspacesScreen: View {
                     }
                 }
 
-                ForEach(spaces, id: \.slug) { space in
+                ForEach(Array(spaces.enumerated()), id: \.offset) { _, space in
                     NavigationLink {
                         WorkspaceDetailScreen(slug: space.slug ?? "")
                     } label: {
@@ -1601,16 +1797,16 @@ struct WorkspacesScreen: View {
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
         .task {
-            restore()
+            await restore()
             await load()
         }
     }
 
     private var root: URL? { TileBackend.current(from: state).apiRoot(.workspaces) }
 
-    private func restore() {
+    private func restore() async {
         guard spaces.isEmpty,
-              let cached = TileCache.load(SpacesDTO.List.self,
+              let cached = await TileCache.load(SpacesDTO.List.self,
                                           kind: "workspaces", for: root) else { return }
         spaces = cached.payload.workspaces ?? []
         cachedAt = cached.savedAt
@@ -1627,7 +1823,12 @@ struct WorkspacesScreen: View {
                 cachedAt = nil
             }
             TileCache.save(list, kind: "workspaces", for: root)
-        } catch { failed = true }
+        } catch {
+            // A load cancelled by the page closing, or by a newer one, has
+            // nothing to report. See TileFetchError.cancelled.
+            guard !TileFetchError.isCancellation(error) else { return }
+            failed = true
+        }
     }
 }
 
@@ -1636,10 +1837,35 @@ private struct WorkspaceDetailScreen: View {
     let slug: String
     @State private var detail: SpacesDTO.Detail?
     @State private var newTask = ""
+    /// What went wrong last - loading the workspace, or changing a task. Same
+    /// line for both, since there is only ever one of them on screen.
+    @State private var failure: String?
+    @State private var isLoading = true
+    /// True while a task add or toggle is in flight, so a second tap cannot
+    /// race the first.
+    @State private var isMutating = false
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
+                if let failure {
+                    // An empty page and a failed one are not the same event.
+                    // `try?` made them identical: a workspace that would not
+                    // load rendered as a workspace with no readme, no tasks
+                    // and no files.
+                    if detail == nil {
+                        ErrorBanner(message: failure)
+                    } else {
+                        InlineNote(text: failure)
+                    }
+                } else if detail == nil, isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(Theme.textTertiary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, Theme.Space.l)
+                }
+
                 if let readme = detail?.readme, !readme.isEmpty {
                     ATCard {
                         Text(readme)
@@ -1653,7 +1879,8 @@ private struct WorkspaceDetailScreen: View {
                 ATCard {
                     VStack(alignment: .leading, spacing: Theme.Space.s) {
                         SectionHeader(text: "Tasks")
-                        ForEach(detail?.tasks ?? [], id: \.id) { task in
+                        ForEach(Array((detail?.tasks ?? []).enumerated()),
+                                id: \.offset) { _, task in
                             HStack(spacing: Theme.Space.s) {
                                 Button {
                                     Task { await taskAction("toggle", index: task.id) }
@@ -1663,6 +1890,11 @@ private struct WorkspaceDetailScreen: View {
                                         .foregroundStyle(task.done == true
                                                          ? Theme.green : Theme.textTertiary)
                                 }
+                                // The server addresses tasks by their place in
+                                // the list, so a second tap landing while the
+                                // first is in flight would carry an index the
+                                // reply is about to invalidate.
+                                .disabled(isMutating)
                                 Text(task.text ?? "")
                                     .font(.ataruBody())
                                     .foregroundStyle(task.done == true
@@ -1682,6 +1914,7 @@ private struct WorkspaceDetailScreen: View {
                                     .foregroundStyle(Theme.cyan)
                             }
                         }
+                        .disabled(isMutating)
                     }
                     .padding(Theme.Space.m)
                 }
@@ -1711,7 +1944,8 @@ private struct WorkspaceDetailScreen: View {
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.s) {
                             SectionHeader(text: "Files")
-                            ForEach(resources, id: \.rel) { resource in
+                            ForEach(Array(resources.enumerated()),
+                                    id: \.offset) { _, resource in
                                 Label(resource.name ?? "",
                                       systemImage: "doc")
                                     .font(.ataruCaption())
@@ -1730,24 +1964,52 @@ private struct WorkspaceDetailScreen: View {
         .task { await load() }
     }
 
+    /// The field is cleared by the SERVER accepting the task, not by the tap.
+    ///
+    /// It used to be cleared first, so a POST that failed took the typed text
+    /// with it and left nothing anywhere - not in the list, not in the field,
+    /// and no message. Whatever was typed stays put until it is somewhere else.
     private func submitTask() {
         let text = newTask.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        newTask = ""
-        Task { await taskAction("add", text: text) }
+        guard !text.isEmpty, !isMutating else { return }
+        Task {
+            if await taskAction("add", text: text) { newTask = "" }
+        }
     }
 
+    /// Adds or toggles a task. Returns whether the server took it.
+    ///
+    /// The `try?` this replaced swallowed everything: tapping a checkbox
+    /// against an unreachable server redrew the same unticked box and said
+    /// nothing, which reads as a checkbox that does not work.
+    @discardableResult
     private func taskAction(_ action: String, text: String? = nil,
-                            index: Int? = nil) async {
-        guard let root = TileBackend.current(from: state).apiRoot(.workspaces) else { return }
-        let reply = try? await TileFetch.post(
-            SpacesDTO.TaskReply.self, root.appending(path: "api/workspace/task"),
-            body: SpacesDTO.TaskBody(slug: slug, action: action,
-                                     text: text, index: index))
-        if let tasks = reply?.tasks {
+                            index: Int? = nil) async -> Bool {
+        guard let root = TileBackend.current(from: state).apiRoot(.workspaces) else {
+            failure = ScreenState.loadFailed
+            return false
+        }
+        isMutating = true
+        defer { isMutating = false }
+        do {
+            let reply = try await TileFetch.post(
+                SpacesDTO.TaskReply.self, root.appending(path: "api/workspace/task"),
+                body: SpacesDTO.TaskBody(slug: slug, action: action,
+                                         text: text, index: index))
+            guard let tasks = reply.tasks else {
+                failure = "The server didn't return the updated list."
+                return false
+            }
             detail = SpacesDTO.Detail(name: detail?.name, readme: detail?.readme,
                                       notes: detail?.notes, tasks: tasks,
                                       resources: detail?.resources)
+            failure = nil
+            return true
+        } catch {
+            guard !TileFetchError.isCancellation(error) else { return false }
+            failure = (error as? TileFetchError)?.refreshNote
+                ?? "That didn't reach the workspace."
+            return false
         }
     }
 
@@ -1755,9 +2017,25 @@ private struct WorkspaceDetailScreen: View {
         guard let root = TileBackend.current(from: state).apiRoot(.workspaces),
               var comps = URLComponents(
                 url: root.appending(path: "api/workspace"),
-                resolvingAgainstBaseURL: false) else { return }
+                resolvingAgainstBaseURL: false) else {
+            isLoading = false
+            failure = ScreenState.loadFailed
+            return
+        }
         comps.queryItems = [URLQueryItem(name: "slug", value: slug)]
-        guard let url = comps.url else { return }
-        detail = try? await TileFetch.get(SpacesDTO.Detail.self, url)
+        guard let url = comps.url else {
+            isLoading = false
+            failure = ScreenState.loadFailed
+            return
+        }
+        do {
+            detail = try await TileFetch.get(SpacesDTO.Detail.self, url)
+            failure = nil
+        } catch {
+            guard !TileFetchError.isCancellation(error) else { return }
+            failure = (error as? TileFetchError)?.errorDescription
+                ?? ScreenState.loadFailed
+        }
+        isLoading = false
     }
 }
