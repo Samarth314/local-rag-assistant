@@ -22,6 +22,15 @@ struct VoiceView: View {
     @Binding private var composerActive: Bool
     /// How the orb's accessibility actions navigate. See `orbControl`.
     @Environment(\.openTile) private var openTile
+    @Environment(\.scenePhase) private var scenePhase
+    /// "I'm up" - see MorningConfirm. Lives here as well as on the call screen
+    /// because a call he half-answered may already be hung up, and the app is
+    /// the other place a half-awake hand goes.
+    @StateObject private var morning = MorningConfirmModel()
+    /// The user's text size, as a multiplier. Everything on this screen that
+    /// has a fixed height has to grow with it or it clips its own contents at
+    /// the accessibility sizes.
+    @ScaledMetric(relativeTo: .body) private var textScale: CGFloat = 1
 
     init(composerActive: Binding<Bool> = .constant(false)) {
         // Replaced in `.task` once the environment's service is known; a
@@ -79,18 +88,46 @@ struct VoiceView: View {
                 // duration, so the composer travels up with it rather than
                 // arriving after it.
                 GeometryReader { geo in
+                    // THE HEIGHT THE KEYBOARD LEFT BEHIND, and what fits in
+                    // it. Shrinking the frame was never enough on its own -
+                    // the fixed blocks inside it added up to more than the
+                    // remaining height, a frame does not clip, and the bottom
+                    // of the column (the composer) was drawn under the
+                    // keyboard. AskMetrics decides what yields. See there.
+                    let available = max(160, geo.size.height - keyboard.overlap)
+                    let isLandscape = geo.size.width > geo.size.height
+                    let metrics = isLandscape
+                        ? AskMetrics.landscape(available: available,
+                                               focused: composerFocused,
+                                               scale: textScale)
+                        : AskMetrics.portrait(available: available,
+                                              focused: composerFocused,
+                                              hasExchanges: !model.exchanges.isEmpty,
+                                              scale: textScale)
                     Group {
-                        if geo.size.width > geo.size.height {
-                            landscapeLayout
+                        if isLandscape {
+                            landscapeLayout(metrics)
                         } else {
-                            portraitLayout
+                            portraitLayout(metrics)
                         }
                     }
-                    .frame(width: geo.size.width,
-                           height: max(160, geo.size.height - keyboard.overlap),
+                    .frame(width: geo.size.width, height: available,
                            alignment: .top)
                     .animation(.easeOut(duration: keyboard.duration),
                                value: keyboard.overlap)
+                    .onChange(of: keyboard.overlap) { _, overlap in
+                        keyboardLog.debug("""
+                            overlap=\(overlap, privacy: .public)                             geo=\(geo.size.height, privacy: .public)                             available=\(available, privacy: .public)                             orb=\(metrics.orb, privacy: .public)                             transcript=\(metrics.transcript, privacy: .public)                             status=\(metrics.status, privacy: .public)                             content=\(metrics.contentHeight, privacy: .public)
+                            """)
+                        // The one condition that means the composer is under
+                        // the keyboard again. Loud, and persisted, because it
+                        // is the whole bug.
+                        if metrics.contentHeight + AskMetrics.chrome > available + 1 {
+                            keyboardLog.error("""
+                                Ask content \(metrics.contentHeight + AskMetrics.chrome, privacy: .public)pt                                 exceeds \(available, privacy: .public)pt - the composer is covered
+                                """)
+                        }
+                    }
                 }
                 .ignoresSafeArea(.keyboard, edges: .bottom)
             }
@@ -122,6 +159,13 @@ struct VoiceView: View {
         }
         .task(id: state.serviceGeneration) {
             model.update(service: state.service)
+            morning.update(service: state.service)
+            await morning.refresh()
+        }
+        // The window opens and closes while the app is closed, so coming back
+        // is exactly when the answer may have changed.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await morning.refresh() } }
         }
         .onChange(of: composerFocused) { _, focused in
             withAnimation(.easeOut(duration: 0.18)) { composerActive = focused }
@@ -136,18 +180,28 @@ struct VoiceView: View {
 
     // MARK: - Layouts
 
-    /// The original single-column screen.
-    private var portraitLayout: some View {
+    /// The original single-column screen, sized by `AskMetrics`.
+    ///
+    /// Every block takes the height it is given rather than one it declares,
+    /// which is the whole fix: the column can no longer be taller than the
+    /// space it has, so nothing can be pushed under the keyboard.
+    private func portraitLayout(_ metrics: AskMetrics) -> some View {
         VStack(spacing: Theme.Space.l) {
             VStack(spacing: Theme.Space.l) {
                 FreshnessBanner(state: state.freshness)
                     .padding(.horizontal, Theme.Space.screen)
 
+                MorningConfirmBanner(model: morning)
+                    .padding(.horizontal, Theme.Space.screen)
+
                 Spacer(minLength: 0)
 
-                orbControl
+                if metrics.showsOrb {
+                    orbControl(side: metrics.orb)
+                }
 
-                statusLine
+                statusLine(height: metrics.status,
+                           showsMessage: metrics.showsStatusMessage)
 
                 Spacer(minLength: 0)
             }
@@ -156,33 +210,31 @@ struct VoiceView: View {
             typeField
                 .padding(.bottom, Theme.Space.xs)
 
-            // With the keyboard up there is no room for this AND the composer.
-            // The fixed costs above - a 260pt orb, a 54pt status line, a 52pt
-            // composer - already overflow the screen before any keyboard
-            // exists, and a 120pt BLANK placeholder sitting under the composer
-            // pushed the field itself below the fold. Drop the placeholder
-            // while typing and cap a real transcript, so the field the
-            // keyboard is attached to is actually visible.
-            if !(composerFocused && model.exchanges.isEmpty) {
-                transcript(maxHeight: composerFocused ? 140 : 260)
+            if metrics.showsTranscript {
+                transcript(maxHeight: metrics.transcript)
                     .dismissesKeyboard(when: composerFocused) { composerFocused = false }
             }
         }
         .padding(.top, Theme.Space.s)
-        .animation(.easeOut(duration: 0.18), value: composerFocused)
+        .animation(Theme.quick, value: composerFocused)
     }
 
     /// Landscape: orb and status on the left, conversation on the right. The
     /// portrait stack's fixed heights (260 orb + 54 status + composer + 260
     /// transcript) do not fit a phone on its side; two columns do.
-    private var landscapeLayout: some View {
+    private func landscapeLayout(_ metrics: AskMetrics) -> some View {
         HStack(spacing: 0) {
             VStack(spacing: Theme.Space.s) {
                 Spacer(minLength: 0)
-                orbControl
-                    .scaleEffect(0.72)
-                    .frame(width: 190, height: 190)
-                statusLine
+                // Sized, not scaled. `scaleEffect` does not change the space a
+                // view takes, so a 260pt orb drawn at 0.72 still LAID OUT as
+                // 260 and pushed the column past the screen on its side. The
+                // orb takes a side now and renders to it.
+                if metrics.showsOrb {
+                    orbControl(side: metrics.orb)
+                }
+                statusLine(height: metrics.status,
+                           showsMessage: metrics.showsStatusMessage)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: 250)
@@ -191,9 +243,13 @@ struct VoiceView: View {
 
             VStack(spacing: Theme.Space.s) {
                 FreshnessBanner(state: state.freshness)
+                MorningConfirmBanner(model: morning)
                 transcript(maxHeight: .infinity)
                     .dismissesKeyboard(when: composerFocused) { composerFocused = false }
                 Spacer(minLength: 0)
+                // Pinned to the bottom of a column that is itself framed to
+                // the height the keyboard left, so it is above the keyboard by
+                // construction.
                 typeField
                     .padding(.bottom, Theme.Space.xs)
             }
@@ -218,8 +274,8 @@ struct VoiceView: View {
     /// On the orb rather than anywhere else because it is the one element on
     /// this screen a VoiceOver user is certain to land on, and because it is
     /// already the app's "this is ATARU" object.
-    private var orbControl: some View {
-        OrbView(phase: model.phase) { [weak model] in
+    private func orbControl(side: CGFloat) -> some View {
+        OrbView(phase: model.phase, side: side) { [weak model] in
             model?.orbLevel ?? 0
         }
         .contentShape(Circle())
@@ -256,31 +312,50 @@ struct VoiceView: View {
         }
     }
 
-    private var statusLine: some View {
+    /// The phase, and what is being heard under it.
+    ///
+    /// `showsMessage` is off when the screen is too short for both - see
+    /// AskMetrics. What survives is the phase, because "Listening" is the part
+    /// that answers "is it hearing me"; the line under it is a hint, and a
+    /// hint is what a short screen can afford to lose. The one exception is a
+    /// failure, which is never dropped: an error nobody is shown is worse than
+    /// a cramped screen.
+    private func statusLine(height: CGFloat, showsMessage: Bool) -> some View {
         VStack(spacing: Theme.Space.xs) {
             Text(model.phase.label)
                 .font(.ataruTitle())
                 .foregroundStyle(Theme.textPrimary)
                 .contentTransition(.opacity)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
 
-            Group {
-                if model.phase == .listening, !model.dictation.transcript.isEmpty {
-                    Text(model.dictation.transcript)
-                        .foregroundStyle(Theme.textSecondary)
-                } else if case .failed(let message) = model.phase {
-                    Text(message)
-                        .foregroundStyle(Theme.amber)
-                } else {
-                    Text(hint)
-                        .foregroundStyle(Theme.textTertiary)
+            if showsMessage || isFailed {
+                Group {
+                    if model.phase == .listening, !model.dictation.transcript.isEmpty {
+                        Text(model.dictation.transcript)
+                            .foregroundStyle(Theme.textSecondary)
+                    } else if case .failed(let message) = model.phase {
+                        Text(message)
+                            .foregroundStyle(Theme.amber)
+                    } else {
+                        Text(hint)
+                            .foregroundStyle(Theme.textTertiary)
+                    }
                 }
+                .font(.ataruCaption())
+                .multilineTextAlignment(.center)
+                .frame(maxHeight: .infinity, alignment: .top)
+                .padding(.horizontal, Theme.Space.l)
             }
-            .font(.ataruCaption())
-            .multilineTextAlignment(.center)
-            .frame(minHeight: 54, alignment: .top)
-            .padding(.horizontal, Theme.Space.l)
         }
-        .animation(.easeInOut(duration: 0.2), value: model.phase)
+        .frame(height: height, alignment: .top)
+        .clipped()
+        .animation(Theme.quick, value: model.phase)
+    }
+
+    private var isFailed: Bool {
+        if case .failed = model.phase { return true }
+        return false
     }
 
     /// Demo mode says so; live mode says nothing.
@@ -330,7 +405,7 @@ struct VoiceView: View {
                 .accessibilityIdentifier("submit-question")
             }
             .padding(.horizontal, Theme.Space.m)
-            .frame(minHeight: Theme.minHitTarget + 8)
+            .frame(minHeight: (Theme.minHitTarget + 8) * min(max(textScale, 1), 2.4))
             .background {
                 RoundedRectangle(cornerRadius: Theme.Radius.large, style: .continuous)
                     .fill(Theme.surface)
