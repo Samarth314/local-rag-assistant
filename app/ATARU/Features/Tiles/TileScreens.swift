@@ -155,6 +155,8 @@ enum TileFetch {
                                   timeout: TimeInterval = defaultTimeout) async throws -> T {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout
+        // These went out bare until now. See ATARUAuth.
+        ATARUAuth.stamp(&request)
         return try await run(type, request, timeout: timeout)
     }
 
@@ -167,6 +169,7 @@ enum TileFetch {
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(body)
+        ATARUAuth.stamp(&request)
         return try await run(type, request, timeout: timeout)
     }
 

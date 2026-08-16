@@ -83,10 +83,17 @@ final class AppState: ObservableObject {
     private func rebuildService() {
         switch configuration.mode {
         case .demo:
+            // Demo talks to nothing, so nothing may carry a token.
+            ATARUAuth.configure(baseURL: nil, tokenProvider: { nil })
             service = DemoATARUService()
             connection = .connected("demo")
         case .live:
             let store = tokenStore
+            // Re-set on every rebuild, which is what keeps the tile screens
+            // pointed at the same server and credential as the assistant when
+            // Settings changes the backend.
+            ATARUAuth.configure(baseURL: configuration.baseURL,
+                                tokenProvider: { store.token })
             do {
                 service = try LiveATARUService(configuration: configuration,
                                                tokenProvider: { store.token })
