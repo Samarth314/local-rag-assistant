@@ -14,6 +14,10 @@ struct VoiceView: View {
     /// through this one flag; before it existed nothing in the app could
     /// resign the field and the keyboard stayed up forever.
     @FocusState private var composerFocused: Bool
+    /// A press is already opening the microphone. See the orb's drag gesture:
+    /// `onChanged` fires per touch report and `beginListening` is async, so
+    /// without this a single press starts it several times over.
+    @State private var isStartingListen = false
     /// Measured, not assumed - see KeyboardInset for why the automatic
     /// avoidance cannot reach this screen.
     @StateObject private var keyboard = KeyboardInset()
@@ -287,11 +291,31 @@ struct VoiceView: View {
         .pressMenuExclusion()
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
+                // `onChanged` fires on EVERY movement of the finger, not once
+                // per press, and `beginListening` is async - permission check,
+                // audio session, engine start - so `phase` does not reach
+                // `.listening` for tens of milliseconds. Every touch report in
+                // that window passed both guards and started another
+                // concurrent open of the microphone.
+                //
+                // `isStartingListen` is the missing half: the guard has to
+                // cover the work in flight, not just the state it eventually
+                // produces. Cleared by the same release that stops the turn,
+                // so a gesture that ends before the mic opens cannot leave it
+                // latched.
                 .onChanged { _ in
-                    guard model.canRecord, model.phase != .listening else { return }
-                    Task { await model.beginListening() }
+                    guard !isStartingListen, model.canRecord,
+                          model.phase != .listening else { return }
+                    isStartingListen = true
+                    Task {
+                        await model.beginListening()
+                        isStartingListen = false
+                    }
                 }
-                .onEnded { _ in model.endListening() }
+                .onEnded { _ in
+                    isStartingListen = false
+                    model.endListening()
+                }
         )
         .accessibilityElement()
         .accessibilityLabel("Ask a question")

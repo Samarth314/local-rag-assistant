@@ -84,15 +84,38 @@ final class MorningConfirmModel: ObservableObject {
         }
     }
 
-    /// What the surface says after a tap. Nil while there is nothing to say.
+    /// What the surface says after a tap, when the tap SETTLED something.
+    ///
+    /// A failure settles nothing, so it is deliberately not here - see
+    /// `failureMessage`. It used to be, and that was the dead end: the
+    /// acknowledgement replaced the button, so the one outcome that needs
+    /// another tap was the one outcome with nothing left to tap. At 7am
+    /// against a tailnet that is not up yet, it is also the likeliest outcome.
     var acknowledgement: String? {
         switch phase {
-        case .idle, .sending:    return nil
-        case .confirmed:         return "Good morning. No more calls."
-        case .nothingToConfirm:  return "No call to confirm right now."
-        case .failed:            return "Couldn't reach ATARU. Try again."
+        case .idle, .sending, .failed: return nil
+        case .confirmed:               return "Good morning. No more calls."
+        case .nothingToConfirm:        return "No call to confirm right now."
         }
     }
+
+    /// Shown ALONGSIDE the button, never instead of it.
+    var failureMessage: String? {
+        phase == .failed ? "Couldn't reach ATARU." : nil
+    }
+
+    /// What the button says. A retry has to look like a retry, or a half-awake
+    /// thumb reads the unchanged "I'm up" as a button that did nothing.
+    var actionTitle: String { phase == .failed ? "Try again" : "I'm up" }
+
+    var actionIcon: String {
+        phase == .failed ? "arrow.clockwise" : "sun.horizon.fill"
+    }
+
+    /// Whether a tap is still worth offering. Re-attemptable indefinitely on
+    /// failure: the ladder is still ringing, so there is still something to
+    /// confirm, however many times the network has refused.
+    var isActionable: Bool { acknowledgement == nil }
 
     var isDone: Bool { phase == .confirmed }
 }
@@ -108,7 +131,16 @@ struct MorningConfirmButton: View {
     @ObservedObject var model: MorningConfirmModel
 
     var body: some View {
-        Group {
+        VStack(spacing: Theme.Space.xs) {
+            // Above the button, not in place of it. The tap is still available
+            // and still means the same thing.
+            if let failure = model.failureMessage {
+                Label(failure, systemImage: "exclamationmark.circle")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.amber)
+                    .transition(.opacity)
+            }
+
             if let acknowledgement = model.acknowledgement {
                 Label(acknowledgement, systemImage: model.isDone
                       ? "checkmark.circle.fill" : "exclamationmark.circle")
@@ -120,8 +152,12 @@ struct MorningConfirmButton: View {
                     Task { await model.confirm() }
                 } label: {
                     HStack(spacing: Theme.Space.xs) {
-                        Image(systemName: "sun.horizon.fill")
-                        Text("I'm up")
+                        Image(systemName: model.actionIcon)
+                            // The icon swap IS the state: a retry that looks
+                            // identical to the first attempt reads as a button
+                            // that did nothing.
+                            .contentTransition(.symbolEffect(.replace))
+                        Text(model.actionTitle)
                     }
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Theme.onAccent)
@@ -134,7 +170,7 @@ struct MorningConfirmButton: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.phase == .sending)
-                .accessibilityLabel("I'm up")
+                .accessibilityLabel(model.actionTitle)
                 .accessibilityHint("Tells ATARU you are awake so it stops calling back.")
                 .transition(.opacity)
             }
@@ -156,19 +192,24 @@ struct MorningConfirmBanner: View {
 
     var body: some View {
         Group {
-            if model.isOffered || model.acknowledgement != nil {
+            // A failed attempt keeps the banner up even if the offer poll has
+            // gone quiet: the ladder is still ringing and the tap still needs
+            // somewhere to live.
+            if model.isOffered || model.acknowledgement != nil || model.failureMessage != nil {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: model.isDone ? "checkmark.circle.fill"
-                                                   : "sun.horizon.fill")
+                          : (model.failureMessage != nil ? "exclamationmark.circle"
+                                                         : "sun.horizon.fill"))
                         .font(.system(size: 13, weight: .semibold))
-                    Text(model.acknowledgement ?? "ATARU is calling this morning.")
+                    Text(model.acknowledgement ?? model.failureMessage
+                         ?? "ATARU is calling this morning.")
                         .font(.ataruCaption())
                     Spacer(minLength: Theme.Space.xs)
-                    if model.acknowledgement == nil {
+                    if model.isActionable {
                         Button {
                             Task { await model.confirm() }
                         } label: {
-                            Text("I'm up")
+                            Text(model.actionTitle)
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Theme.onAccent)
                                 .padding(.horizontal, Theme.Space.s)
@@ -177,11 +218,13 @@ struct MorningConfirmBanner: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(model.phase == .sending)
-                        .accessibilityLabel("I'm up")
+                        .accessibilityLabel(model.actionTitle)
                         .accessibilityHint("Tells ATARU you are awake so it stops calling back.")
                     }
                 }
-                .foregroundStyle(model.isDone ? Theme.green : Theme.textSecondary)
+                .foregroundStyle(model.isDone ? Theme.green
+                                 : (model.failureMessage != nil ? Theme.amber
+                                                                : Theme.textSecondary))
                 .padding(.horizontal, Theme.Space.s)
                 .padding(.vertical, Theme.Space.xs)
                 .background {
