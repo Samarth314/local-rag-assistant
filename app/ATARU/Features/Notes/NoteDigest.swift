@@ -13,6 +13,11 @@ import NaturalLanguage
 /// microphone path ends at transcription (the same recogniser the orb uses)
 /// and everything below is local text processing.
 ///
+/// The one thing that can leave the phone is the transcript, and only when the
+/// user taps "Find tasks" on the note detail - a deliberate, per-note action
+/// that says where it goes. The summary and bullets below are never part of
+/// that; they exist so a note is complete without it.
+///
 /// That constrains what the summary can be. This is *extractive*: it picks the
 /// sentences that already carry the most of what was said, rather than writing
 /// new ones. An abstractive summary would read better and would need the model.

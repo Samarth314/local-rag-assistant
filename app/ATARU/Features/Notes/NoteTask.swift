@@ -56,6 +56,45 @@ struct NoteTask: Identifiable, Codable, Hashable {
             return NoteTask(title: title)
         }
     }
+
+    /// The parsed list, with the ticked state of anything already on the note.
+    ///
+    /// A parse arrives with fresh UUIDs and `isDone: false` on every row, so
+    /// adopting it wholesale cleared boxes the user had ticked - on a note
+    /// they had been working through, which is exactly the note most likely to
+    /// be parsed while it is open. Rows are matched on the text itself, since
+    /// that is the only thing the two lists share: the seeded rows come from
+    /// `fromBullets` and the parsed ones from the model.
+    ///
+    /// Order and content are the server's. Only identity and the checkbox
+    /// travel, and only for a row whose text did not change.
+    static func merge(parsed: [NoteTask], into existing: [NoteTask]) -> [NoteTask] {
+        var byText: [String: NoteTask] = [:]
+        for task in existing {
+            // First wins: two rows that normalise to the same text are already
+            // one item as far as the user is concerned.
+            byText[matchKey(task.title)] = byText[matchKey(task.title)] ?? task
+        }
+        var claimed = Set<UUID>()
+        return parsed.map { task in
+            guard let previous = byText[matchKey(task.title)],
+                  claimed.insert(previous.id).inserted else { return task }
+            return NoteTask(id: previous.id,
+                            title: task.title,
+                            isDone: previous.isDone,
+                            dueDate: task.dueDate,
+                            hasTimeTrigger: task.hasTimeTrigger,
+                            estimatedMinutes: task.estimatedMinutes,
+                            category: task.category,
+                            subtasks: task.subtasks)
+        }
+    }
+
+    /// Case and trailing punctuation are not the difference between two tasks.
+    private static func matchKey(_ title: String) -> String {
+        title.lowercased().trimmingCharacters(
+            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?")))
+    }
 }
 
 // MARK: - Wire
