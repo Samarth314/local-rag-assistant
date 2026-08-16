@@ -50,6 +50,13 @@ final class VoIPPushService: NSObject, ObservableObject {
     private let registry = PKPushRegistry(queue: .main)
     private weak var call: CallService?
     private var service: ATARUService?
+    /// The upload in flight, so a newer one supersedes it rather than racing.
+    private var registration: Task<Void, Never>?
+    private var foregroundObserver: NSObjectProtocol?
+
+    /// How long to wait before the one retry. Short enough to be over before
+    /// he is awake, long enough for a tailnet that is coming up to arrive.
+    private static let retryDelay: Duration = .seconds(8)
 
     init(call: CallService) {
         self.call = call
@@ -59,6 +66,23 @@ final class VoIPPushService: NSObject, ObservableObject {
         // early as the app can manage: a push that arrives before the registry
         // has a delegate is a push nobody answers.
         registry.desiredPushTypes = [.voIP]
+        // A phone that failed to register is a phone that cannot be rung, and
+        // nothing retried it until the next cold launch - so a token uploaded
+        // while the tailnet happened to be down stayed unregistered for as
+        // long as the app stayed running. Coming to the foreground is the
+        // cheapest honest proxy for "the network may be back".
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.retryIfUnregistered() }
+        }
+    }
+
+    deinit {
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+        }
     }
 
     /// Point at the current backend. Called again whenever Demo ⇄ Live flips,
@@ -68,15 +92,40 @@ final class VoIPPushService: NSObject, ObservableObject {
         if let token { send(token) }
     }
 
+    /// Re-uploads only when the last attempt is known to have failed. A
+    /// successful registration is idempotent server-side but not free, and
+    /// re-sending on every foreground would be a request per app switch.
+    private func retryIfUnregistered() {
+        guard registrationError != nil, let token else { return }
+        send(token)
+    }
+
+    /// Uploads the token, with one bounded retry.
+    ///
+    /// The failure this covers is the 7am one: the phone boots or wakes, the
+    /// tailnet is not up yet, the single attempt fails, and nothing ever tries
+    /// again - so the morning call rings a phone the server has no route to.
+    /// One retry is deliberate rather than a loop: repeating forever against a
+    /// backend that is genuinely gone would just be a background radio, and
+    /// `registrationError` is surfaced in Settings for the case that persists.
     private func send(_ token: String) {
         guard let service else { return }
-        Task { @MainActor in
-            do {
-                try await service.registerVoIPToken(token, environment: Self.environment)
-                registrationError = nil
-            } catch {
-                registrationError = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
+        registration?.cancel()
+        registration = Task { @MainActor in
+            for attempt in 0..<2 {
+                if attempt > 0 {
+                    try? await Task.sleep(for: Self.retryDelay)
+                    guard !Task.isCancelled else { return }
+                }
+                do {
+                    try await service.registerVoIPToken(token, environment: Self.environment)
+                    registrationError = nil
+                    return
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    registrationError = (error as? LocalizedError)?.errorDescription
+                        ?? error.localizedDescription
+                }
             }
         }
     }
@@ -112,7 +161,17 @@ extension VoIPPushService: PKPushRegistryDelegate {
                                   completion: @escaping () -> Void) {
         MainActor.assumeIsolated {
             let reason = payload.dictionaryPayload["reason"] as? String
-            call?.reportPushedCall(reason: reason) {
+            // `call` is weak, and the optional chain silently swallowed the
+            // WHOLE statement when it was nil - completion included. A push
+            // whose completion never runs is the one thing iOS terminates the
+            // app for, and repeating it costs the VoIP entitlement outright.
+            // There is no call to report without a CallService, but there is
+            // still a completion that must run.
+            guard let call else {
+                completion()
+                return
+            }
+            call.reportPushedCall(reason: reason) {
                 // Only after CallKit has the call. Calling this earlier lets
                 // iOS suspend the process mid-report, which reads to the system
                 // as a push that never produced a call.

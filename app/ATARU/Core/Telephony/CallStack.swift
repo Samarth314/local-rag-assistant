@@ -39,6 +39,12 @@ final class CallStack {
         call.onAudioDeactivated = { [weak session] in session?.end() }
         // CallKit's mute action is bookkeeping; this is what stops the mic.
         call.onMuteChanged = { [weak session] muted in session?.setMuted(muted) }
+        // An interruption HOLDS the conversation; it does not end it. Wired to
+        // `setInterrupted` rather than to `end`/`begin` for that reason: a
+        // 7am alarm landing on the 7am call must not hang it up, and a loop
+        // restarted through `begin` would greet him a second time.
+        call.onAudioInterrupted = { [weak session] in session?.setInterrupted(true) }
+        call.onAudioResumed = { [weak session] in session?.setInterrupted(false) }
         // "That will be all" → goodbye → hang up, through the same CallKit
         // path as the End button.
         session.onFarewell = { [weak call] in call?.end() }
@@ -49,15 +55,39 @@ final class CallStack {
         self.push = VoIPPushService(call: call)
     }
 
+    /// The service this stack is pointed at.
+    ///
+    /// STRONG on purpose, and load-bearing. `RootView` used to compare
+    /// `ObjectIdentifier(state.service)` without holding the object, so a
+    /// replacement service could land on the freed address of the one it
+    /// replaced and read as no change at all - which is how a saved token left
+    /// the morning call registered nowhere. Retaining the old service here
+    /// keeps its address occupied, so `!==` cannot be fooled the same way.
     private var configuredService: ATARUService?
+    /// `AppState.serviceGeneration` as of the last configure, when a caller
+    /// bothers to pass it. Monotonic, so it cannot alias the way an address
+    /// can.
+    private var configuredGeneration: Int?
 
     /// Points the stack at the current backend.
     ///
-    /// Idempotent per service instance, because it is called from a view init
-    /// that re-runs freely. `CallSessionModel.update` tears down the voice
-    /// stream, so it must only happen when the service really changed.
-    func configure(service: ATARUService) {
-        guard configuredService !== service else { return }
+    /// Idempotent per backend, because it is called from a view init that
+    /// re-runs freely. `CallSessionModel.update` tears down the voice stream
+    /// and `push.update` re-uploads the VoIP token, so neither may happen on
+    /// an ordinary re-render.
+    ///
+    /// - Parameter generation: `AppState.serviceGeneration`. Preferred over
+    ///   object identity when supplied - it is the counter every other surface
+    ///   in the app keys on, and unlike an address it is never reused. Callers
+    ///   that omit it fall back to the identity check above, which is sound
+    ///   only because `configuredService` is a strong reference.
+    func configure(service: ATARUService, generation: Int? = nil) {
+        if let generation {
+            guard configuredGeneration != generation else { return }
+            configuredGeneration = generation
+        } else {
+            guard configuredService !== service else { return }
+        }
         configuredService = service
         session.update(service: service)
         push.update(service: service)
