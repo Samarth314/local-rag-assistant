@@ -273,7 +273,7 @@ final class VoiceViewModel: ObservableObject {
         phaseWatchdog = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
             guard !Task.isCancelled, let self, self.phase == .speaking else { return }
-            print("VOICE phase watchdog fired - tearing down a stalled turn")
+            voiceLog.error("phase watchdog fired - tearing down a stalled turn")
             self.stopSpeaking()
         }
     }

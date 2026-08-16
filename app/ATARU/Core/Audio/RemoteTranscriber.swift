@@ -66,7 +66,7 @@ enum RemoteTranscriber {
             // same garbage. Both are real answers; report them as decided.
             if payload.silence == true || payload.rejected != nil {
                 if let reason = payload.rejected {
-                    print("STT server rejected the transcript (\(reason)); not falling back")
+                    sttLog.notice("server rejected the transcript (\(reason, privacy: .public)); not falling back")
                 }
                 return ""      // decided empty, distinct from nil = "no answer"
             }
