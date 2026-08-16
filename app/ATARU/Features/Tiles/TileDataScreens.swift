@@ -874,6 +874,7 @@ struct HomeScreen: View {
                 .background {
                     Circle().fill(Theme.surfaceElevated)
                 }
+                .hitTarget()
         }
         .buttonStyle(.atPress)
     }
@@ -1662,7 +1663,10 @@ private struct WorkspaceDetailScreen: View {
                                           ? "checkmark.circle.fill" : "circle")
                                         .foregroundStyle(task.done == true
                                                          ? Theme.green : Theme.textTertiary)
+                                        .hitTarget()
                                 }
+                                .accessibilityLabel(task.done == true
+                                                    ? "Mark not done" : "Mark done")
                                 Text(task.text ?? "")
                                     .font(.ataruBody())
                                     .foregroundStyle(task.done == true

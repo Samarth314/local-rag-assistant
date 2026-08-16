@@ -139,7 +139,9 @@ struct PlanView: View {
                                   ? "checkmark.circle.fill" : "circle")
                                 .font(.system(size: 20, weight: .light))
                                 .foregroundStyle(item.done ? Theme.green : Theme.textTertiary)
+                                .hitTarget()
                         }
+                        .accessibilityLabel(item.done ? "Mark not done" : "Mark done")
                         Text(item.text)
                             .font(.ataruBody())
                             .foregroundStyle(item.done ? Theme.textTertiary : Theme.textPrimary)
@@ -151,6 +153,7 @@ struct PlanView: View {
                             Image(systemName: "xmark")
                                 .font(.system(size: 11))
                                 .foregroundStyle(Theme.textTertiary)
+                                .hitTarget()
                         }
                         .accessibilityLabel("Remove \(item.text)")
                     }

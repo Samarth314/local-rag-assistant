@@ -76,6 +76,7 @@ struct NoteRecorderBar: View {
                     Text("Discard")
                         .font(.ataruLabel())
                         .foregroundStyle(Theme.textSecondary)
+                        .hitTarget()
                 }
                 .accessibilityIdentifier("discard-note")
 
