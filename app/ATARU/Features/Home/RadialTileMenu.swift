@@ -225,6 +225,19 @@ struct RadialFan: Equatable {
     /// Inner to outer. Every ring shares `center` - that is the fix.
     let rings: [RadialArc]
     let count: Int
+    /// The ring ladder THIS fan was solved on.
+    ///
+    /// Used to be two constants, and that is what broke the launcher on a
+    /// short screen: 120pt and 72pt are a portrait phone's numbers, and in
+    /// landscape the legal band between the navigation bar and the composer
+    /// is barely twice the first ring's radius. Rings that cannot be seated
+    /// contribute no capacity, capacity below the tile count fails every
+    /// rung, and the last-resort fallback then ignored the field entirely -
+    /// which is the screenshot with Vault, Media and Music off the right-hand
+    /// edge. The ladder shrinks now when the room demands it, and everything
+    /// that reads a radius reads it from here.
+    let ringOne: Double
+    let ringGap: Double
 
     /// Travel below this is a wobble, not a choice - and releasing inside it
     /// is how you cancel.
@@ -235,22 +248,63 @@ struct RadialFan: Equatable {
     /// Closest two bubbles may sit centre to centre: a 44pt bubble plus enough
     /// gap to read as two things rather than a blob.
     private static let minChord: Double = 52
-    private static let ringOne: Double = 120
-    private static let ringGap: Double = 72
-    private static let maxRings = 3
+    /// The portrait phone's ladder, and the default every fan starts from.
+    static let baseRingOne: Double = 120
+    static let baseRingGap: Double = 72
+    private static let maxRings = 5
     /// Every tile must clear the thumb by this much. In the legality MASK, not
     /// the score - it constrains where a tile may be placed, not merely which
     /// placement is preferred.
     private static let liftMin: Double = 40
     /// A fuller inner ring may buy this much turn away from straight up, and
     /// no more. Turn is primary; width never outbids direction.
+    /// A fuller inner ring may buy this much turn away from straight up at the
+    /// first rungs, and no more. Turn is primary; width never outbids
+    /// direction. Later rungs widen it, because on a short field the choice is
+    /// between turning further and not fitting at all.
     private static let aimSlack: Double = .pi * 10 / 180
     private static let samples = 720
     private static let nudgeLadder: [Double] = [0, 30, 62, 100, 150]
-    /// Tried in order, each relaxing one constraint. Only the last gives up
-    /// any spacing, and only after lift has already been abandoned.
-    private static let rungs: [(lift: Double?, chord: Double)] =
-        [(40, 52), (16, 52), (nil, 52), (nil, 46)]
+
+    /// One attempt at seating every tile. Tried in order, each giving up
+    /// strictly more than the last.
+    ///
+    /// The first three are exactly what shipped, so a portrait phone - where
+    /// the first rung has always succeeded - is placed identically to before,
+    /// tile for tile. What is new is everything after them: the ring ladder
+    /// itself shrinks, the fan is allowed to turn further from straight up,
+    /// and a fourth and fifth ring become available. That is the whole fix for
+    /// a short field, and the order says what is given up in what sequence -
+    /// clearance from the thumb first, then how far the fan may point from
+    /// up, then the size of the dial, and only at the very end any spacing
+    /// between the tiles.
+    private struct Rung {
+        /// How far above the thumb every tile must sit, or nil for "anywhere".
+        let lift: Double?
+        /// Closest two tiles may sit, centre to centre.
+        let chord: Double
+        /// Multiplier on the ring ladder.
+        let scale: Double
+        /// How far from straight up the aim may be bought.
+        let slack: Double
+        let rings: Int
+    }
+
+    private static let rungs: [Rung] = [
+        Rung(lift: 40,  chord: 52, scale: 1.00, slack: aimSlack, rings: 3),
+        Rung(lift: 16,  chord: 52, scale: 1.00, slack: aimSlack, rings: 3),
+        Rung(lift: nil, chord: 52, scale: 1.00, slack: aimSlack, rings: 3),
+        Rung(lift: nil, chord: 52, scale: 0.86, slack: .pi * 25 / 180, rings: 4),
+        Rung(lift: nil, chord: 52, scale: 0.72, slack: .pi * 60 / 180, rings: 4),
+        Rung(lift: nil, chord: 48, scale: 0.60, slack: .pi, rings: 5),
+        Rung(lift: nil, chord: 46, scale: 0.50, slack: .pi, rings: 5),
+    ]
+
+    /// The widest an arc may be. A fan that closes into a ring has no "behind"
+    /// to sweep back to, and sweeping back is how the gesture is cancelled -
+    /// so a quarter radian of the circle is always left empty, however tight
+    /// the field.
+    private static let maxSweep: Double = 2 * .pi - 0.25
 
     /// The tightest spacing any rung will accept — the floor below which tiles
     /// are never placed, whatever else the solver gives up to make a press
@@ -261,26 +315,30 @@ struct RadialFan: Equatable {
 
     // MARK: - The vocabulary the rest of the file reads the fan through
 
-    var stageOne: RadialArc { rings.first ?? RadialArc(radius: Self.ringOne, sweep: 0, center: -.pi / 2, count: 0) }
+    var stageOne: RadialArc { rings.first ?? RadialArc(radius: ringOne, sweep: 0, center: -.pi / 2, count: 0) }
     var stageTwo: RadialArc? { rings.count > 1 ? rings[1] : nil }
     var stageOneCount: Int { rings.first?.count ?? 0 }
     var centerAngle: Double { stageOne.center }
     var stageOneSweep: Double { stageOne.sweep }
     var stageTwoSweep: Double { stageTwo?.sweep ?? 0 }
-    var stageOneRadius: Double { Self.ringOne }
-    var stageTwoRadius: Double { Self.ringOne + Self.ringGap }
+    var stageOneRadius: Double { ringOne }
+    var stageTwoRadius: Double { ringOne + ringGap }
 
-    func radius(ofRing i: Int) -> Double { Self.ringOne + Self.ringGap * Double(i) }
+    func radius(ofRing i: Int) -> Double { ringOne + ringGap * Double(i) }
     /// Out past here brings the next ring in; back inside `hideRadius` takes
     /// it away. The gap between them is the hysteresis that stops a hovering
     /// thumb flickering the outer ring.
-    func revealRadius(past i: Int) -> Double { radius(ofRing: i) + Self.ringGap * 0.20 }
+    func revealRadius(past i: Int) -> Double { radius(ofRing: i) + ringGap * 0.20 }
     func hideRadius(past i: Int) -> Double {
-        max(Self.deadZone + 8, radius(ofRing: i) + Self.ringGap * 0.10)
+        max(Self.deadZone + 8, radius(ofRing: i) + ringGap * 0.10)
     }
     /// Where selection stops meaning ring i and starts meaning ring i+1.
+    ///
+    /// Clamped to the gap so a shrunken ladder cannot put the boundary past
+    /// the next ring's own tiles: the flat 28pt floor was fine at a 72pt gap
+    /// and is most of a 36pt one.
     func boundary(past i: Int) -> Double {
-        radius(ofRing: i) + max(28, Self.ringGap * 0.42)
+        radius(ofRing: i) + min(ringGap * 0.5, max(28, ringGap * 0.42))
     }
     var revealRadius: Double { revealRadius(past: 0) }
     var hideRadius: Double { hideRadius(past: 0) }
@@ -330,12 +388,20 @@ struct RadialFan: Equatable {
                             y: min(max(point.y, field.minY), field.maxY))
         guard count > 0 else {
             return RadialFan(anchor: anchor, origin: anchor, offsets: [],
-                             rings: [], count: 0)
+                             rings: [], count: 0, ringOne: baseRingOne,
+                             ringGap: baseRingGap)
         }
         let target = CGPoint(x: field.midX, y: field.midY)
         let up = -Double.pi / 2
 
         for rung in rungs {
+            let ringOne = baseRingOne * rung.scale
+            // The gap shrinks more slowly than the radius, and never below the
+            // spacing two tiles inside one ring must keep. Two rings 36pt
+            // apart put a 44pt bubble through the one above it - which the
+            // within-ring chord rule cannot see, because it only ever compares
+            // neighbours on the same arc.
+            let ringGap = max(minChord, baseRingGap * rung.scale)
             for nudge in nudgeLadder {
                 let origin = slide(anchor, toward: target, by: nudge)
                 // Up is off the field entirely: mirror the fan downward rather
@@ -344,7 +410,7 @@ struct RadialFan: Equatable {
                     ? -up : up
 
                 var rooms: [(radius: Double, mask: [Bool], left: [Int], right: [Int])] = []
-                for k in 0..<maxRings {
+                for k in 0..<rung.rings {
                     let r = ringOne + ringGap * Double(k)
                     let mask = ringMask(origin: origin, radius: r, lift: rung.lift,
                                         field: field, keepOut: keepOut)
@@ -352,11 +418,11 @@ struct RadialFan: Equatable {
                     rooms.append((r, mask, l, rr))
                 }
 
-                // Fewest rings that still aim within aimSlack of the best
-                // direction available: a ring is added to point the fan UP,
-                // never to make it wider.
+                // Fewest rings that still aim within this rung's slack of the
+                // best direction available: a ring is added to point the fan
+                // UP, never to make it wider.
                 var leastTurn: Double?
-                for k in 1...maxRings {
+                for k in 1...rung.rings {
                     guard let got = aim(Array(rooms.prefix(k)), count: count,
                                         chord: rung.chord, preferred: preferred)
                     else { continue }
@@ -364,10 +430,11 @@ struct RadialFan: Equatable {
                     if leastTurn == nil || turn < leastTurn! - 1e-9 { leastTurn = turn }
                 }
                 guard let least = leastTurn else { continue }
-                for k in 1...maxRings {
+                for k in 1...rung.rings {
                     guard let got = aim(Array(rooms.prefix(k)), count: count,
-                                        chord: rung.chord, preferred: preferred),
-                          gap(got.center, preferred) <= least + aimSlack + 1e-9
+                                        chord: rung.chord, preferred: preferred,
+                                        slack: rung.slack),
+                          gap(got.center, preferred) <= least + rung.slack + 1e-9
                     else { continue }
                     var built: [RadialArc] = []
                     for (i, n) in got.counts.enumerated() where n > 0 {
@@ -381,17 +448,63 @@ struct RadialFan: Equatable {
                         for i in 0..<arc.count { offs.append(arc.offset(at: i)) }
                     }
                     return RadialFan(anchor: anchor, origin: origin, offsets: offs,
-                                     rings: built, count: count)
+                                     rings: built, count: count,
+                                     ringOne: ringOne, ringGap: ringGap)
                 }
             }
         }
-        // Unreachable on any phone-sized field; a single ring beats nothing.
-        let step = 2 * asin(min(1, minChord / (2 * ringOne)))
-        let arc = RadialArc(radius: ringOne, sweep: step * Double(count - 1),
-                            center: up, count: count)
-        return RadialFan(anchor: anchor, origin: anchor,
-                         offsets: (0..<count).map { arc.offset(at: $0) },
-                         rings: [arc], count: count)
+        return lastResort(anchor: anchor, field: field, count: count)
+    }
+
+    /// When no rung fits: place every tile somewhere legal, however ugly.
+    ///
+    /// THE BUG THIS REPLACES. The old version of this was one ring of the full
+    /// portrait radius, centred straight up, with every tile on it - and it
+    /// consulted neither the field nor the tile count, so it produced a fan
+    /// wider than a full circle whose tiles ran off the screen. It was
+    /// commented "unreachable on any phone-sized field", and it was reachable:
+    /// every landscape orientation and every phone smaller than a 6.3" one, at
+    /// sixteen tiles. That is the screenshot with Vault, Media and Music
+    /// clipped off the right-hand edge.
+    ///
+    /// What replaces it cannot leave the field, because it ends by clamping
+    /// every bubble into it. Tiles may crowd in a corner - this is the branch
+    /// where something has already gone wrong - but the launcher stays usable
+    /// and nothing is lost off an edge, which is the property that matters.
+    private static func lastResort(anchor: CGPoint, field: CGRect,
+                                   count: Int) -> RadialFan {
+        let scale = rungs.last?.scale ?? 0.5
+        let ringOne = baseRingOne * scale
+        let ringGap = max(minChord, baseRingGap * scale)
+        let chord = rungs.last?.chord ?? minChord
+        // Fill rings from the inside out, each to the most a full turn can
+        // hold at this spacing, minus the gap that keeps it an arc.
+        var built: [RadialArc] = []
+        var remaining = count
+        var k = 0
+        while remaining > 0 {
+            let r = ringOne + ringGap * Double(k)
+            let step = 2 * asin(min(1, chord / (2 * r)))
+            let capacity = max(1, Int(floor(maxSweep / step)) + 1)
+            let take = min(capacity, remaining)
+            built.append(RadialArc(radius: r, sweep: step * Double(take - 1),
+                                   center: -.pi / 2, count: take))
+            remaining -= take
+            k += 1
+        }
+        var offs: [CGSize] = []
+        for arc in built {
+            for i in 0..<arc.count {
+                let o = arc.offset(at: i)
+                // The clamp, which is the whole point of this branch.
+                let x = min(max(anchor.x + o.width, field.minX), field.maxX)
+                let y = min(max(anchor.y + o.height, field.minY), field.maxY)
+                offs.append(CGSize(width: x - anchor.x, height: y - anchor.y))
+            }
+        }
+        return RadialFan(anchor: anchor, origin: anchor, offsets: offs,
+                         rings: built, count: count,
+                         ringOne: ringOne, ringGap: ringGap)
     }
 
     /// Legal directions for one ring: on the field, clear of every keep-out,
@@ -449,8 +562,8 @@ struct RadialFan: Equatable {
     /// the most tiles on the innermost ring. So a little turn may buy a fuller
     /// first ring, but a fuller first ring can never buy a lot of turn.
     private static func aim(_ rings: [(radius: Double, mask: [Bool], left: [Int], right: [Int])],
-                            count: Int, chord: Double,
-                            preferred: Double) -> (center: Double, counts: [Int])? {
+                            count: Int, chord: Double, preferred: Double,
+                            slack: Double = aimSlack) -> (center: Double, counts: [Int])? {
         let step = 2 * Double.pi / Double(samples)
         var best: (turn: Double, center: Double, counts: [Int], first: Int)?
         var least = Double.infinity
@@ -464,7 +577,12 @@ struct RadialFan: Equatable {
                 if ring.mask[i] {
                     let half = Double(min(ring.left[i], ring.right[i])) * step
                     let delta = 2 * asin(min(1, chord / (2 * ring.radius)))
-                    capacity = Int(floor(2 * half / delta + 1e-9)) + 1
+                    // Never more than a whole turn less the cancel gap: on a
+                    // ring whose every direction is legal the room is
+                    // unbounded, and a fan that closes has no "behind" to
+                    // sweep back to.
+                    let span = min(2 * half, maxSweep)
+                    capacity = Int(floor(span / delta + 1e-9)) + 1
                 }
                 let take = min(capacity, remaining)
                 counts.append(take)
@@ -476,7 +594,7 @@ struct RadialFan: Equatable {
             feasible.append((turn, c, counts, counts.first ?? 0))
         }
         guard !feasible.isEmpty else { return nil }
-        for f in feasible where f.turn <= least + aimSlack + 1e-9 {
+        for f in feasible where f.turn <= least + slack + 1e-9 {
             if best == nil || f.first > best!.first
                 || (f.first == best!.first && f.turn < best!.turn) {
                 best = f
@@ -621,6 +739,21 @@ struct RadialPressMenu: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // A fan is solved once, for the geometry it opened in. Rotate the
+            // phone with a thumb still down and every one of those numbers is
+            // about a screen that no longer exists - the origin, the field,
+            // the keep-outs - so the tiles would sit wherever the old solution
+            // put them, which after a portrait-to-landscape turn is partly off
+            // the side. Cancelling is the honest answer: the press outlived
+            // its own context, and there is no correct destination to commit.
+            .onChange(of: geo.size) { _, _ in
+                guard fan != nil else { return }
+                highlighted = nil
+                stageTwoRevealed = false
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
+                    fan = nil
+                }
+            }
             .background(
                 PressAnywhere(
                     isEnabled: isEnabled,

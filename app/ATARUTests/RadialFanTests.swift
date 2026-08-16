@@ -551,6 +551,125 @@ final class RadialFanTests: XCTestCase {
         }
     }
 
+    // MARK: - Landscape, and small screens
+    //
+    // THE SWEEP'S BLIND SPOT, and it shipped a broken launcher. Every test
+    // above uses ONE field: a 6.3" phone in portrait. The solver's ring ladder
+    // is fixed at 120pt with 72pt gaps, and whether a ring can be seated at
+    // all depends on the field - so on any SHORTER field the outer rings have
+    // no legal band at the shared aim, the total capacity falls below the tile
+    // count, every rung fails, and the last-resort fallback used to place all
+    // sixteen tiles on one ring while consulting neither the field nor the
+    // count. That is the landscape screenshot with Vault, Media and Music off
+    // the right-hand edge - and it was equally true of an iPhone SE in
+    // portrait, which this suite also never modelled.
+    //
+    // These are the fields as the view actually builds them: the layer size
+    // inside the safe area, inset by `clearance`, with the navigation band and
+    // the composer band as keep-outs.
+
+    private func field(_ size: CGSize) -> CGRect {
+        CGRect(origin: .zero, size: size)
+            .insetBy(dx: RadialFan.clearance, dy: RadialFan.clearance)
+    }
+
+    private func bands(_ size: CGSize) -> [CGRect] {
+        [CGRect(x: 0, y: 0, width: size.width, height: 59),
+         CGRect(x: 0, y: size.height * 0.85,
+                width: size.width, height: size.height * 0.15)]
+    }
+
+    /// Layer sizes, inside the safe area: the smallest phone, the largest, and
+    /// a tablet, each on both of its sides.
+    private let layers: [(name: String, size: CGSize)] = [
+        ("SE portrait", CGSize(width: 375, height: 647)),
+        ("SE landscape", CGSize(width: 667, height: 355)),
+        ("Pro Max portrait", CGSize(width: 440, height: 900)),
+        ("Pro Max landscape", CGSize(width: 894, height: 419)),
+        ("iPad landscape", CGSize(width: 1194, height: 790)),
+        ("split narrow", CGSize(width: 320, height: 1150)),
+    ]
+
+    func testEveryTileStaysOnEveryScreenInEveryOrientation() {
+        for (name, size) in layers {
+            let bounds = field(size)
+            let keepOut = bands(size)
+            for count in [HomeTile.allCases.count - 1, HomeTile.allCases.count] {
+                for x in stride(from: 0.0, through: size.width, by: 37) {
+                    for y in stride(from: 0.0, through: size.height, by: 37) {
+                        let fan = RadialFan.solve(at: CGPoint(x: x, y: y),
+                                                  in: bounds, count: count,
+                                                  keepOut: keepOut)
+                        XCTAssertEqual(fan.offsets.count, count,
+                                       "\(name) dropped a tile at (\(x), \(y))")
+                        let points = fan.offsets.map {
+                            CGPoint(x: fan.origin.x + $0.width,
+                                    y: fan.origin.y + $0.height)
+                        }
+                        for (i, p) in points.enumerated() {
+                            XCTAssertTrue(
+                                p.x >= bounds.minX - 0.001 && p.x <= bounds.maxX + 0.001
+                                    && p.y >= bounds.minY - 0.001 && p.y <= bounds.maxY + 0.001,
+                                "\(name): tile \(i) at \(p) escaped \(bounds) for a press at (\(x), \(y))")
+                        }
+                        // Bubbles are 44pt whatever the ladder does, so this
+                        // has to hold across RINGS as well as within one -
+                        // the chord rule only ever compares neighbours on the
+                        // same arc, which is how a shrunken ring gap put two
+                        // tiles 36pt apart.
+                        for i in points.indices {
+                            for j in points.indices where j > i {
+                                let gap = hypot(points[i].x - points[j].x,
+                                                points[i].y - points[j].y)
+                                XCTAssertGreaterThanOrEqual(
+                                    gap, RadialFan.minimumChord - 0.001,
+                                    "\(name): tiles \(i) and \(j) are \(gap)pt apart at (\(x), \(y))")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A fan that closes into a ring has no "behind" to sweep back to, and
+    /// sweeping back is how the gesture is cancelled. True on a short field
+    /// too, which is where the old fallback produced a sweep wider than a full
+    /// circle.
+    func testTheFanStaysAnArcOnEveryScreen() {
+        for (name, size) in layers {
+            let bounds = field(size)
+            let keepOut = bands(size)
+            for x in stride(from: 0.0, through: size.width, by: 53) {
+                for y in stride(from: 0.0, through: size.height, by: 53) {
+                    let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: bounds,
+                                              count: HomeTile.allCases.count,
+                                              keepOut: keepOut)
+                    for (i, ring) in fan.rings.enumerated() {
+                        XCTAssertLessThan(ring.sweep, 2 * .pi - 0.2,
+                                          "\(name): ring \(i) closed at (\(x), \(y))")
+                    }
+                }
+            }
+        }
+    }
+
+    /// The portrait phone this was all tuned on is placed exactly as it was
+    /// before the ladder learned to shrink: the first three rungs are the old
+    /// ones, and a 6.3" field has always been seated by the first.
+    func testTheShrinkingLadderNeverFiresWhereTheOldOneWorked() {
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                XCTAssertEqual(fan.ringOne, RadialFan.baseRingOne, accuracy: 1e-9,
+                               "the ladder shrank on a portrait phone at (\(x), \(y))")
+                XCTAssertEqual(fan.ringGap, RadialFan.baseRingGap, accuracy: 1e-9)
+            }
+        }
+    }
+
     /// The property that makes adding a tile safe: nothing anywhere declares
     /// how the tiles divide up, so the division cannot fall out of step with
     /// the count. Parameterised over today's count, one fewer (the current
