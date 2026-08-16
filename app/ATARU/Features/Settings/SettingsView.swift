@@ -1,95 +1,69 @@
 import SwiftUI
 
-/// Connection settings and the privacy facts that go with them.
+/// Where the server lives, and the two buttons about calls.
+///
+/// ## What was taken out, and why
+///
+/// **Demo mode.** "Is there any point in having a demo page. Samarth has his
+/// testing URL and so do I so don't see any need for demo." He is right: the
+/// dev twin is a URL, production is a URL, and a mode switch on top of that was
+/// a second way to express the same choice - one that could disagree with the
+/// address in the field directly above it. A URL is a URL now. The Demo service
+/// survives as the app's fallback for an unconfigured or malformed address (see
+/// `AppState.rebuildService`) and as what the previews and tests run against,
+/// but nothing about it is user-facing any more.
+///
+/// **The Privacy section.** Three sentences of reassurance on a screen only its
+/// author ever opens.
+///
+/// **On-phone transcription.** Removed on measurement: the server path is
+/// faster and knows the names, and he keeps the toggle off. See the commit for
+/// the tradeoff that goes with it.
 struct SettingsView: View {
     @EnvironmentObject private var state: AppState
     @EnvironmentObject private var call: CallService
     // The push service publishes the token and the last registration error;
     // without this row a phone that cannot be rung looks identical to one
-    // that can, right up until 8am when it doesn't ring.
+    // that can, right up until 7am when it doesn't ring.
     @ObservedObject private var push = CallStack.shared.push
 
     @State private var baseURL: String = ""
     @State private var token: String = ""
-    @State private var isTesting = false
     @State private var isAddingContact = false
     @State private var contactStatus: String?
     @State private var contactFailed = false
-
-    // The rendered label rather than the state: the state stops changing while
-    // a load runs, but the label carries the load's elapsed seconds, and a row
-    // that only updates when the state changes would freeze at the moment it
-    // most needs to be moving.
-    @State private var whisperLabel = WhisperTranscriber.State.idle.label
-    @State private var whisperStuck = false
-    @AppStorage(WhisperTranscriber.offlineKey) private var offlineTranscription = false
+    /// The vCard to hand to the share sheet, built on demand. Non-nil is what
+    /// presents the sheet - see `ATARUContact`, and note that nothing in that
+    /// path touches the address book.
+    @State private var contactCard: ATARUContact.Card?
 
     var body: some View {
         Form {
-            Section {
-                Picker("Mode", selection: modeBinding) {
-                    ForEach(AppEnvironmentMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
+            Section("Server") {
+                TextField("https://ataru.your-tailnet.ts.net", text: $baseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .onSubmit(apply)
+                    .dismissExclusion()
+
+                if let message = validation.message {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
                 }
-                .pickerStyle(.segmented)
-            } header: {
-                Text("Source")
-            } footer: {
-                Text(state.configuration.mode == .demo
-                     ? "Demo answers from bundled sample files. Nothing leaves this device."
-                     : "Live connects to your own ATARU server over your Tailnet or LAN.")
-            }
 
-            if state.configuration.mode == .live {
-                Section("Server") {
-                    TextField("http://100.x.y.z:8000", text: $baseURL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                        .onSubmit(apply)
+                SecureField("Access token (optional)", text: $token)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .dismissExclusion()
 
-                    if let message = validation.message {
-                        Label(message, systemImage: "exclamationmark.triangle")
-                            .font(.ataruCaption())
-                            .foregroundStyle(Theme.amber)
-                    }
-
-                    SecureField("Access token (optional)", text: $token)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    Button(action: apply) {
-                        Text("Save and test")
-                    }
-                    .disabled(!validation.isValid)
-
-                    connectionRow
+                Button(action: apply) {
+                    Text("Save and test")
                 }
-            }
+                .disabled(!validation.isValid)
 
-            Section("Dictation") {
-                // Which engine actually produced the last transcript. Whisper
-                // is the one that can be told a name is likely; until its
-                // model has downloaded, Apple's recogniser is standing in, and
-                // without this row that difference is invisible.
-                Text(offlineTranscription
-                     ? whisperLabel
-                     : "ATARU transcribes on your own server, biased toward the names it knows.")
-                    .font(.ataruCaption())
-                    .foregroundStyle(Theme.textSecondary)
-
-                Toggle("Also transcribe on this phone", isOn: $offlineTranscription)
-                Text("Off, dictation goes to ATARU's server, which already has the model loaded and knows who you talk to. On, the phone downloads its own copy so dictation still works away from your network - it is ~630MB and takes about a minute to load every time the app starts cold.")
-                    .font(.ataruCaption())
-                    .foregroundStyle(Theme.textTertiary)
-
-                if offlineTranscription && whisperStuck {
-                    Button("Load the model again") {
-                        WhisperTranscriber.shared.prepare(retry: true)
-                        Haptics.fire(.success)
-                    }
-                }
+                connectionRow
             }
 
             Section("On this device") {
@@ -104,7 +78,7 @@ struct SettingsView: View {
 
             Section("Calls") {
                 Button("Add ATARU to Contacts") {
-                    Task { await addContact() }
+                    addContact()
                 }
                 .disabled(isAddingContact)
 
@@ -114,7 +88,7 @@ struct SettingsView: View {
                         .foregroundStyle(contactFailed ? Theme.amber : Theme.green)
                 }
 
-                Text("Creates a contact card for ATARU so you can call it like a person — from Contacts, the Phone app or Siri. ATARU appears as a calling option on that card after the first call; iOS only lists an app once it has seen one.")
+                Text("Hands iOS a contact card for ATARU, so you can call it like a person - from Contacts, the Phone app or Siri. ATARU appears as a calling option on that card after the first call; iOS only lists an app once it has seen one.")
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
 
@@ -123,14 +97,14 @@ struct SettingsView: View {
                     Haptics.fire(.tap)
                 }
                 .disabled(call.state.isLive)
-                Text("Rings in 5 seconds, so you can check the call screen without waiting for the contact entry to appear. Lock the phone after tapping — the system only takes over the screen when ATARU isn't already in front.")
+                Text("Rings in 5 seconds, so you can check the call screen without waiting for the contact entry to appear. Lock the phone after tapping - the system only takes over the screen when ATARU isn't already in front.")
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
 
                 #if DEBUG
                 // Development only. The Simulator declines a reported incoming
                 // call within about a second, so the ring path cannot be seen
-                // there at all — an outgoing call is the only way to exercise
+                // there at all - an outgoing call is the only way to exercise
                 // the call UI without a device.
                 Button("Start a call (debug)") { call.call() }
                     .disabled(call.state.isLive)
@@ -151,75 +125,46 @@ struct SettingsView: View {
                         .foregroundStyle(Theme.textTertiary)
                 }
             }
-
-            Section("Privacy") {
-                PrivacyFact("Questions and answers go only to the server you configure above. There is no analytics endpoint in this app.")
-                PrivacyFact("Dictation is transcribed on device. ATARU never sends your audio to Apple for transcription.")
-                PrivacyFact("Your access token is stored in the Keychain, never in preferences or logs.")
-            }
         }
         .scrollContentBackground(.hidden)
         .ataruBackdrop()
-        .task {
-            // Polls rather than observes: the transcriber is lock-based, not
-            // observable, and this row only has to be right while someone is
-            // looking at it.
-            while !Task.isCancelled {
-                // Turning it on here is the one place a load should start
-                // mid-session, so the row means something immediately rather
-                // than at the next launch.
-                if offlineTranscription { WhisperTranscriber.shared.prepare() }
-                let current = WhisperTranscriber.uiState
-                whisperLabel = current.label
-                // Two minutes is well past a healthy load, so past it the
-                // offer to start over is more useful than watching the counter.
-                whisperStuck = {
-                    if case .failed = current { return true }
-                    return (WhisperTranscriber.shared.prepareElapsed ?? 0) > 120
-                }()
-                try? await Task.sleep(for: .seconds(1))
-            }
-        }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $contactCard) { card in
+            // The system's own sheet. "Add to Contacts" appears in it because
+            // the item is a vCard, and iOS - not this app - writes the entry.
+            ActivityView(items: [card.fileURL]) {
+                contactFailed = false
+                contactStatus = "Handed to iOS. Choose Add to Contacts."
+            }
+            .ignoresSafeArea()
+        }
         .onAppear {
             baseURL = state.configuration.baseURLString
             token = state.token ?? ""
         }
     }
 
-    private func addContact() async {
+    /// Builds the card and hands it to the share sheet.
+    ///
+    /// No permission prompt, because nothing here reads the address book. See
+    /// ATARUContact for the whole argument.
+    private func addContact() {
         isAddingContact = true
         defer { isAddingContact = false }
         do {
-            try await ATARUContact.add()
-            contactFailed = false
-            contactStatus = "Added. Find ATARU in Contacts."
-            Haptics.fire(.success)
+            contactCard = try ATARUContact.card()
+            Haptics.fire(.tap)
         } catch {
-            // "Already exists" is reported the same way as a real failure on
-            // purpose: from the user's side both mean "the button did not do
-            // what you expected", and both are resolved by looking in Contacts.
             contactFailed = true
             contactStatus = (error as? LocalizedError)?.errorDescription
                 ?? error.localizedDescription
+            Haptics.fire(.warning)
         }
     }
 
     private var validation: BaseURLValidation {
         AppConfiguration.validate(baseURL)
-    }
-
-    private var modeBinding: Binding<AppEnvironmentMode> {
-        Binding(
-            get: { state.configuration.mode },
-            set: { newMode in
-                var configuration = state.configuration
-                configuration.mode = newMode
-                state.configuration = configuration
-                Task { await state.refreshConnection() }
-            }
-        )
     }
 
     @ViewBuilder
@@ -245,35 +190,36 @@ struct SettingsView: View {
         guard validation.isValid else { return }
         var configuration = state.configuration
         configuration.baseURLString = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        configuration.mode = .live
+        // Saving the token first, so the service is rebuilt once with both the
+        // new address and the new credential. `setToken` is also what
+        // re-registers push - see AppState.rebuildService.
         state.setToken(token.isEmpty ? nil : token)
         state.configuration = configuration
-        isTesting = true
         Task {
             await state.refreshConnection()
-            isTesting = false
             Haptics.fire(state.connection.isConnected ? .success : .warning)
         }
     }
 }
 
-private struct PrivacyFact: View {
-    let text: String
-    init(_ text: String) { self.text = text }
+/// The system share sheet, for handing a file to iOS.
+///
+/// Deliberately thin: it exists so a vCard can be given to the OS without this
+/// app ever asking for the address book. `onPresented` fires once the sheet is
+/// up, which is the last moment this app knows anything about what happens
+/// next - what the user picks in there is between them and iOS.
+private struct ActivityView: UIViewControllerRepresentable {
+    let items: [Any]
+    var onPresented: () -> Void = {}
 
-    var body: some View {
-        HStack(alignment: .top, spacing: Theme.Space.xs) {
-            Image(systemName: "lock")
-                .font(.system(size: 11))
-                .foregroundStyle(Theme.cyanSubdued)
-                .padding(.top, 2)
-            Text(text)
-                .font(.ataruCaption())
-                .foregroundStyle(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .accessibilityElement(children: .combine)
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(activityItems: items,
+                                                  applicationActivities: nil)
+        DispatchQueue.main.async { onPresented() }
+        return controller
     }
+
+    func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
 
 #Preview {

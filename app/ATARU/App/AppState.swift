@@ -11,6 +11,15 @@ final class AppState: ObservableObject {
 
     @Published private(set) var service: ATARUService
     @Published private(set) var connection: ConnectionState = .unknown
+    /// True while the app is answering from bundled sample files rather than a
+    /// server.
+    ///
+    /// Not a mode any more - a CONSEQUENCE. There is no Demo/Live switch; there
+    /// is an address, and this is what it means for the address to be missing
+    /// or malformed. Kept because the freshness banner has to say so: an app
+    /// quietly answering from fixtures while looking exactly like the real
+    /// thing is the one outcome worth a permanent banner.
+    @Published private(set) var isDemo = true
     /// Bumped every time `service` is replaced.
     ///
     /// Views used to key their `.task(id:)` on `ObjectIdentifier(state.service)`,
@@ -58,7 +67,15 @@ final class AppState: ObservableObject {
         self.tokenStore = tokenStore ?? (isUITesting ? InMemoryTokenStore() : KeychainTokenStore())
         if isUITesting { self.defaults.removePersistentDomain(forName: "ataru.uitests") }
 
-        let loaded = isUITesting ? .default : (Self.loadConfiguration(from: self.defaults) ?? .default)
+        // The UI suite runs against the sample files, and now says so by
+        // having NO address rather than by setting a mode that no longer
+        // exists. Without this it would inherit the default base URL baked in
+        // at build time and try to reach the real server from a simulator.
+        var forTesting = AppConfiguration.default
+        forTesting.baseURLString = ""
+        let loaded = isUITesting
+            ? forTesting
+            : (Self.loadConfiguration(from: self.defaults) ?? .default)
         self.configuration = loaded
         // Demo until proven otherwise: a first launch with no server
         // configured should show a working app, not an error screen.
@@ -73,12 +90,9 @@ final class AppState: ObservableObject {
     }
 
     var freshness: DataFreshness {
-        switch (configuration.mode, connection) {
-        case (.demo, _): return .demo
-        case (.live, .connected): return .live
-        case (.live, .failed): return .offline(nil)
-        case (.live, _): return .live
-        }
+        if isDemo { return .demo }
+        if case .failed = connection { return .offline(nil) }
+        return .live
     }
 
     /// The bearer token, if one is set. Read from the Keychain each time
@@ -99,7 +113,7 @@ final class AppState: ObservableObject {
     func refreshConnection() async {
         probe?.cancel()
         probe = nil
-        guard configuration.mode == .live else {
+        guard !isDemo else {
             connection = .connected("demo")
             return
         }
@@ -131,7 +145,7 @@ final class AppState: ObservableObject {
     ///    "connected once, wrong forever" cannot happen either.
     func probeConnection(reason: String = "launch") {
         probe?.cancel()
-        guard configuration.mode == .live else {
+        guard !isDemo else {
             connection = .connected("demo")
             return
         }
@@ -154,7 +168,7 @@ final class AppState: ObservableObject {
             // Re-read every time: Settings can replace the service mid-ladder,
             // and the probe should follow the app rather than the instance it
             // started with.
-            guard configuration.mode == .live else {
+            guard !isDemo else {
                 connection = .connected("demo")
                 return
             }
@@ -189,30 +203,40 @@ final class AppState: ObservableObject {
         Task { await DocumentDownloadStore.shared.purge() }
     }
 
+    /// THE ADDRESS DECIDES EVERYTHING.
+    ///
+    /// A usable URL gets the live service pointed at it. No URL, or one that
+    /// does not validate, falls back to Demo - which is not a mode the user
+    /// chose, it is what "there is nowhere to ask" has to look like. That
+    /// fallback is also why `DemoATARUService` survived the removal of the
+    /// Demo/Live switch: the app must stay usable, and the previews and tests
+    /// run against it.
     private func rebuildService() {
-        switch configuration.mode {
-        case .demo:
-            // Demo talks to nothing, so nothing may carry a token.
-            ATARUAuth.configure(baseURL: nil, tokenProvider: { nil })
-            service = DemoATARUService()
-            connection = .connected("demo")
-        case .live:
-            let store = tokenStore
+        let store = tokenStore
+        if let baseURL = configuration.baseURL {
             // Re-set on every rebuild, which is what keeps the tile screens
             // pointed at the same server and credential as the assistant when
             // Settings changes the backend.
-            ATARUAuth.configure(baseURL: configuration.baseURL,
-                                tokenProvider: { store.token })
+            ATARUAuth.configure(baseURL: baseURL, tokenProvider: { store.token })
             do {
                 service = try LiveATARUService(configuration: configuration,
                                                tokenProvider: { store.token })
+                isDemo = false
                 connection = .unknown
             } catch {
-                // A malformed base URL must not leave the app with no service
-                // at all; Demo keeps it usable while Settings is corrected.
+                // Validated above, so this is not reachable through Settings -
+                // but a service the app cannot construct must never leave it
+                // with no service at all.
                 service = DemoATARUService()
+                isDemo = true
                 connection = .failed(APIError.notConfigured.localizedDescription)
             }
+        } else {
+            // Demo talks to nothing, so nothing may carry a token.
+            ATARUAuth.configure(baseURL: nil, tokenProvider: { nil })
+            service = DemoATARUService()
+            isDemo = true
+            connection = .connected("demo")
         }
         serviceGeneration += 1
         // PUSH FOLLOWS THE CREDENTIAL, IMMEDIATELY.

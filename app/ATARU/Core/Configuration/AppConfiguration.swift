@@ -27,7 +27,12 @@ enum BaseURLValidation: Equatable {
 /// Everything a future backend might change — host, API version, timeouts — is
 /// declared here rather than scattered through the feature code.
 struct AppConfiguration: Equatable, Codable {
-    var mode: AppEnvironmentMode
+    // NO `mode`. There was a Demo/Live switch here and a Demo/Live picker in
+    // Settings, directly above the address field - two ways to express one
+    // choice, which could disagree with each other. "Samarth has his testing
+    // URL and so do I so don't see any need for demo" (Arya, 2026-08-16): the
+    // dev twin is a URL and production is a URL, so the address IS the mode.
+    // Old persisted configurations still carry the key; Codable ignores it.
     var baseURLString: String
     var apiVersion: String
     var requestTimeout: TimeInterval
@@ -35,7 +40,6 @@ struct AppConfiguration: Equatable, Codable {
     var hapticsEnabled: Bool
 
     static let `default` = AppConfiguration(
-        mode: .demo,
         baseURLString: Bundle.main.object(forInfoDictionaryKey: "ATARUDefaultBaseURL") as? String ?? "",
         apiVersion: "",
         // Generous on purpose: a spoken answer is a retrieval plus a local

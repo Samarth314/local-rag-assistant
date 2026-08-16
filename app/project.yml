@@ -20,14 +20,13 @@ options:
 configFiles:
   Debug: Signing.xcconfig
   Release: Signing.xcconfig
-# WhisperKit (Argmax, MIT) runs Whisper on the Neural Engine via CoreML. It is
-# here for ONE reason Apple's recogniser cannot match: prompt biasing, which
-# makes proper nouns the assistant already knows ("Saikat Chaudhuri") likely
-# instead of mangled ("psych").
-packages:
-  WhisperKit:
-    url: https://github.com/argmaxinc/WhisperKit
-    from: "1.0.0"
+# NO WhisperKit any more (removed 2026-08-16 with the on-phone transcription
+# toggle). It ran Whisper on the Neural Engine for one reason Apple's
+# recogniser cannot match - prompt biasing toward names the assistant already
+# knows - and that is exactly what the SERVER's recogniser already does,
+# faster and on-network. With the toggle gone nothing imported it, so the
+# dependency, the ~630MB model download and the minute it cost every cold
+# start go with it.
 settings:
   base:
     SWIFT_VERSION: "5.0"
@@ -39,8 +38,6 @@ targets:
     platform: iOS
     sources:
       - path: ATARU
-    dependencies:
-      - package: WhisperKit
     settings:
       base:
         INFOPLIST_FILE: ATARU/Resources/Info.plist

@@ -30,8 +30,10 @@ final class ATARUUITests: XCTestCase {
     /// asserts an affordance the product no longer has.
     private func launch(startingOn tile: String? = nil) {
         app = XCUIApplication()
-        // Starts from a clean slate in Demo mode. Without this the suite
-        // inherits whatever server the simulator was last pointed at by hand.
+        // Starts from a clean slate with no server address, which is what
+        // "demo" means now that the Demo/Live switch is gone - see AppState.
+        // Without this the suite inherits whatever server the simulator was
+        // last pointed at by hand, or the address baked in at build time.
         app.launchArguments = ["-ATARUUITesting"]
         if let tile {
             app.launchArguments += ["-ATARUUIStartTile", tile]

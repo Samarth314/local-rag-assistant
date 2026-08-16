@@ -83,8 +83,12 @@
          nowhere — indistinguishable from a handler that does not work. -->
     <string>INStartAudioCallIntent</string>
   </array>
-  <key>NSContactsUsageDescription</key>
-  <string>ATARU can add itself to your contacts so you can call it like a person. It only writes its own entry and never reads or uploads your other contacts.</string>
+  <!-- NO NSContactsUsageDescription, deliberately. Adding ATARU to Contacts
+       hands iOS a vCard through the share sheet and the SYSTEM writes the
+       entry; this app never constructs a CNContactStore, so it must never
+       claim a reason to read the address book. A usage string left behind
+       here would be a promise about access the app does not have and does not
+       want. See Core/Telephony/ATARUContact.swift. -->
   <key>NSFaceIDUsageDescription</key>
   <string>ATARU can require Face ID before showing your private records.</string>
   <key>ITSAppUsesNonExemptEncryption</key><false/>

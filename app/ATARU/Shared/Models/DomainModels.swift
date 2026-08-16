@@ -50,12 +50,6 @@ enum SemanticTone { case green, cyan, amber, red }
 
 // MARK: - Environment
 
-enum AppEnvironmentMode: String, Codable, CaseIterable, Identifiable {
-    case demo, live
-    var id: String { rawValue }
-    var title: String { self == .demo ? "Demo" : "Live" }
-}
-
 /// Result of probing the configured backend.
 enum ConnectionState: Equatable {
     case unknown

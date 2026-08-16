@@ -366,7 +366,7 @@ struct VoiceView: View {
     /// orb, which is exactly where the radial launcher fans out, so it was
     /// permanent clutter showing through the tiles.
     private var hint: String {
-        state.configuration.mode == .demo
+        state.isDemo
             ? "Demo mode answers from sample files."
             : ""
     }

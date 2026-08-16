@@ -40,7 +40,7 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// Rough input level, 0...1, for the orb.
     @Published private(set) var level: Double = 0
 
-    /// 16 kHz mono copy of this turn's audio, for WhisperKit.
+    /// 16 kHz mono copy of this turn's audio, for the server's recogniser.
     ///
     /// Deliberately NOT main-actor state. Appending each ~23 ms buffer through
     /// `Task { @MainActor }` flooded the main actor, which starved
@@ -279,8 +279,6 @@ final class SpeechDictation: NSObject, ObservableObject {
         captured.reset()
         resampler.reset()
         try armRecognizer()
-        // Loading is idempotent; the first call downloads, later ones no-op.
-        WhisperTranscriber.shared.prepare()
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
@@ -432,7 +430,10 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
         closeMicrophone()
         if !sawFinal {
-            let budget: Double = WhisperTranscriber.shared.isReady ? 1.0 : 2.0
+            // Apple's final transcript is the answer now rather than a
+            // fallback behind an on-device Whisper, so it is worth the longer
+            // wait: see the note above, and the removal of WhisperTranscriber.
+            let budget: Double = 2.0
             let text = await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
                 finalWaiter = cont
                 Task { @MainActor in
@@ -483,8 +484,8 @@ final class SpeechDictation: NSObject, ObservableObject {
         return text
     }
 
-    /// The final question: Whisper's read when a model is loaded, Apple's
-    /// otherwise.
+    /// The final question: the server's name-biased read when it answers,
+    /// Apple's otherwise.
     ///
     /// Separate from `stop()` because transcription is asynchronous and the
     /// old signature is synchronous. Callers that only need to abandon audio
@@ -523,24 +524,23 @@ final class SpeechDictation: NSObject, ObservableObject {
             if !apple.isEmpty { return apple }
             return ""
         }
-        guard WhisperTranscriber.shared.isReady else { return apple }
-        // Hard ceiling. A question that never comes back is worse than one
-        // transcribed slightly worse: the app sat on "Thinking" forever the
-        // first time this path misbehaved, so Whisper now gets a fixed budget
-        // and Apple's transcript wins by default if it overruns.
-        // 10s ceiling, enforced by the transcriber itself - a question that
-        // never comes back is worse than one transcribed slightly worse.
-        let whisperText = await WhisperTranscriber.shared.transcribe(
-            samples: samples, vocabulary: vocabulary, timeout: 10)
-        guard let whisper = whisperText else { return apple }
-        // Whisper writes "[BLANK_AUDIO]" and similar for silence; a bracketed
-        // artefact is not a question, so fall back rather than ask it.
-        let cleaned = whisper.replacingOccurrences(
-            of: "\\[[^\\]]+\\]", with: "", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleaned.isEmpty else { return apple }
-        transcript = cleaned
-        return cleaned
+        // OFF THE NETWORK, THIS IS THE ANSWER (2026-08-16).
+        //
+        // There used to be a second engine here: WhisperKit, running the model
+        // on this phone, tried after Apple and preferred when it succeeded.
+        // Its whole value was proper-noun biasing away from the tailnet - it
+        // could be told that "Saikat Chaudhuri" was likely, and Apple's
+        // recogniser cannot be.
+        //
+        // It is gone with the Settings toggle that armed it, on Arya's order.
+        // The measured position: on-network the server path is faster AND
+        // knows the names, the toggle was off, and the model cost ~630MB and
+        // about a minute of every cold start. THE TRADE, stated plainly: off
+        // the network, dictation still works and is Apple's, unbiased - so
+        // names get mangled exactly as they did before WhisperKit arrived.
+        // Restoring it means restoring the toggle, the package and this
+        // branch together.
+        return apple
     }
 
     /// Abandons the current capture without producing a transcript.
