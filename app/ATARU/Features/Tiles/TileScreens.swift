@@ -221,37 +221,64 @@ struct TileScreenHost: View {
     @State private var pull: CGFloat = 0
     private let releaseAt: CGFloat = 110
 
+    /// Whether the hosted page's own ScrollView is at its top, which is the
+    /// whole of the rule for who owns a downward drag.
+    ///
+    /// True until told otherwise, on purpose: a page with no ScrollView in it
+    /// never reports, and "no scroll view" must mean "drag from anywhere",
+    /// not "never draggable".
+    @State private var contentAtTop = true
+    /// True once a drag has been claimed as a dismissal, by either gesture.
+    ///
+    /// It does two jobs. It turns the page's scrolling off for the duration -
+    /// otherwise the ScrollView rubber-bands downward under the same finger
+    /// that is already moving the whole page, and the content travels about
+    /// half again as far as the thumb. And it is what makes the two gestures
+    /// safe to have at once: the surface drag and the grab bar's own drag both
+    /// fire when the bar is what was touched, so both track the same value and
+    /// the FIRST `onEnded` to arrive clears this flag, which guards the other
+    /// one out. Without it a bar drag closed the page and fired the haptic
+    /// twice.
+    @State private var isDragging = false
+
     var body: some View {
         NavigationStack {
             screen
-                // The grab bar sits between the navigation bar and the
-                // content, where a sheet's would be, and it OWNS the gesture
-                // rather than sharing it.
+                // THE PAGE'S OWN SCROLL POSITION, READ FROM OUT HERE.
                 //
-                // Sharing was the obvious design and it does not work here.
-                // The standard sheet rule - claim the drag only while the
-                // content is at scroll top - needs the host to know a child
-                // ScrollView's offset, and every one of these pages owns its
-                // own ScrollView. Reading that offset from out here needs
-                // onScrollGeometryChange, which is iOS 18; this app targets
-                // 17. A simultaneous gesture without it would scroll the page
-                // AND drag the sheet on the same finger.
-                //
-                // So the handle is the whole of the gesture's surface. It
-                // cannot fight scrolling because it is not on the scrolling
-                // part, and it is visible, which is the other half of making
-                // a gesture usable.
-                .safeAreaInset(edge: .top, spacing: 0) { grabBar }
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(action: onClose) {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(Theme.textTertiary)
-                        }
-                        .accessibilityLabel("Close")
-                    }
+                // This is what the iOS 18 floor bought. Every one of these
+                // pages owns its own ScrollView, and the standard sheet rule -
+                // claim the drag only while the content is at scroll top -
+                // needs the host to know that offset. Under 17 there was no
+                // way to ask, so the gesture had to be confined to the grab
+                // bar and every screen carried a visible X as the real way
+                // out. Both of those are gone: the drag is the whole surface
+                // now, and there is no close chrome anywhere in the app.
+                .onScrollGeometryChange(for: Bool.self) { geometry in
+                    geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
+                } action: { _, atTop in
+                    contentAtTop = atTop
                 }
+                // Handing the gesture over cleanly, rather than letting two
+                // things move at once. Only ever true once `contentAtTop`
+                // already was, so nothing is taken away from a page that was
+                // being read.
+                .scrollDisabled(isDragging)
+                // Kept purely as an affordance - it is what says the page
+                // can be pulled away at all - and it keeps its own gesture,
+                // which works even part way down a long page.
+                .safeAreaInset(edge: .top, spacing: 0) { grabBar }
         }
+        // The drag is the whole surface. `simultaneousGesture` rather than
+        // `gesture`: the content underneath is full of buttons, toggles and
+        // links, and they must all keep working. A 12pt minimum keeps it away
+        // from taps entirely.
+        .simultaneousGesture(dismissDrag)
+        // No visible escape, so there has to be an invisible one. This is the
+        // system's own: VoiceOver's two-finger scrub, and the Switch Control
+        // escape. Without it, removing the X would leave a page that a
+        // press-and-sweep user cannot get out of at all.
+        .accessibilityAction(.escape) { onClose() }
         // The same backdrop every other surface in the app paints, not the
         // flat `Palette.bg` this used to use. #090A0C against a gradient
         // running #15181D to #060708 is a visible shade difference wherever
@@ -263,11 +290,75 @@ struct TileScreenHost: View {
         // Only the content moves. The backdrop behind this is the same
         // gradient, so the page slides over a background that stays perfectly
         // still - no edge, no shade change, nothing sweeping.
+        //
+        // Deliberately NOT animated by an implicit `.animation(value: pull)`:
+        // while the finger is down the page has to be exactly where the thumb
+        // put it, not springing after it. The settle back is animated
+        // explicitly at release instead.
         .offset(y: pull)
-        .animation(.spring(response: 0.32, dampingFraction: 0.86), value: pull)
     }
 
-    /// Drag down to put the page away.
+    /// The app's one dismissal: pull the page down and let go.
+    ///
+    /// The rule is the system's own for sheets, and the reason it is safe to
+    /// put on the entire surface: a drag becomes a dismissal only if the page
+    /// was already at its scroll top when the finger started moving, and only
+    /// if the movement is downward and more vertical than horizontal. Anything
+    /// else is left alone and reaches the content, which is why a list still
+    /// scrolls, a toggle still flips and a row still taps through.
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                if !isDragging {
+                    guard contentAtTop,
+                          value.translation.height > 0,
+                          value.translation.height > abs(value.translation.width)
+                    else { return }
+                    isDragging = true
+                }
+                track(value)
+            }
+            .onEnded(endDrag)
+    }
+
+    /// The page follows the thumb: downward one for one, upward rubber-banded,
+    /// so pulling the wrong way reads as resistance rather than as nothing
+    /// happening.
+    private func track(_ value: DragGesture.Value) {
+        pull = value.translation.height > 0
+            ? value.translation.height
+            : value.translation.height / 6
+    }
+
+    private func endDrag(_ value: DragGesture.Value) {
+        guard isDragging else { return }
+        isDragging = false
+        settle(value)
+    }
+
+    /// A flick counts as much as a distance, so a fast gesture is not punished
+    /// for being fast.
+    private func settle(_ value: DragGesture.Value) {
+        let projected = value.translation.height
+            + value.predictedEndTranslation.height / 3
+        if projected > releaseAt {
+            Haptics.fire(.tap)
+            onClose()
+            // Reset behind the dismissal, so reopening the page does not
+            // start it half way down the screen.
+            pull = 0
+        } else {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                pull = 0
+            }
+        }
+    }
+
+    /// The affordance: what says the page can be pulled away at all.
+    ///
+    /// It keeps a gesture of its own rather than leaning on the surface drag,
+    /// because it is the one part of the page that means "close" no matter how
+    /// far down the content has been scrolled.
     private var grabBar: some View {
         // A generous strip around a small mark: 28pt of target for a 4pt bar,
         // because the thing you have to hit should be bigger than the thing
@@ -282,32 +373,17 @@ struct TileScreenHost: View {
             .gesture(
                 DragGesture(minimumDistance: 4)
                     .onChanged { value in
-                        // Downward only, and rubber-banded upward so pulling
-                        // the wrong way reads as resistance rather than as
-                        // nothing happening.
-                        pull = value.translation.height > 0
-                            ? value.translation.height
-                            : value.translation.height / 6
+                        // No at-top rule here, deliberately: the bar is not
+                        // part of the scrolling content, so pulling it means
+                        // close however far down the page has been read. That
+                        // is what a sheet's grabber does.
+                        isDragging = true
+                        track(value)
                     }
-                    .onEnded { value in
-                        // A flick counts as much as a distance: releasing at
-                        // speed near the threshold should still close, or a
-                        // fast gesture gets punished for being fast.
-                        let projected = value.translation.height
-                            + value.predictedEndTranslation.height / 3
-                        if projected > releaseAt {
-                            Haptics.fire(.tap)
-                            onClose()
-                            // Reset behind the dismissal, so reopening the
-                            // page does not start it half way down the screen.
-                            pull = 0
-                        } else {
-                            pull = 0
-                        }
-                    }
+                    .onEnded(endDrag)
             )
             .accessibilityLabel("Close")
-            .accessibilityHint("Drag down, or use the close button.")
+            .accessibilityHint("Drag down anywhere on the page to close it.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction { onClose() }
     }
@@ -325,6 +401,14 @@ struct TileScreenHost: View {
         case .workspaces: WorkspacesScreen()
         case .morning:    MorningCallScreen()
         case .remote:     RemoteScreen()
+        // Both of these used to live somewhere else and be the exception.
+        // Documents was a second ROOT screen, reached by swapping what the app
+        // was showing, so it had no host chrome and nothing to swipe away.
+        // Settings was a gear in the Ask navigation bar - a permanent control
+        // on the app's front page for something touched about twice a year.
+        // They are ordinary tiles now, and every destination behaves the same.
+        case .documents:  DocumentsView()
+        case .settings:   SettingsView()
         default:          ServiceCardScreen(tile: tile)
         }
     }

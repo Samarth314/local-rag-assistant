@@ -11,21 +11,43 @@ final class ATARUUITests: XCTestCase {
 
     override func setUpWithError() throws {
         continueAfterFailure = false
+    }
+
+    /// Launches on the Ask page, or straight onto a tile.
+    ///
+    /// The tile argument is not a shortcut past a route the suite could
+    /// otherwise take - there is no such route. The app has two ways between
+    /// screens and XCUITest can drive neither: the radial launcher takes its
+    /// touches from a window recogniser and never participates in
+    /// hit-testing, and the accessible path is a set of named accessibility
+    /// actions on the orb, which XCUIElement cannot invoke. The navigation-bar
+    /// destinations menu that used to be the third way was removed on purpose
+    /// (the launcher is THE launcher), and these tests were the only thing
+    /// still driving it.
+    ///
+    /// What is lost is coverage of the way in; what is kept is coverage of the
+    /// page. Being explicit about that is better than a test that quietly
+    /// asserts an affordance the product no longer has.
+    private func launch(startingOn tile: String? = nil) {
         app = XCUIApplication()
         // Starts from a clean slate in Demo mode. Without this the suite
         // inherits whatever server the simulator was last pointed at by hand.
         app.launchArguments = ["-ATARUUITesting"]
+        if let tile {
+            app.launchArguments += ["-ATARUUIStartTile", tile]
+        }
         app.launch()
     }
 
     func testLaunchesIntoAskInDemoMode() {
+        launch()
         XCTAssertTrue(app.staticTexts["Hold to ask"].waitForExistence(timeout: 8))
         // Demo state must be stated, never implied.
         XCTAssertTrue(app.staticTexts["Demo data — no backend connected."].exists)
     }
 
     func testLibraryListsDocumentsAndFiltersByCategory() {
-        openLibrary()
+        launch(startingOn: "documents")
 
         let firstDocument = app.staticTexts["System Architecture.md"]
         XCTAssertTrue(firstDocument.waitForExistence(timeout: 8))
@@ -37,7 +59,7 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testDocumentOpensAndOffersSending() {
-        openLibrary()
+        launch(startingOn: "documents")
         app.staticTexts["System Architecture.md"].firstMatch.tap()
 
         XCTAssertTrue(app.buttons["Send"].waitForExistence(timeout: 5))
@@ -46,6 +68,7 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testTypedQuestionProducesAnAnswer() {
+        launch()
         // The field is inline on the Ask screen now, not behind a sheet —
         // there is no "Type instead" button to open first.
         //
@@ -80,22 +103,25 @@ final class ATARUUITests: XCTestCase {
         ).firstMatch.waitForExistence(timeout: 15))
     }
 
-    /// Navigates to the document library.
+    /// Pulling a tile page down closes it and puts Ask back.
     ///
-    /// Through the navigation bar's destinations menu, not the radial
-    /// launcher. The launcher takes its touches from a recogniser on the
-    /// window and never participates in hit-testing, so there is nothing there
-    /// for XCUITest to tap — which is the same reason VoiceOver and Switch
-    /// Control cannot use it, and the reason this menu exists.
-    ///
-    /// That makes this test the guard on the accessible route: if the menu is
-    /// ever dropped as redundant, this fails rather than the app silently
-    /// becoming unnavigable for anyone who cannot press-and-sweep.
-    private func openLibrary() {
-        app.buttons["open-menu"].tap()
-        let item = app.buttons["Docs"]
-        XCTAssertTrue(item.waitForExistence(timeout: 5),
-                      "the destinations menu did not open")
-        item.tap()
+    /// The X in the corner is gone app-wide - every tile screen is closed by
+    /// dragging it down, which is why this is worth a smoke test even though
+    /// the gesture itself is exercised by hand.
+    func testATilePageIsClosedByDraggingItDown() {
+        launch(startingOn: "documents")
+        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+        // Nothing in the navigation bar closes it any more. (The grab bar
+        // below it is labelled "Close" for VoiceOver and is not chrome in the
+        // bar, which is why this is scoped to the bar itself.)
+        XCTAssertFalse(app.navigationBars["Library"].buttons["Close"].exists,
+                       "a tile screen still has a close button in its navigation bar")
+
+        let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.14))
+        let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+        top.press(forDuration: 0.05, thenDragTo: bottom)
+
+        XCTAssertTrue(app.staticTexts["Hold to ask"].waitForExistence(timeout: 5),
+                      "dragging the page down did not put it away")
     }
 }
