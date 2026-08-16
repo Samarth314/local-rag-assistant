@@ -203,6 +203,67 @@ enum TileFetch {
     }
 }
 
+// MARK: - Last known content
+
+/// The last payload each tile screen saw, on disk, so a cold open draws
+/// something in the first frame instead of a blank page.
+///
+/// ## Why every screen, and not just Home
+///
+/// "When I open a tile I haven't opened in a long time, it's slow." It was:
+/// nothing renders until the fetch returns, and these fetches cross the tailnet
+/// to the mini and gather a whole dashboard - Home's own call is given a 25
+/// second timeout for exactly that reason. Home already solved this by keeping
+/// its last payload and reconciling; the pattern was simply never generalised,
+/// so five other screens still opened blank and waited.
+///
+/// A cold open now draws the last known content immediately and quietly
+/// replaces it when the network answers. What was true five minutes ago is
+/// enormously more useful than nothing, and the screens that could mislead say
+/// so: a page still showing cache when the refresh FAILS puts up a "showing
+/// cached data from…" banner, which is the only case where the age matters.
+///
+/// First ever open with nothing cached goes straight to the content skeleton on
+/// the backdrop - never a differently coloured pane.
+enum TileCache {
+
+    private struct Envelope<Payload: Codable>: Codable {
+        let payload: Payload
+        let savedAt: Date
+    }
+
+    /// Derived from the backend URL by substitution, NOT by `hashValue` -
+    /// String hashing is seeded per process, so a hashed filename would miss
+    /// its own cache on the next launch, which is the only launch that matters.
+    ///
+    /// Keyed by the URL, so pointing the app at the dev twin cannot serve
+    /// production's numbers out of a cache, or the reverse.
+    private static func fileURL(kind: String, root: URL) -> URL? {
+        guard let dir = FileManager.default.urls(for: .cachesDirectory,
+                                                 in: .userDomainMask).first else { return nil }
+        let slug = root.absoluteString.replacingOccurrences(
+            of: "[^A-Za-z0-9]", with: "-", options: .regularExpression)
+        return dir.appending(path: "\(kind)-\(slug).json")
+    }
+
+    static func load<Payload: Codable>(_ type: Payload.Type, kind: String,
+                                       for root: URL?) -> (payload: Payload, savedAt: Date)? {
+        guard let root, let url = fileURL(kind: kind, root: root),
+              let data = try? Data(contentsOf: url),
+              let envelope = try? JSONDecoder().decode(Envelope<Payload>.self, from: data)
+        else { return nil }
+        return (envelope.payload, envelope.savedAt)
+    }
+
+    static func save<Payload: Codable>(_ payload: Payload, kind: String, for root: URL) {
+        guard let url = fileURL(kind: kind, root: root),
+              let data = try? JSONEncoder().encode(
+                Envelope(payload: payload, savedAt: Date()))
+        else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+}
+
 // MARK: - Host
 
 /// Dispatches a tile to its native screen.
@@ -216,172 +277,37 @@ struct TileScreenHost: View {
     let tile: HomeTile
     let onClose: () -> Void
 
-    /// How far the page has been pulled down, and the distance past which
-    /// letting go means "close" rather than "never mind".
-    @State private var pull: CGFloat = 0
-    private let releaseAt: CGFloat = 110
-
-    /// Whether the hosted page's own ScrollView is at its top, which is the
-    /// whole of the rule for who owns a downward drag.
-    ///
-    /// True until told otherwise, on purpose: a page with no ScrollView in it
-    /// never reports, and "no scroll view" must mean "drag from anywhere",
-    /// not "never draggable".
-    @State private var contentAtTop = true
-    /// True once a drag has been claimed as a dismissal, by either gesture.
-    ///
-    /// It does two jobs. It turns the page's scrolling off for the duration -
-    /// otherwise the ScrollView rubber-bands downward under the same finger
-    /// that is already moving the whole page, and the content travels about
-    /// half again as far as the thumb. And it is what makes the two gestures
-    /// safe to have at once: the surface drag and the grab bar's own drag both
-    /// fire when the bar is what was touched, so both track the same value and
-    /// the FIRST `onEnded` to arrive clears this flag, which guards the other
-    /// one out. Without it a bar drag closed the page and fired the haptic
-    /// twice.
-    @State private var isDragging = false
-
     var body: some View {
         NavigationStack {
             screen
-                // THE PAGE'S OWN SCROLL POSITION, READ FROM OUT HERE.
-                //
-                // This is what the iOS 18 floor bought. Every one of these
-                // pages owns its own ScrollView, and the standard sheet rule -
-                // claim the drag only while the content is at scroll top -
-                // needs the host to know that offset. Under 17 there was no
-                // way to ask, so the gesture had to be confined to the grab
-                // bar and every screen carried a visible X as the real way
-                // out. Both of those are gone: the drag is the whole surface
-                // now, and there is no close chrome anywhere in the app.
-                .onScrollGeometryChange(for: Bool.self) { geometry in
-                    geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
-                } action: { _, atTop in
-                    contentAtTop = atTop
-                }
-                // Handing the gesture over cleanly, rather than letting two
-                // things move at once. Only ever true once `contentAtTop`
-                // already was, so nothing is taken away from a page that was
-                // being read.
-                .scrollDisabled(isDragging)
-                // Kept purely as an affordance - it is what says the page
-                // can be pulled away at all - and it keeps its own gesture,
-                // which works even part way down a long page.
+                // Kept as the affordance - it is what says the page can be
+                // pulled away at all - and deliberately STATIC. It used to
+                // brighten past the release threshold, which meant it read
+                // `pull` and so re-evaluated on every touch-moved event; it
+                // sits in a `safeAreaInset`, so every one of those events
+                // re-measured the inset and re-laid out the whole page
+                // underneath it. That was half the jitter. What the threshold
+                // feels like is now carried by the page dissolving under the
+                // thumb and by one haptic, which is better feedback anyway.
                 .safeAreaInset(edge: .top, spacing: 0) { grabBar }
         }
-        // The drag is the whole surface. `simultaneousGesture` rather than
-        // `gesture`: the content underneath is full of buttons, toggles and
-        // links, and they must all keep working. A 12pt minimum keeps it away
-        // from taps entirely.
-        .simultaneousGesture(dismissDrag)
-        // No visible escape, so there has to be an invisible one. This is the
-        // system's own: VoiceOver's two-finger scrub, and the Switch Control
-        // escape. Without it, removing the X would leave a page that a
-        // press-and-sweep user cannot get out of at all.
-        .accessibilityAction(.escape) { onClose() }
-        // The same backdrop every other surface in the app paints, not the
-        // flat `Palette.bg` this used to use. #090A0C against a gradient
-        // running #15181D to #060708 is a visible shade difference wherever
-        // the two meet - and during a transition, where both are on screen at
-        // once, it was the whole screen. Matching it means the background is
-        // one continuous thing no matter which layer is drawing it.
-        .background(Ataru.backdrop.ignoresSafeArea())
+        // The gesture, the offset and the dissolve all live in a MODIFIER, and
+        // that is load-bearing rather than tidy - see TileDismissal.
+        .tileDismissal(onClose: onClose)
+        .background(AtaruBackdrop())
         .preferredColorScheme(.dark)
-        // Only the content moves. The backdrop behind this is the same
-        // gradient, so the page slides over a background that stays perfectly
-        // still - no edge, no shade change, nothing sweeping.
-        //
-        // Deliberately NOT animated by an implicit `.animation(value: pull)`:
-        // while the finger is down the page has to be exactly where the thumb
-        // put it, not springing after it. The settle back is animated
-        // explicitly at release instead.
-        .offset(y: pull)
     }
 
-    /// The app's one dismissal: pull the page down and let go.
-    ///
-    /// The rule is the system's own for sheets, and the reason it is safe to
-    /// put on the entire surface: a drag becomes a dismissal only if the page
-    /// was already at its scroll top when the finger started moving, and only
-    /// if the movement is downward and more vertical than horizontal. Anything
-    /// else is left alone and reaches the content, which is why a list still
-    /// scrolls, a toggle still flips and a row still taps through.
-    private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                if !isDragging {
-                    guard contentAtTop,
-                          value.translation.height > 0,
-                          value.translation.height > abs(value.translation.width)
-                    else { return }
-                    isDragging = true
-                }
-                track(value)
-            }
-            .onEnded(endDrag)
-    }
-
-    /// The page follows the thumb: downward one for one, upward rubber-banded,
-    /// so pulling the wrong way reads as resistance rather than as nothing
-    /// happening.
-    private func track(_ value: DragGesture.Value) {
-        pull = value.translation.height > 0
-            ? value.translation.height
-            : value.translation.height / 6
-    }
-
-    private func endDrag(_ value: DragGesture.Value) {
-        guard isDragging else { return }
-        isDragging = false
-        settle(value)
-    }
-
-    /// A flick counts as much as a distance, so a fast gesture is not punished
-    /// for being fast.
-    private func settle(_ value: DragGesture.Value) {
-        let projected = value.translation.height
-            + value.predictedEndTranslation.height / 3
-        if projected > releaseAt {
-            Haptics.fire(.tap)
-            onClose()
-            // Reset behind the dismissal, so reopening the page does not
-            // start it half way down the screen.
-            pull = 0
-        } else {
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
-                pull = 0
-            }
-        }
-    }
-
-    /// The affordance: what says the page can be pulled away at all.
-    ///
-    /// It keeps a gesture of its own rather than leaning on the surface drag,
-    /// because it is the one part of the page that means "close" no matter how
-    /// far down the content has been scrolled.
     private var grabBar: some View {
         // A generous strip around a small mark: 28pt of target for a 4pt bar,
         // because the thing you have to hit should be bigger than the thing
         // you can see.
         Capsule()
-            .fill(Theme.textTertiary.opacity(pull > releaseAt ? 0.9 : 0.45))
+            .fill(Theme.textTertiary.opacity(0.45))
             .frame(width: 38, height: 4)
             .frame(maxWidth: .infinity)
             .frame(height: 28)
             .contentShape(Rectangle())
-            .background(Color.clear)
-            .gesture(
-                DragGesture(minimumDistance: 4)
-                    .onChanged { value in
-                        // No at-top rule here, deliberately: the bar is not
-                        // part of the scrolling content, so pulling it means
-                        // close however far down the page has been read. That
-                        // is what a sheet's grabber does.
-                        isDragging = true
-                        track(value)
-                    }
-                    .onEnded(endDrag)
-            )
             .accessibilityLabel("Close")
             .accessibilityHint("Drag down anywhere on the page to close it.")
             .accessibilityAddTraits(.isButton)
@@ -411,6 +337,192 @@ struct TileScreenHost: View {
         case .settings:   SettingsView()
         default:          ServiceCardScreen(tile: tile)
         }
+    }
+}
+
+// MARK: - Pulling a page away
+
+/// Drag the page down to close it: the gesture, the tracking, and the dissolve.
+///
+/// ## Why a ViewModifier and not just more state on the host
+///
+/// "It jitters while I pull down." It did, and the state was in the wrong
+/// place. `pull` lived on `TileScreenHost`, and `TileScreenHost.body` is what
+/// builds `screen` - so every touch-moved event invalidated the host's body and
+/// SwiftUI re-evaluated the entire tile page, sixty times a second, while the
+/// finger was down. On a light page that is invisible. On Finance or Workspaces
+/// it is exactly the stutter he reported.
+///
+/// A ViewModifier fixes it structurally. `body(content:)` receives the already
+/// built subtree as an opaque value, so state changing HERE re-runs this
+/// twenty-line body and does not touch the page at all. The offset, the scale
+/// and the opacity are layer properties the compositor animates without asking
+/// SwiftUI to lay anything out again.
+///
+/// The other two contributors, both gone: the grab bar read `pull` from inside
+/// a `safeAreaInset` (re-measuring the inset, and therefore the page, per
+/// event), and `pull` carried an implicit `.animation`, so every frame started
+/// a new spring toward a value the finger had already left behind - motion
+/// chasing motion, which is what "jitter" usually is.
+///
+/// ## What it feels like
+///
+/// The offset tracks the thumb exactly, with no animation on it while the
+/// finger is down. As the page travels it shrinks slightly and fades - the
+/// dissolve he asked for, driven by DISTANCE rather than by a timer, so the
+/// page visibly comes apart in proportion to the gesture and letting go early
+/// puts it straight back. Past the threshold it is committed: a light impact
+/// when the drag is claimed, one success tick at the moment crossing the
+/// threshold would close it, and then the page dissolves out rather than
+/// snapping back to zero and vanishing - which is what made the old exit feel
+/// abrupt, because the page jumped back UP to its origin at the same instant
+/// it disappeared.
+struct TileDismissal: ViewModifier {
+    let onClose: () -> Void
+
+    /// How far the page has been pulled. Never animated while a finger is
+    /// down.
+    @State private var pull: CGFloat = 0
+    /// Whether the hosted page's own ScrollView is at its top, which is the
+    /// standard sheet rule for who owns a downward drag. True until told
+    /// otherwise: a page with no ScrollView never reports, and "no scroll
+    /// view" must mean "draggable from anywhere", not "never draggable".
+    @State private var atTop = true
+    /// True once a drag has been claimed as a dismissal.
+    @State private var claimed = false
+    /// Whether letting go right now would close the page. Tracked so the
+    /// haptic fires once per crossing rather than on every event past it.
+    @State private var wouldClose = false
+
+    /// Vestibular motion is the part of this that is optional. Under Reduce
+    /// Motion the page still follows the thumb - that is direct manipulation,
+    /// not decoration, and taking it away would make the gesture unreadable -
+    /// but it does not scale as it goes, which is the part that reads as
+    /// movement through depth.
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// Past this, releasing closes.
+    private let releaseAt: CGFloat = 110
+    /// A drag starting inside this band from the top is treated as a handle
+    /// drag and skips the at-top rule, the way a sheet's grabber does. It
+    /// covers the navigation bar and the grab bar under it, neither of which
+    /// is scrolling content.
+    private let handleBand: CGFloat = 132
+
+    func body(content: Content) -> some View {
+        content
+            // The page's own scroll position, read from out here. This is what
+            // the iOS 18 floor was raised for.
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
+            } action: { _, top in
+                atTop = top
+            }
+            // Handing the gesture over cleanly rather than letting two things
+            // move at once: without this the ScrollView rubber-bands downward
+            // under the same finger that is already moving the whole page.
+            .scrollDisabled(claimed)
+            // Distance-driven, not time-driven. Cheap layer properties only -
+            // a blur here would be a full-screen render pass per frame, which
+            // is a jitter of its own; the blur belongs in the removal
+            // transition, where it runs once.
+            .scaleEffect(reduceMotion ? 1 : 1 - 0.05 * progress, anchor: .top)
+            .opacity(Double(1 - 0.4 * progress))
+            .offset(y: pull)
+            .simultaneousGesture(drag)
+            // No visible escape, so there has to be an invisible one: this is
+            // VoiceOver's two-finger scrub and Switch Control's escape.
+            .accessibilityAction(.escape) { close() }
+    }
+
+    /// 0 at rest, 1 at the point where letting go closes the page.
+    private var progress: CGFloat {
+        min(1, max(0, pull) / releaseAt)
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .local)
+            .onChanged { value in
+                if !claimed {
+                    let fromHandle = value.startLocation.y < handleBand
+                    guard atTop || fromHandle,
+                          value.translation.height > 0,
+                          value.translation.height > abs(value.translation.width)
+                    else { return }
+                    claimed = true
+                    Haptics.fire(.tap)
+                }
+                // Raw. No withAnimation, no implicit animation on `pull`: the
+                // page has to be exactly where the thumb put it.
+                pull = value.translation.height > 0
+                    ? value.translation.height
+                    : value.translation.height / 6
+
+                // One tick when crossing into "letting go closes it", and one
+                // more only if he pulls back out and in again. The lower reset
+                // point is hysteresis - a thumb resting on the threshold would
+                // otherwise buzz continuously.
+                if !wouldClose, pull > releaseAt {
+                    wouldClose = true
+                    Haptics.fire(.success)
+                } else if wouldClose, pull < releaseAt * 0.85 {
+                    wouldClose = false
+                }
+            }
+            .onEnded { value in
+                guard claimed else { return }
+                claimed = false
+                wouldClose = false
+                // A flick counts as much as a distance, so a fast gesture is
+                // not punished for being fast.
+                let projected = value.translation.height
+                    + value.predictedEndTranslation.height / 3
+                if projected > releaseAt {
+                    close()
+                } else {
+                    withAnimation(Theme.spring) { pull = 0 }
+                }
+            }
+    }
+
+    /// Commit. The page keeps travelling as it dissolves rather than snapping
+    /// back to its origin first - `pull` is deliberately NOT reset, because
+    /// this view is about to be removed and its state goes with it.
+    private func close() {
+        withAnimation(Theme.quick) { pull += 40 }
+        onClose()
+    }
+}
+
+extension View {
+    func tileDismissal(onClose: @escaping () -> Void) -> some View {
+        modifier(TileDismissal(onClose: onClose))
+    }
+}
+
+/// Coming apart rather than being switched off.
+///
+/// A plain opacity fade holds every edge crisp the whole way to invisible,
+/// which reads as the page being cut. Softening and receding slightly as it
+/// goes reads as it dissolving into the backdrop, which is what a page being
+/// put away is doing. The counterpart of the launcher's own `dissolve` - same
+/// idea, one motion vocabulary - but it recedes instead of growing, because
+/// this one is being pushed away rather than let go of.
+private struct TileDissolve: ViewModifier {
+    /// 0 is the page as drawn, 1 is gone.
+    let amount: Double
+
+    func body(content: Content) -> some View {
+        content
+            .blur(radius: amount * 7)
+            .opacity(1 - amount)
+            .scaleEffect(1 - amount * 0.06, anchor: .top)
+    }
+}
+
+extension AnyTransition {
+    static var tileDissolve: AnyTransition {
+        .modifier(active: TileDissolve(amount: 1), identity: TileDissolve(amount: 0))
     }
 }
 

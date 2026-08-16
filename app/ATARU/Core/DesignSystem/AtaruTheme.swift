@@ -229,9 +229,19 @@ public extension View {
             .foregroundStyle(style.color)
     }
 
-    /// The full-bleed app background. Apply once, at the root.
+    /// The full-bleed app background.
+    ///
+    /// Goes through `AtaruBackdrop` rather than painting `Ataru.backdrop`
+    /// directly, and that is the only edit this vendored file carries. The
+    /// gradient's centre is expressed as a fraction of the painting view's own
+    /// height, so painting it into two different frames produces two visibly
+    /// different backgrounds with a hard seam between them - which is the
+    /// "off-colour rectangle" that has now been reported three times. See
+    /// Backdrop.swift for the whole story. Restore this line to
+    /// `Ataru.backdrop.ignoresSafeArea()` when re-vendoring the kit and the
+    /// seam comes straight back.
     func ataruBackdrop() -> some View {
-        self.background(Ataru.backdrop.ignoresSafeArea())
+        self.background(AtaruBackdrop())
     }
 
     /// The milled-metal card treatment: gradient, hairline border, and the

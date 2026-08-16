@@ -78,25 +78,25 @@ struct ErrorBanner: View {
 // MARK: - Finance
 
 private enum FinanceDTO {
-    struct Payload: Decodable {
+    struct Payload: Codable {
         let ok: Bool?
         let demo: Bool?
         let networth: NetWorth?
         let spending: Spending?
         let subscriptions: Subscriptions?
     }
-    struct NetWorth: Decodable {
+    struct NetWorth: Codable {
         let ok: Bool?
         let total: Double?
         let breakdown: [Account]?
     }
-    struct Account: Decodable {
+    struct Account: Codable {
         let family: String?
         let value: Double?
         let as_of: String?
         let stale: Bool?
     }
-    struct Spending: Decodable {
+    struct Spending: Codable {
         let months: [String]?
         let totals: [Double]?
         let latest_total: Double?
@@ -104,19 +104,19 @@ private enum FinanceDTO {
         let latest_by_cat: [Category]?
         let top_merchants: [Merchant]?
     }
-    struct Category: Decodable {
+    struct Category: Codable {
         let category: String?
         let amount: Double?
     }
-    struct Merchant: Decodable {
+    struct Merchant: Codable {
         let merchant: String?
         let amount: Double?
     }
-    struct Subscriptions: Decodable {
+    struct Subscriptions: Codable {
         let active: [Sub]?
         let monthly_total: Double?
     }
-    struct Sub: Decodable {
+    struct Sub: Codable {
         let service: String?
         let amount: Double?
         let cadence: String?
@@ -128,11 +128,27 @@ struct FinanceScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: FinanceDTO.Payload?
     @State private var failed = false
+    /// When the payload on screen was fetched, if it came off disk. See
+    /// TileCache: a cold open draws last-known content rather than waiting.
+    @State private var cachedAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                if failed {
+                    // A first load with nothing to show is an error. A refresh
+                    // that failed over content already on screen is a lost
+                    // round trip, and dressing the two the same is what had a
+                    // page calling itself unreachable while it was showing
+                    // perfectly good numbers. See ScreenState.
+                    if payload == nil {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    } else if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        InlineNote(text: "Couldn't refresh - the numbers below are the last ATARU had.")
+                    }
+                }
 
                 if let networth = payload?.networth, let total = networth.total {
                     ATCard {
@@ -238,15 +254,36 @@ struct FinanceScreen: View {
         .navigationTitle(payload?.demo == true ? "Finance (demo)" : "Finance")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        // Last known content in the first frame, then the network. See
+        // TileCache for why every screen does this now and not just Home.
+        .task {
+            restore()
+            await load()
+        }
+    }
+
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.finance) }
+
+    /// Draw the last known numbers first, then go and check them.
+    private func restore() {
+        guard payload == nil,
+              let cached = TileCache.load(FinanceDTO.Payload.self,
+                                          kind: "finance", for: root) else { return }
+        payload = cached.payload
+        cachedAt = cached.savedAt
     }
 
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.finance) else { return }
+        guard let root else { return }
         do {
-            payload = try await TileFetch.get(
+            let fresh = try await TileFetch.get(
                 FinanceDTO.Payload.self, root.appending(path: "api/finance"))
-            failed = false
+            withAnimation(Theme.quick) {
+                payload = fresh
+                failed = false
+                cachedAt = nil
+            }
+            TileCache.save(fresh, kind: "finance", for: root)
         } catch { failed = true }
     }
 
@@ -258,7 +295,7 @@ struct FinanceScreen: View {
 // MARK: - Health
 
 private enum HealthDTO {
-    struct Payload: Decodable {
+    struct Payload: Codable {
         let demo: Bool?
         let markers: [Marker]?
         let meds: Meds?
@@ -266,39 +303,39 @@ private enum HealthDTO {
         let disclaimer: String?
         let panels: Panels?
     }
-    struct Panels: Decodable {
+    struct Panels: Codable {
         let latest_date: String?
         let flagged: Int?
     }
-    struct Marker: Decodable {
+    struct Marker: Codable {
         let key: String?
         let name: String?
         let unit: String?
         let latest: Latest?
         let points: [Point]?
     }
-    struct Latest: Decodable {
+    struct Latest: Codable {
         let date: String?
         let value: String?
         let flag: String?
         let range: String?
     }
-    struct Point: Decodable {
+    struct Point: Codable {
         let date: String?
         let value: Double?
     }
-    struct Meds: Decodable {
+    struct Meds: Codable {
         let active: [Med]?
     }
-    struct Med: Decodable {
+    struct Med: Codable {
         let med: String?
         let strength: String?
         let schedule: String?
     }
-    struct Timeline: Decodable {
+    struct Timeline: Codable {
         let events: [Event]?
     }
-    struct Event: Decodable {
+    struct Event: Codable {
         let date: String?
         let kind: String?
         let text: String?
@@ -309,11 +346,25 @@ struct HealthScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: HealthDTO.Payload?
     @State private var failed = false
+    @State private var cachedAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                if failed {
+                    // A first load with nothing to show is an error. A refresh
+                    // that failed over content already on screen is a lost
+                    // round trip, and dressing the two the same is what had a
+                    // page calling itself unreachable while it was showing
+                    // perfectly good numbers. See ScreenState.
+                    if payload == nil {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    } else if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        InlineNote(text: "Couldn't refresh - what is below is the last ATARU had.")
+                    }
+                }
 
                 if let panels = payload?.panels, let date = panels.latest_date {
                     ATCard {
@@ -429,7 +480,12 @@ struct HealthScreen: View {
         .navigationTitle(payload?.demo == true ? "Health (demo)" : "Health")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        // Last known content in the first frame, then the network. See
+        // TileCache for why every screen does this now and not just Home.
+        .task {
+            restore()
+            await load()
+        }
     }
 
     private func flagColor(_ flag: String?) -> Color {
@@ -439,12 +495,27 @@ struct HealthScreen: View {
         }
     }
 
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.health) }
+
+    private func restore() {
+        guard payload == nil,
+              let cached = TileCache.load(HealthDTO.Payload.self,
+                                          kind: "health", for: root) else { return }
+        payload = cached.payload
+        cachedAt = cached.savedAt
+    }
+
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.health) else { return }
+        guard let root else { return }
         do {
-            payload = try await TileFetch.get(
+            let fresh = try await TileFetch.get(
                 HealthDTO.Payload.self, root.appending(path: "api/health"))
-            failed = false
+            withAnimation(Theme.quick) {
+                payload = fresh
+                failed = false
+                cachedAt = nil
+            }
+            TileCache.save(fresh, kind: "health", for: root)
         } catch { failed = true }
     }
 }
@@ -452,8 +523,9 @@ struct HealthScreen: View {
 // MARK: - Home
 
 private enum HomeDTO {
-    // Codable, not just Decodable: the last payload is written back to disk so
-    // the screen has something to draw before the network answers. See HomeCache.
+    // Codable, not just Decodable: the last payload is written back to disk
+    // so the screen has something to draw before the network answers. Every
+    // DTO in this file is, for the same reason - see TileCache.
     struct Payload: Codable {
         let ok: Bool?
         let error: String?
@@ -487,7 +559,7 @@ private enum HomeDTO {
         }
     }
 
-    struct ClimateReply: Decodable {
+    struct ClimateReply: Codable {
         let ok: Bool?
         let error: String?
         /// The verified object, when the server nests it. The contract reads
@@ -517,7 +589,7 @@ private enum HomeDTO {
         let percentage: Double?
         let current_power_w: Double?
     }
-    struct ToggleReply: Decodable {
+    struct ToggleReply: Codable {
         let ok: Bool?
         let device: Device?
         let error: String?
@@ -545,41 +617,6 @@ private enum HomeDTO {
 ///
 /// One file per backend: flipping Settings between the dev twin and production
 /// must never show one's devices under the other's name.
-private enum HomeCache {
-
-    private struct Envelope: Codable {
-        let payload: HomeDTO.Payload
-        let savedAt: Date
-    }
-
-    /// Derived from the backend URL by substitution, NOT by `hashValue` -
-    /// String hashing is seeded per process, so a hashed filename would miss
-    /// its own cache on the next launch, which is the only launch that matters.
-    private static func fileURL(for root: URL) -> URL? {
-        guard let dir = FileManager.default.urls(for: .cachesDirectory,
-                                                 in: .userDomainMask).first else { return nil }
-        let slug = root.absoluteString.replacingOccurrences(
-            of: "[^A-Za-z0-9]", with: "-", options: .regularExpression)
-        return dir.appending(path: "home-\(slug).json")
-    }
-
-    static func load(for root: URL?) -> (payload: HomeDTO.Payload, savedAt: Date)? {
-        guard let root, let url = fileURL(for: root),
-              let data = try? Data(contentsOf: url),
-              let envelope = try? JSONDecoder().decode(Envelope.self, from: data)
-        else { return nil }
-        return (envelope.payload, envelope.savedAt)
-    }
-
-    static func save(_ payload: HomeDTO.Payload, for root: URL) {
-        guard let url = fileURL(for: root),
-              let data = try? JSONEncoder().encode(
-                Envelope(payload: payload, savedAt: Date()))
-        else { return }
-        try? data.write(to: url, options: .atomic)
-    }
-}
-
 struct HomeScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: HomeDTO.Payload?
@@ -689,7 +726,7 @@ struct HomeScreen: View {
             // used to sit completely blank for the whole round trip - nothing
             // renders until `payload` is non-nil - which on a tailnet round
             // trip to the mini is exactly the "takes a moment" he reported.
-            if payload == nil, let cached = HomeCache.load(for: root) {
+            if payload == nil, let cached = TileCache.load(HomeDTO.Payload.self, kind: "home", for: root) {
                 payload = cached.payload
                 cachedAt = cached.savedAt
             }
@@ -730,7 +767,7 @@ struct HomeScreen: View {
                 failure = nil
                 cachedAt = nil
             }
-            HomeCache.save(fresh, for: root)
+            TileCache.save(fresh, kind: "home", for: root)
             return true
         } catch {
             withAnimation(.easeOut(duration: 0.2)) {
@@ -1016,13 +1053,13 @@ struct HomeScreen: View {
 // MARK: - Status
 
 private enum StatusDTO {
-    struct Payload: Decodable {
+    struct Payload: Codable {
         let demo: Bool?
         let machines: [String: Machine]?
         let services: [Service]?
         let vault: Vault?
     }
-    struct Machine: Decodable {
+    struct Machine: Codable {
         let ok: Bool?
         let label: String?
         let sub: String?
@@ -1034,12 +1071,12 @@ private enum StatusDTO {
         let uptime_s: Double?
         let error: String?
     }
-    struct Service: Decodable {
+    struct Service: Codable {
         let name: String?
         let up: Bool?
         let kind: String?
     }
-    struct Vault: Decodable {
+    struct Vault: Codable {
         let commit: String?
         let subject: String?
         let rel: String?
@@ -1052,13 +1089,27 @@ struct StatusScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var payload: StatusDTO.Payload?
     @State private var failed = false
+    @State private var cachedAt: Date?
 
     private let machineOrder = ["mini", "orin", "nas"]
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                if failed {
+                    // A first load with nothing to show is an error. A refresh
+                    // that failed over content already on screen is a lost
+                    // round trip, and dressing the two the same is what had a
+                    // page calling itself unreachable while it was showing
+                    // perfectly good numbers. See ScreenState.
+                    if payload == nil {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    } else if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        InlineNote(text: "Couldn't refresh - what is below is the last ATARU had.")
+                    }
+                }
 
                 ForEach(machineOrder, id: \.self) { key in
                     if let machine = payload?.machines?[key] {
@@ -1147,7 +1198,12 @@ struct StatusScreen: View {
         .navigationTitle(payload?.demo == true ? "Status (demo)" : "Status")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        // Last known content in the first frame, then the network. See
+        // TileCache for why every screen does this now and not just Home.
+        .task {
+            restore()
+            await load()
+        }
     }
 
     private func stat(_ label: String, _ value: Double?, suffix: String) -> some View {
@@ -1161,12 +1217,27 @@ struct StatusScreen: View {
         }
     }
 
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.status) }
+
+    private func restore() {
+        guard payload == nil,
+              let cached = TileCache.load(StatusDTO.Payload.self,
+                                          kind: "status", for: root) else { return }
+        payload = cached.payload
+        cachedAt = cached.savedAt
+    }
+
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.status) else { return }
+        guard let root else { return }
         do {
-            payload = try await TileFetch.get(
+            let fresh = try await TileFetch.get(
                 StatusDTO.Payload.self, root.appending(path: "api/dashboard"))
-            failed = false
+            withAnimation(Theme.quick) {
+                payload = fresh
+                failed = false
+                cachedAt = nil
+            }
+            TileCache.save(fresh, kind: "status", for: root)
         } catch { failed = true }
     }
 }
@@ -1174,10 +1245,10 @@ struct StatusScreen: View {
 // MARK: - Journal
 
 private enum JournalDTO {
-    struct List: Decodable {
+    struct List: Codable {
         let entries: [Entry]?
     }
-    struct Entry: Decodable {
+    struct Entry: Codable {
         let path: String?
         let title: String?
         let date: String?
@@ -1189,7 +1260,7 @@ private enum JournalDTO {
             case isPrivate = "private"
         }
     }
-    struct Detail: Decodable {
+    struct Detail: Codable {
         let title: String?
         let date: String?
         let body: String?
@@ -1199,7 +1270,7 @@ private enum JournalDTO {
         let body: String
         let commit = true
     }
-    struct CreateReply: Decodable {
+    struct CreateReply: Codable {
         let ok: Bool?
         let path: String?
     }
@@ -1210,11 +1281,25 @@ struct JournalScreen: View {
     @State private var entries: [JournalDTO.Entry] = []
     @State private var failed = false
     @State private var composing = false
+    @State private var cachedAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.s) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                if failed {
+                    // A first load with nothing to show is an error. A refresh
+                    // that failed over content already on screen is a lost
+                    // round trip, and dressing the two the same is what had a
+                    // page calling itself unreachable while it was showing
+                    // perfectly good numbers. See ScreenState.
+                    if entries.isEmpty {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    } else if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        InlineNote(text: "Couldn't refresh - these are the entries ATARU last saw.")
+                    }
+                }
 
                 ForEach(entries, id: \.path) { entry in
                     NavigationLink {
@@ -1269,16 +1354,35 @@ struct JournalScreen: View {
                 .environmentObject(state)
         }
         .refreshable { await load() }
-        .task { await load() }
+        // Last known content in the first frame, then the network. See
+        // TileCache for why every screen does this now and not just Home.
+        .task {
+            restore()
+            await load()
+        }
+    }
+
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.journal) }
+
+    private func restore() {
+        guard entries.isEmpty,
+              let cached = TileCache.load(JournalDTO.List.self,
+                                          kind: "journal", for: root) else { return }
+        entries = cached.payload.entries ?? []
+        cachedAt = cached.savedAt
     }
 
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.journal) else { return }
+        guard let root else { return }
         do {
             let list = try await TileFetch.get(
                 JournalDTO.List.self, root.appending(path: "api/entries"))
-            entries = list.entries ?? []
-            failed = false
+            withAnimation(Theme.quick) {
+                entries = list.entries ?? []
+                failed = false
+                cachedAt = nil
+            }
+            TileCache.save(list, kind: "journal", for: root)
         } catch { failed = true }
     }
 }
@@ -1375,10 +1479,10 @@ private struct JournalComposeScreen: View {
 // MARK: - Workspaces
 
 private enum SpacesDTO {
-    struct List: Decodable {
+    struct List: Codable {
         let workspaces: [Space]?
     }
-    struct Space: Decodable {
+    struct Space: Codable {
         let slug: String?
         let name: String?
         let description: String?
@@ -1386,30 +1490,30 @@ private enum SpacesDTO {
         let kind: String?
         let counts: Counts?
     }
-    struct Counts: Decodable {
+    struct Counts: Codable {
         let resources: Int?
         let notes: Int?
         let tasks_open: Int?
         let tasks_total: Int?
     }
-    struct Detail: Decodable {
+    struct Detail: Codable {
         let name: String?
         let readme: String?
         let notes: [Note]?
         let tasks: [WorkTask]?
         let resources: [Resource]?
     }
-    struct Note: Decodable {
+    struct Note: Codable {
         let date: String?
         let title: String?
         let body: String?
     }
-    struct WorkTask: Decodable {
+    struct WorkTask: Codable {
         let id: Int?
         let done: Bool?
         let text: String?
     }
-    struct Resource: Decodable {
+    struct Resource: Codable {
         let name: String?
         let rel: String?
     }
@@ -1419,7 +1523,7 @@ private enum SpacesDTO {
         let text: String?
         let index: Int?
     }
-    struct TaskReply: Decodable {
+    struct TaskReply: Codable {
         let ok: Bool?
         let tasks: [WorkTask]?
     }
@@ -1429,11 +1533,25 @@ struct WorkspacesScreen: View {
     @EnvironmentObject private var state: AppState
     @State private var spaces: [SpacesDTO.Space] = []
     @State private var failed = false
+    @State private var cachedAt: Date?
 
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.s) {
-                if failed { ErrorBanner(message: ScreenState.loadFailed) }
+                if failed {
+                    // A first load with nothing to show is an error. A refresh
+                    // that failed over content already on screen is a lost
+                    // round trip, and dressing the two the same is what had a
+                    // page calling itself unreachable while it was showing
+                    // perfectly good numbers. See ScreenState.
+                    if spaces.isEmpty {
+                        ErrorBanner(message: ScreenState.loadFailed)
+                    } else if let cachedAt {
+                        FreshnessBanner(state: .stale(cachedAt))
+                    } else {
+                        InlineNote(text: "Couldn't refresh - these are the workspaces ATARU last saw.")
+                    }
+                }
 
                 ForEach(spaces, id: \.slug) { space in
                     NavigationLink {
@@ -1476,16 +1594,35 @@ struct WorkspacesScreen: View {
         .navigationTitle("Workspaces")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        // Last known content in the first frame, then the network. See
+        // TileCache for why every screen does this now and not just Home.
+        .task {
+            restore()
+            await load()
+        }
+    }
+
+    private var root: URL? { TileBackend.current(from: state).apiRoot(.workspaces) }
+
+    private func restore() {
+        guard spaces.isEmpty,
+              let cached = TileCache.load(SpacesDTO.List.self,
+                                          kind: "workspaces", for: root) else { return }
+        spaces = cached.payload.workspaces ?? []
+        cachedAt = cached.savedAt
     }
 
     private func load() async {
-        guard let root = TileBackend.current(from: state).apiRoot(.workspaces) else { return }
+        guard let root else { return }
         do {
             let list = try await TileFetch.get(
                 SpacesDTO.List.self, root.appending(path: "api/workspaces"))
-            spaces = list.workspaces ?? []
-            failed = false
+            withAnimation(Theme.quick) {
+                spaces = list.workspaces ?? []
+                failed = false
+                cachedAt = nil
+            }
+            TileCache.save(list, kind: "workspaces", for: root)
         } catch { failed = true }
     }
 }

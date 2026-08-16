@@ -121,7 +121,13 @@ struct RootView: View {
             if let tile = presentedTile {
                 TileScreenHost(tile: tile) { close() }
                     .environmentObject(state)
-                    .transition(.opacity)
+                    // Asymmetric on purpose. Arriving is a crossfade, which is
+                    // what stopped the old slide dragging a mismatched
+                    // rectangle up the screen. Leaving is a dissolve: the page
+                    // has usually just been thrown downward by a thumb, and
+                    // cutting it at that moment is what read as abrupt.
+                    .transition(.asymmetric(insertion: .opacity,
+                                            removal: .tileDissolve))
                     .zIndex(1.5)
             }
 
@@ -278,7 +284,9 @@ struct RootView: View {
     }
 
     private func close() {
-        withAnimation(.easeInOut(duration: 0.24)) { presentedTile = nil }
+        // Quicker than the open. A page being put away should be gone the
+        // moment the decision is made; a page arriving can afford to arrive.
+        withAnimation(.easeOut(duration: 0.22)) { presentedTile = nil }
     }
 }
 
