@@ -339,6 +339,11 @@ final class CallSessionModel: ObservableObject {
                     // What streamed so far was agent scaffolding, not answer.
                     text = ""
                     answer = ""
+                case .audioReset:
+                    // A guard recalled the streamed answer server-side; drop
+                    // the queued audio so the caller hears the correction
+                    // instead of the contradicted sentences.
+                    streamPlayer.stop()
                 case .audioBegin(let sampleRate, let channels, _, let isFiller):
                     try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
                     // A thinking cue is not the answer: if the turn fails

@@ -188,6 +188,12 @@ final class VoiceViewModel: ObservableObject {
                 case .reset:
                     // What streamed so far was agent scaffolding, not answer.
                     text = ""
+                case .audioReset:
+                    // A guard recalled the streamed answer server-side. What
+                    // is queued must not be heard; the next audio_begin
+                    // reopens the player for the correction, exactly as
+                    // after a hang-up.
+                    streamPlayer.stop()
                 case .audioBegin(let sampleRate, let channels, _, let isFiller):
                     try streamPlayer.begin(sampleRate: sampleRate, channels: channels)
                     // A thinking cue is not the answer. If the turn dies after

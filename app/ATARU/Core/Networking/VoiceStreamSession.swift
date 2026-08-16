@@ -7,6 +7,10 @@ enum VoiceStreamEvent: Sendable {
     case delta(String)
     /// Streamed text so far belonged to an agent tool turn; discard it.
     case reset
+    /// Queued audio belongs to a recalled answer (an honesty guard rewrote
+    /// it server-side); drop it so the correction is spoken INSTEAD of the
+    /// contradicted sentences, not after them. Arrives beside `reset`.
+    case audioReset
     case audioBegin(sampleRate: Double, channels: Int, sentence: String, isFiller: Bool)
     case audioChunk(Data)
     case audioEnd
@@ -169,6 +173,8 @@ final class VoiceStreamSession: @unchecked Sendable {
                 return .delta(dict["text"] as? String ?? "")
             case "reset":
                 return .reset
+            case "audio_reset":
+                return .audioReset
             case "audio_begin":
                 return .audioBegin(
                     sampleRate: (dict["sampleRate"] as? NSNumber)?.doubleValue ?? 22_050,
