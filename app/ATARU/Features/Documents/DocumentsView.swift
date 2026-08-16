@@ -56,10 +56,22 @@ struct DocumentsView: View {
 
             categoryFilter
 
+            // A refresh that failed over a library already on screen is one
+            // line, not a replacement for the library. The documents are still
+            // here; the only thing that failed is the round trip.
+            if let message = model.refreshFailure {
+                Text(message)
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Theme.Space.screen)
+                    .padding(.bottom, Theme.Space.xs)
+            }
+
             switch model.state {
             case .idle, .loading where model.page.documents.isEmpty:
                 skeletonList
-            case .failed(let message):
+            case .failed(let message) where model.page.documents.isEmpty:
                 ATStateView(symbol: "wifi.slash", title: "Couldn't load your library",
                             message: message, tone: Theme.amber) { model.load(force: true) }
                 Spacer()

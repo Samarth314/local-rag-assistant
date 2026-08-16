@@ -33,6 +33,12 @@ final class DocumentsViewModel: ObservableObject {
 
     func update(service: ATARUService) {
         guard self.service !== service else { return }
+        // The old server's request is cancelled, not merely forgotten. It
+        // captured the previous service and would have published ITS documents
+        // into the new session - the library would have been showing one
+        // backend's files under the other's name.
+        loadTask?.cancel()
+        loadTask = nil
         self.service = service
         page = .empty
         state = .idle
@@ -45,6 +51,17 @@ final class DocumentsViewModel: ObservableObject {
     }
 
     var isEmpty: Bool { state == .loaded && visibleDocuments.isEmpty }
+
+    /// What went wrong last, when there is still a library on screen.
+    ///
+    /// A failed refresh over a loaded library is a lost round trip, not an
+    /// empty library - the page still holds every document it fetched. It used
+    /// to render the error view instead, so one flaky refresh blanked a
+    /// working page.
+    var refreshFailure: String? {
+        guard case .failed(let message) = state, !page.documents.isEmpty else { return nil }
+        return message
+    }
 
     /// True when the vault has documents but the current filter hides them
     /// all — a different message from "nothing is indexed".
