@@ -98,6 +98,25 @@ protocol ATARUService: AnyObject, Sendable {
     /// nothing anywhere saying why.
     func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule
 
+    /// "I'm up" - the button that stands the redial ladder down without him
+    /// having to speak.
+    ///
+    /// Returns whether the server actually recorded it. False is not an error:
+    /// it means no morning call was in flight, and the honest answer is "there
+    /// was nothing to confirm" rather than a success the user would reasonably
+    /// read as "the calls will stop now".
+    ///
+    /// SPEECH STILL CONFIRMS, exactly as before. This is an additional path,
+    /// for the mornings where he is awake but not talking - 2026-08-16 he
+    /// answered in his sleep, said nothing, and the ladder spent all six
+    /// attempts, which was the ladder being right.
+    @discardableResult
+    func confirmMorningCall() async throws -> Bool
+
+    /// Whether to offer the button at all. Cheap, read-only, polled when the
+    /// app comes to the foreground.
+    func morningCallState() async throws -> MorningCallState
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -165,6 +184,17 @@ extension ATARUService {
     func setMorningSchedule(callTime: String, date: String?) async throws -> MorningSchedule {
         throw APIError.notFound
     }
+
+    /// A backend without the confirm route records nothing, and says so by
+    /// returning false rather than throwing. The distinction the UI needs is
+    /// "it counted" vs "it did not", and an old server is the same answer as
+    /// no call in flight: nothing was recorded.
+    @discardableResult
+    func confirmMorningCall() async throws -> Bool { false }
+
+    /// Nothing to offer, which is what a backend without the route means and
+    /// exactly what the banner should do about it.
+    func morningCallState() async throws -> MorningCallState { .inactive }
 
     /// Backends with nowhere to send a notification accept the token and do
     /// nothing with it. Demo is the real case - there is no server to register

@@ -257,6 +257,29 @@ struct SpokenAnswer: Equatable {
 /// round-trip through this device's timezone is how 07:00 becomes 06:00 after
 /// a flight. The picker converts once, for display and for editing, and never
 /// stores the result.
+/// Whether the phone should be offering to say "I'm up", and whether saying it
+/// would be recorded.
+///
+/// Two separate answers on purpose, and the server owns both. On the morning of
+/// 2026-08-16 he answered the call in his sleep, never spoke, and the redial
+/// ladder correctly re-armed and spent all six attempts; the button is the
+/// deliberate way to end that without talking. `inCallWindow` is the tight one
+/// - roughly a redial interval after the last ring - and is what decides
+/// whether a banner appears. `canConfirm` is the six-hour bound the server
+/// enforces on writing, so a confirmation is still recorded honestly against
+/// the right morning long after the banner has gone.
+struct MorningCallState: Equatable {
+    let inCallWindow: Bool
+    let canConfirm: Bool
+    let confirmed: Bool
+
+    /// No call, nothing to offer. Also what every backend without this
+    /// endpoint reports, so the banner simply never appears rather than the
+    /// screen having to know whether the server is new enough.
+    static let inactive = MorningCallState(inCallWindow: false,
+                                           canConfirm: false, confirmed: false)
+}
+
 struct MorningSchedule: Equatable {
     /// 24-hour "HH:MM", the time the call is currently set for.
     let callTime: String

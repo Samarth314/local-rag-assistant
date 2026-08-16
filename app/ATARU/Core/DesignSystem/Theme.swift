@@ -48,6 +48,24 @@ enum Theme {
     static let amber = Ataru.Palette.warn
     static let red = Ataru.Palette.err
 
+    // MARK: - Motion
+    //
+    // ONE SPRING. The app had six hand-tuned springs and four durations
+    // scattered across the files that happened to need motion, which is how a
+    // dismissal ends up feeling like a different app from the launcher that
+    // opened it. These are the whole vocabulary:
+    //
+    //   spring  anything a finger moved, or that should feel physical
+    //   quick   a state change with no gesture behind it (a label swapping)
+    //
+    // Reach for `spring` unless there is a reason, and write the reason down.
+
+    /// The app's spring. Settles in about a third of a second with a hint of
+    /// overshoot - enough to read as physical, not enough to wobble.
+    static let spring = Animation.spring(response: 0.32, dampingFraction: 0.86)
+    /// For changes with no gesture behind them.
+    static let quick = Animation.easeOut(duration: 0.2)
+
     // MARK: - Geometry
 
     enum Radius {

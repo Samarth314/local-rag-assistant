@@ -214,6 +214,32 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(DTO.MorningScheduleReply.self, from: data).domain
     }
 
+    /// "I'm up".
+    ///
+    /// `confirmed: false` is a legitimate answer, not a failure - the server
+    /// bounds this to a call actually in flight and reports honestly when
+    /// there was nothing to confirm. A missing route (an older backend) throws
+    /// `notFound` from `perform`, and the caller treats that as "not recorded"
+    /// for the same reason.
+    @discardableResult
+    func confirmMorningCall() async throws -> Bool {
+        guard let url = endpoints.url("api/morning/confirm") else {
+            throw APIError.invalidURL
+        }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        let (data, _) = try await perform(request)
+        return (try? decode(DTO.MorningConfirmReply.self, from: data))?.confirmed ?? false
+    }
+
+    func morningCallState() async throws -> MorningCallState {
+        guard let url = endpoints.url("api/morning/state") else {
+            throw APIError.invalidURL
+        }
+        let (data, _) = try await perform(request(for: url))
+        return try decode(DTO.MorningStateReply.self, from: data).domain
+    }
+
     private struct MorningScheduleBody: Encodable {
         let call_time: String
         let date: String?

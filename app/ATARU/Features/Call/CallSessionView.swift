@@ -20,8 +20,11 @@ import SwiftUI
 /// the lock screen are the same action taking the same path, which is the only
 /// way the two can never disagree.
 struct CallSessionView: View {
+    @EnvironmentObject private var state: AppState
     @ObservedObject var call: CallService
     @ObservedObject var session: CallSessionModel
+    /// "I'm up", offered only on the morning call. See MorningConfirm.
+    @StateObject private var morning = MorningConfirmModel()
     /// Owned by the parent, because a minimised call still exists — the state
     /// has to outlive this view being torn down.
     @Binding var isMinimized: Bool
@@ -54,6 +57,7 @@ struct CallSessionView: View {
             down: { setMinimized(true) }
         )
         .accessibilityElement(children: .contain)
+        .task(id: state.serviceGeneration) { morning.update(service: state.service) }
     }
 
     /// The original stacked screen.
@@ -73,11 +77,16 @@ struct CallSessionView: View {
 
             header
 
-            OrbView(phase: session.phase) { [weak session] in
+            // Sized, not scaled: `scaleEffect` leaves the view occupying its
+            // full 260pt of column, which is the same class of mistake that
+            // put the Ask composer under the keyboard.
+            OrbView(phase: session.phase, side: 180) { [weak session] in
                 session?.orbLevel ?? 0
             }
-            .scaleEffect(0.68)
-            .frame(height: 180)
+
+            if call.isMorningCall {
+                MorningConfirmButton(model: morning)
+            }
 
             transcript
                 .frame(minHeight: 132, maxHeight: .infinity)
@@ -97,11 +106,9 @@ struct CallSessionView: View {
             VStack(spacing: Ataru.Space.sm) {
                 minimizeBar
                 Spacer(minLength: 0)
-                OrbView(phase: session.phase) { [weak session] in
+                OrbView(phase: session.phase, side: 150) { [weak session] in
                     session?.orbLevel ?? 0
                 }
-                .scaleEffect(0.55)
-                .frame(width: 150, height: 150)
                 header
                 Spacer(minLength: 0)
             }
@@ -110,6 +117,9 @@ struct CallSessionView: View {
             VStack(spacing: Ataru.Space.md) {
                 transcript
                     .frame(minHeight: 80, maxHeight: .infinity)
+                if call.isMorningCall {
+                    MorningConfirmButton(model: morning)
+                }
                 controls
             }
             .padding(.top, Ataru.Space.md)

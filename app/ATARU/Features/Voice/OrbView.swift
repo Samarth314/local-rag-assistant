@@ -15,6 +15,15 @@ import SwiftUI
 /// and the phase is carried by colour and the label instead.
 struct OrbView: View {
     let phase: VoicePhase
+    /// How big to draw it.
+    ///
+    /// A real size rather than a `scaleEffect` on a fixed 260: scaling changes
+    /// what is drawn and not what is LAID OUT, so every call site that wanted
+    /// a smaller orb was still reserving 260pt of column for it - which is
+    /// half of why the Ask screen could not fit its own composer with the
+    /// keyboard up. The engine derives every radius from `min(W, H)`, so a
+    /// smaller canvas is a smaller orb and nothing is clipped.
+    var side: CGFloat = 260
     /// Live audio level, 0...1 — the mic while listening, playback while
     /// speaking. A closure rather than a value so the per-frame Canvas reads
     /// the level as it is *now*: a plain parameter only updates when SwiftUI
@@ -25,8 +34,8 @@ struct OrbView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var engine = ReactorEngine()
 
-    /// The web engine's natural canvas; call sites scale from here.
-    private static let side: CGFloat = 260
+    /// The web engine's natural canvas, and this view's default size.
+    static let naturalSide: CGFloat = 260
 
     /// Reduce Motion, or a UI test run.
     ///
@@ -50,7 +59,7 @@ struct OrbView: View {
                               frozen: isStill)
             }
         }
-        .frame(width: Self.side, height: Self.side)
+        .frame(width: side, height: side)
         .accessibilityElement()
         .accessibilityLabel("ATARU")
         .accessibilityValue(phase.label)

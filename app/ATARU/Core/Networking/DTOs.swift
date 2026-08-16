@@ -120,6 +120,35 @@ enum DTO {
                             defaultTime: `default` ?? call_time)
         }
     }
+
+    /// `{"ok":true,"confirmed":true|false,"reason":"no call in flight"}`
+    ///
+    /// `confirmed` is the only field that decides anything. `ok` is true even
+    /// when nothing was recorded - the request succeeded, there was simply no
+    /// call to confirm - so treating `ok` as the answer would report every
+    /// afternoon tap as having stood the ladder down.
+    struct MorningConfirmReply: Decodable {
+        let ok: Bool?
+        let confirmed: Bool?
+        let reason: String?
+    }
+
+    /// `{"in_call_window":bool,"can_confirm":bool,"confirmed":bool,…}`
+    ///
+    /// Every field optional and defaulted to false: an older server answering
+    /// this path with something else must leave the banner hidden, never
+    /// showing an offer the backend cannot honour.
+    struct MorningStateReply: Decodable {
+        let in_call_window: Bool?
+        let can_confirm: Bool?
+        let confirmed: Bool?
+
+        var domain: MorningCallState {
+            MorningCallState(inCallWindow: in_call_window ?? false,
+                             canConfirm: can_confirm ?? false,
+                             confirmed: confirmed ?? false)
+        }
+    }
 }
 
 /// JSON decoding for this API.

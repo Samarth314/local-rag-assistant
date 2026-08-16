@@ -90,6 +90,27 @@ final class CallService: NSObject, ObservableObject {
     /// phone to hear every answer.
     @Published private(set) var isSpeakerOn = true
 
+    /// Why this call is happening, as the server said when it rang.
+    ///
+    /// The VoIP payload has carried `reason` since the ring path was built and
+    /// `reportPushedCall` has always taken it as a parameter - it was simply
+    /// dropped on the floor. Keeping it is what lets one call surface tell the
+    /// morning brief apart from an ordinary "call ATARU", which is the
+    /// difference between an "I'm up" button that appears when it means
+    /// something and one that appears on every call.
+    ///
+    /// Nil for a call this phone placed, and for one rung with no reason.
+    @Published private(set) var reason: String?
+
+    /// The 7am brief, as opposed to any other call.
+    ///
+    /// The string is the server's (`scripts/morning_call.sh` rings with
+    /// `{"reason":"morning-brief"}`). A ring with no reason at all is NOT
+    /// treated as the morning: the button would then appear on every call
+    /// placed from the Phone app, and a confirmation offered at random hours
+    /// teaches him to ignore it.
+    var isMorningCall: Bool { reason == "morning-brief" }
+
     /// Called once the system has activated the audio session, which is the
     /// only safe moment to start playing or recording.
     var onAudioActivated: (() -> Void)?
@@ -151,6 +172,9 @@ final class CallService: NSObject, ObservableObject {
         guard !state.isLive else { return }
         let id = UUID()
         callID = id
+        // Placed from this side, so there is no server reason behind it - and
+        // nothing about it is the morning brief.
+        reason = nil
         state = .dialing
 
         let action = CXStartCallAction(call: id, handle: Self.handle)
@@ -199,6 +223,8 @@ final class CallService: NSObject, ObservableObject {
 
             let id = UUID()
             self.callID = id
+            // A test call from Settings is not the morning call.
+            self.reason = nil
 
             let update = CXCallUpdate()
             update.remoteHandle = Self.handle
@@ -240,6 +266,7 @@ final class CallService: NSObject, ObservableObject {
         let id = UUID()
         callID = id
         state = .incoming
+        self.reason = reason
 
         let update = CXCallUpdate()
         update.remoteHandle = Self.handle
@@ -428,6 +455,10 @@ final class CallService: NSObject, ObservableObject {
         callID = nil
         isMuted = false
         didActivateAudio = false
+        // The call is over, so what it was for is over with it. Left set, the
+        // next call placed from the Phone app would inherit "morning-brief"
+        // and offer to confirm a morning that is not happening.
+        self.reason = nil
         state = .ended(reason)
         onAudioDeactivated?()
     }
