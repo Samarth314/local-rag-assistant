@@ -34,13 +34,19 @@ struct DocumentDetailView: View {
         .ataruBackdrop()
         .navigationTitle(document.title)
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $model.isPreviewing) {
+        // Both sheets hand the file's URL to something outside this view - and
+        // AirDrop, Save to Files and Mail all background the app while the
+        // receiver is still reading it, which is exactly when the download
+        // store used to delete it. Held for as long as the sheet is up.
+        .sheet(isPresented: $model.isPreviewing,
+               onDismiss: { model.finishedPresenting() }) {
             if let payload = model.payload {
                 QuickLookView(url: payload.url)
                     .ignoresSafeArea()
             }
         }
-        .sheet(isPresented: $model.isSharing) {
+        .sheet(isPresented: $model.isSharing,
+               onDismiss: { model.finishedPresenting() }) {
             if let payload = model.payload {
                 ShareSheet(items: [payload.url])
                     .presentationDetents([.medium, .large])
@@ -206,6 +212,8 @@ final class DocumentContentModel: ObservableObject {
     @Published var isSharing = false
 
     private var task: Task<Void, Never>?
+    /// The URL currently held open by a sheet, if any.
+    private var presentedURL: URL?
 
     func load(document: IndexedDocument, service: ATARUService, then intent: Intent = .preview) {
         // Already downloaded in this session: don't fetch the file twice just
@@ -235,11 +243,23 @@ final class DocumentContentModel: ObservableObject {
     }
 
     private func present(_ intent: Intent, payload: DocumentPayload) {
+        // Retained before the sheet goes up, released when it comes down. A
+        // share sheet is the app handing a file path to another process; the
+        // file has to outlive this app leaving the foreground.
+        Task { await DocumentDownloadStore.shared.retain(payload.url) }
+        presentedURL = payload.url
         switch intent {
         case .preview: isPreviewing = true
         case .share: isSharing = true
         }
         Haptics.fire(.tap)
+    }
+
+    /// Called from both sheets' `onDismiss`.
+    func finishedPresenting() {
+        guard let url = presentedURL else { return }
+        presentedURL = nil
+        Task { await DocumentDownloadStore.shared.release(url) }
     }
 }
 
