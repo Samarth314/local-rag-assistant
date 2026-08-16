@@ -116,9 +116,40 @@ final class SpeechDictation: NSObject, ObservableObject {
         }
     }
 
+    /// Holds whichever recognition request is current, so the audio tap can
+    /// feed it without touching main-actor state from the audio thread.
+    ///
+    /// The tap used to capture the request directly, which is correct for one
+    /// request and impossible for two - and a recording longer than Apple's
+    /// per-task limit needs a second one. See `rearm()`.
+    private final class RequestBox: @unchecked Sendable {
+        private var request: SFSpeechAudioBufferRecognitionRequest?
+        private let lock = NSLock()
+
+        func set(_ new: SFSpeechAudioBufferRecognitionRequest?) {
+            lock.lock(); defer { lock.unlock() }
+            request = new
+        }
+
+        func append(_ buffer: AVAudioPCMBuffer) {
+            lock.lock(); defer { lock.unlock() }
+            request?.append(buffer)
+        }
+
+        func endAudio() {
+            lock.lock(); defer { lock.unlock() }
+            request?.endAudio()
+        }
+    }
+
     private let engine = AVAudioEngine()
     private let captured = SampleBuffer()
     private let resampler = Resampler()
+    private let requestBox = RequestBox()
+    /// Words from the recognition task currently running, replaced whenever it
+    /// revises them; flushed into `timedWords` when it ends.
+    private var currentWords: [TimedWord] = []
+    private var recordingStartedAt: Date?
     /// Proper nouns to expect - set from the backend's correspondent list.
     ///
     /// Seeded from `sharedVocabulary` at capture time. It must NEVER be
@@ -150,6 +181,34 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// decisive word removed, and as bare "Turn" on the worst turns.
     private var finalWaiter: CheckedContinuation<String, Never>?
     private var sawFinal = false
+
+    /// Text from recognition tasks that already ended while the microphone
+    /// kept running. See `rearm()`.
+    private var settled = ""
+    /// How far into the recording the current recognition task began, so its
+    /// segment timestamps can be placed on the recording's own clock.
+    private var taskTimeOffset: TimeInterval = 0
+
+    /// Whether to keep per-word timings and the recorded audio. Off by
+    /// default: a question needs neither, and on the call path — where a turn
+    /// ends every few seconds — they are pure cost.
+    var tracksAudioDetail = false
+
+    /// Word timings for the whole recording, offset across restarts. The
+    /// input to `SpeakerSplit`. Empty unless `tracksAudioDetail` is on.
+    private(set) var timedWords: [TimedWord] = []
+
+    /// The audio of the last finished recording — the other half of what
+    /// diarisation needs. About 4MB a minute at 16 kHz float, so nothing
+    /// holds it speculatively; cleared on the next `start()`.
+    private(set) var lastCapture: [Float] = []
+
+    /// One recognised word and where it sits in the recording.
+    struct TimedWord: Equatable {
+        let text: String
+        let start: TimeInterval
+        let duration: TimeInterval
+    }
 
     /// Whether the audio session is up, and the pending job to give it back.
     private var sessionActive = false
@@ -185,18 +244,6 @@ final class SpeechDictation: NSObject, ObservableObject {
         guard recognizer.supportsOnDeviceRecognition else { throw Failure.unavailable }
         self.recognizer = recognizer
 
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = true   // see the type's doc comment
-        // Apple's own proper-noun biasing, which this app never used. It is a
-        // weaker lever than Whisper's prompt, but it is free and it applies to
-        // the live partials the user watches AND to the transcript that stands
-        // in whenever ATARU's own engine cannot be reached.
-        if !vocabulary.isEmpty || !Self.sharedVocabulary.isEmpty {
-            let roster = vocabulary.isEmpty ? Self.sharedVocabulary : vocabulary
-            request.contextualStrings = Array(roster.prefix(100))
-        }
-        self.request = request
 
         // A session already up is left alone. Activating one is not
         // instantaneous, and the microphone only starts hearing once it
@@ -222,9 +269,16 @@ final class SpeechDictation: NSObject, ObservableObject {
 
         transcript = ""
         sawFinal = false
+        settled = ""
+        timedWords = []
+        currentWords = []
+        lastCapture = []
+        taskTimeOffset = 0
+        recordingStartedAt = Date()
         if vocabulary.isEmpty { vocabulary = Self.sharedVocabulary }
         captured.reset()
         resampler.reset()
+        try armRecognizer()
         // Loading is idempotent; the first call downloads, later ones no-op.
         WhisperTranscriber.shared.prepare()
         let input = engine.inputNode
@@ -232,24 +286,12 @@ final class SpeechDictation: NSObject, ObservableObject {
         input.removeTap(onBus: 0)
         let resampler = self.resampler
         let captured = self.captured
+        let requestBox = self.requestBox
         input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
-            request.append(buffer)
+            requestBox.append(buffer)
             if let mono = resampler.resample(buffer) { captured.append(mono) }
             let peak = Self.peakLevel(of: buffer)
             Task { @MainActor in self?.level = peak }
-        }
-
-        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
-            guard let self else { return }
-            let text = result?.bestTranscription.formattedString
-            // An error ends the turn as surely as a final result does, and a
-            // turn that ends without either would leave `finish()` waiting out
-            // its whole budget for a transcript that is never coming.
-            let ended = result?.isFinal ?? (error != nil)
-            Task { @MainActor in
-                if let text { self.transcript = text }
-                if ended { self.deliverFinal() }
-            }
         }
 
         engine.prepare()
@@ -260,6 +302,89 @@ final class SpeechDictation: NSObject, ObservableObject {
             throw Failure.engine(error.localizedDescription)
         }
         isRecording = true
+    }
+
+    /// Starts a recognition task over the audio being captured.
+    ///
+    /// Called once by `start()`, and again by `rearm()` every time Apple ends
+    /// a task while the microphone is still open.
+    private func armRecognizer() throws {
+        guard let recognizer else { throw Failure.unavailable }
+
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.requiresOnDeviceRecognition = true   // see the type's doc comment
+        // Apple's own proper-noun biasing, which this app never used. It is a
+        // weaker lever than Whisper's prompt, but it is free and it applies to
+        // the live partials the user watches AND to the transcript that stands
+        // in whenever ATARU's own engine cannot be reached.
+        if !vocabulary.isEmpty || !Self.sharedVocabulary.isEmpty {
+            let roster = vocabulary.isEmpty ? Self.sharedVocabulary : vocabulary
+            request.contextualStrings = Array(roster.prefix(100))
+        }
+        self.request = request
+        requestBox.set(request)
+
+        task = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self else { return }
+            let text = result?.bestTranscription.formattedString
+            let segments = result?.bestTranscription.segments
+            // An error ends the turn as surely as a final result does, and a
+            // turn that ends without either would leave `finish()` waiting out
+            // its whole budget for a transcript that is never coming.
+            let ended = result?.isFinal ?? (error != nil)
+            Task { @MainActor in
+                if let text { self.absorb(text) }
+                if let segments, self.tracksAudioDetail { self.absorb(segments) }
+                if ended { self.recognitionEnded() }
+            }
+        }
+    }
+
+    /// Folds this task's text into the recording's transcript.
+    ///
+    /// A task only ever reports what IT heard, so once a recording has needed
+    /// more than one, the live transcript is everything settled so far plus
+    /// what the current task has. Assigning `text` straight to `transcript`
+    /// was right while a recording could only have one task, and would erase
+    /// the first minute of a long one.
+    private func absorb(_ text: String) {
+        transcript = settled.isEmpty ? text : settled + " " + text
+    }
+
+    private func absorb(_ segments: [SFTranscriptionSegment]) {
+        currentWords = segments.map {
+            TimedWord(text: $0.substring,
+                      start: taskTimeOffset + $0.timestamp,
+                      duration: $0.duration)
+        }
+    }
+
+    /// A recognition task has ended. If the microphone is still open, that is
+    /// not the end of the recording.
+    ///
+    /// Apple caps a single on-device recognition task — around a minute — and
+    /// ends it with an error rather than a final result. For a question that
+    /// never mattered; for a dictated note it is the whole feature, because
+    /// everything after the cap simply went unheard while the user watched a
+    /// transcript that had silently stopped growing.
+    private func recognitionEnded() {
+        timedWords.append(contentsOf: currentWords)
+        currentWords = []
+
+        guard isRecording else {
+            deliverFinal()
+            return
+        }
+        settled = transcript
+        taskTimeOffset = recordingStartedAt.map { Date().timeIntervalSince($0) } ?? taskTimeOffset
+        task = nil
+        request = nil
+        requestBox.set(nil)
+        // If Apple will not give us another task, the recording carries on
+        // capturing audio regardless: the Orin still gets the whole thing, and
+        // that is the transcript that matters.
+        try? armRecognizer()
     }
 
     /// Stops capturing and returns whatever has been transcribed so far.
@@ -281,7 +406,7 @@ final class SpeechDictation: NSObject, ObservableObject {
     private func closeMicrophone() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        request?.endAudio()
+        requestBox.endAudio()
         isRecording = false
         level = 0
     }
@@ -332,14 +457,35 @@ final class SpeechDictation: NSObject, ObservableObject {
     func finish() async -> String {
         let apple = await endAudioAwaitingFinal()
         let samples = captured.drain()
+        if tracksAudioDetail { lastCapture = samples }
         // ATARU's own Whisper first. It is the same engine the phone used to
         // carry, with the same name biasing, except it is already loaded and
         // the roster is attached at the server - so there is no cold start to
         // wait out and no 632MB to hold. See RemoteTranscriber.
         if let service = Self.sharedService,
            let remote = await service.transcribe(samples: samples) {
-            transcript = remote
-            return remote
+            // AN EMPTY REMOTE RESULT MUST NOT ERASE A TRANSCRIPT WE HAVE.
+            //
+            // `RemoteTranscriber` returns "" deliberately, to mean "the server
+            // decided there was nothing there" as distinct from nil, "the
+            // server did not answer" - so that a rejected hallucination is not
+            // handed to a less careful engine. That contract is right, and it
+            // was being applied one step too far: "" came back through this
+            // `if let`, overwrote `transcript`, and was returned as the result,
+            // so a note the user had just WATCHED being transcribed on screen
+            // came back "I didn't hear anything".
+            //
+            // The distinction that was missing: refusing to reach for a WORSE
+            // engine is not the same as throwing away the text the recogniser
+            // already produced while the audio was being recorded. If Apple
+            // heard words, those words are the answer.
+            let decided = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !decided.isEmpty {
+                transcript = decided
+                return decided
+            }
+            if !apple.isEmpty { return apple }
+            return ""
         }
         guard WhisperTranscriber.shared.isReady else { return apple }
         // Hard ceiling. A question that never comes back is worse than one
@@ -372,6 +518,8 @@ final class SpeechDictation: NSObject, ObservableObject {
         task?.cancel()
         task = nil
         request = nil
+        requestBox.set(nil)
+        recordingStartedAt = nil
         scheduleSessionRelease()
     }
 

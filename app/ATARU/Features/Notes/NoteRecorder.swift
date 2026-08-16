@@ -44,6 +44,10 @@ final class NoteRecorder: ObservableObject {
             return
         }
         do {
+            // Only the notes path pays for word timings and a retained copy of
+            // the audio. A question needs neither, and on a call - where a turn
+            // ends every few seconds - they would be pure overhead.
+            dictation.tracksAudioDetail = true
             try dictation.start()
             startedAt = Date()
             phase = .recording
@@ -68,7 +72,13 @@ final class NoteRecorder: ObservableObject {
             phase = .failed(SpeechDictation.Failure.noSpeechDetected.localizedDescription)
             return nil
         }
-        let note = Note(transcript: transcript, duration: duration)
+
+        // Diarisation runs here, once, after the user has stopped talking -
+        // never during the recording. It is nil for the ordinary case of one
+        // person talking, which is the point: see SpeakerSplit.
+        let turns = SpeakerSplit.turns(words: dictation.timedWords,
+                                       samples: dictation.lastCapture)
+        let note = Note(transcript: transcript, duration: duration, turns: turns)
         // A note with no bullets means the digest could not find a single
         // usable point — two words, or pure filler. Saving it would put an
         // empty card in the list.

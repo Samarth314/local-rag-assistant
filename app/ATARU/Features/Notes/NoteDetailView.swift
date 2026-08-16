@@ -122,15 +122,38 @@ struct NoteDetailView: View {
         .padding(.bottom, Theme.Space.l)
     }
 
+    @ViewBuilder
     private var transcript: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
             SectionLabel(text: "As spoken")
-            Text(note.transcript)
-                .font(.ataruBody())
-                .foregroundStyle(Theme.textSecondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let turns = note.turns, note.hasMultipleSpeakers {
+                // Attributed only when the app can actually tell, which is
+                // rarer than it sounds - SpeakerSplit returns nil unless two
+                // clusters are genuinely separated.
+                ForEach(Array(turns.enumerated()), id: \.offset) { _, turn in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(turn.speaker.label)
+                            .font(.ataruCaption())
+                            .foregroundStyle(turn.speaker == .you
+                                             ? Theme.cyan : Theme.textTertiary)
+                        Text(turn.text)
+                            .font(.ataruBody())
+                            .foregroundStyle(Theme.textSecondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(.bottom, Theme.Space.xs)
+                }
+            } else {
+                Text(note.transcript)
+                    .font(.ataruBody())
+                    .foregroundStyle(Theme.textSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.horizontal, Theme.Space.screen)
         .padding(.bottom, Theme.Space.l)

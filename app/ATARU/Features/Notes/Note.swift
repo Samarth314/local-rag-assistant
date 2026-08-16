@@ -10,15 +10,27 @@ struct Note: Identifiable, Codable, Hashable {
     var transcript: String
     var digest: NoteDigest
     var duration: TimeInterval
+    /// Who said what, when more than one person did. Nil is the normal case
+    /// and means "one speaker, or no way to tell" - see SpeakerSplit, which
+    /// declines rather than guesses.
+    var turns: [SpeakerSplit.Turn]?
+
+    /// True when the note is a conversation rather than a monologue.
+    var hasMultipleSpeakers: Bool {
+        guard let turns else { return false }
+        return Set(turns.map(\.speaker)).count > 1
+    }
 
     init(id: UUID = UUID(), createdAt: Date = Date(),
-         transcript: String, duration: TimeInterval = 0) {
+         transcript: String, duration: TimeInterval = 0,
+         turns: [SpeakerSplit.Turn]? = nil) {
         let digest = NoteDigest.make(from: transcript)
         self.id = id
         self.createdAt = createdAt
         self.transcript = transcript
         self.digest = digest
         self.duration = duration
+        self.turns = turns
         self.title = Note.derivedTitle(from: digest, transcript: transcript)
     }
 
