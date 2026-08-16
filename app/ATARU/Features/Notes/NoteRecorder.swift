@@ -65,7 +65,14 @@ final class NoteRecorder: ObservableObject {
         guard phase == .recording else { return nil }
         let duration = elapsed
         phase = .transcribing
-        let text = await dictation.finish()
+
+        // Snapshotted BEFORE anything else runs. Whatever else happens, the
+        // words the user watched appear are the worst case, never nothing.
+        let watched = dictation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Local only: no upload, no server verdict, no ceiling to run past.
+        // See SpeechDictation.finishLocally for why a note is not a question.
+        let heard = await dictation.finishLocally()
+        let text = heard.nilIfBlank ?? watched
         startedAt = nil
 
         guard let transcript = text.nilIfBlank else {

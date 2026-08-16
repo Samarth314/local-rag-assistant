@@ -447,6 +447,42 @@ final class SpeechDictation: NSObject, ObservableObject {
         return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Ends the recording and returns what was recognised while it ran.
+    ///
+    /// ## Why dictating a note does not use `finish()`
+    ///
+    /// `finish()` exists to produce the best possible reading of a QUESTION,
+    /// and it earns its cost there: a question is a few seconds long, one
+    /// mangled proper noun changes the answer, and the user is waiting for a
+    /// reply anyway. So it ships the audio to the Orin and lets Whisper have
+    /// the last word.
+    ///
+    /// Every one of those premises is false for a note. A note runs for
+    /// minutes, so the upload is megabytes and Whisper's decode is long — past
+    /// the 12s ceiling in `RemoteTranscriber` more often than not. Nobody is
+    /// waiting on a reply, so the round trip buys nothing but delay. And the
+    /// user has been WATCHING the transcript the whole time, which makes any
+    /// answer other than "what you just saw" look like a bug — which is
+    /// exactly how it looked: a pause, and then "I didn't hear anything".
+    ///
+    /// So capture ends here. This is the shape the Next.js FlowList project
+    /// uses and the reason its dictation is dependable: the recogniser's own
+    /// accumulated text IS the result, `stop()` hands it back immediately, and
+    /// the server only ever sees text. Nothing downstream can turn a heard
+    /// note into silence, because there is no longer anything downstream.
+    func finishLocally() async -> String {
+        let text = await endAudioAwaitingFinal()
+        if tracksAudioDetail { lastCapture = captured.drain() } else { captured.reset() }
+        // The accumulated transcript is the floor. `endAudioAwaitingFinal` can
+        // come back empty if Apple's last task died without a final result,
+        // and losing the first two minutes of a note to that is not acceptable
+        // when the words are sitting right here.
+        if text.isEmpty {
+            return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text
+    }
+
     /// The final question: Whisper's read when a model is loaded, Apple's
     /// otherwise.
     ///
