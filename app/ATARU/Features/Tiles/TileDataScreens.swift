@@ -458,7 +458,6 @@ private enum HomeDTO {
         let ok: Bool?
         let error: String?
         let devices: [Device]?
-        let sensors: [Device]?
         /// Absent on a server that has not been extended yet, and empty when
         /// no thermostat is paired. Both render nothing at all - a "no
         /// thermostat" placeholder is a row about the absence of a thing.
@@ -672,25 +671,12 @@ struct HomeScreen: View {
                     }
                 }
 
-                if let sensors = payload?.sensors, !sensors.isEmpty {
-                    ATCard {
-                        VStack(alignment: .leading, spacing: Theme.Space.s) {
-                            SectionHeader(text: "Sensors")
-                            ForEach(sensors, id: \.entity_id) { sensor in
-                                HStack {
-                                    Text(sensor.name ?? sensor.entity_id ?? "")
-                                        .font(.ataruBody())
-                                        .foregroundStyle(Theme.textSecondary)
-                                    Spacer()
-                                    Text("\(sensor.state ?? "?") \(sensor.attrs?.unit_of_measurement ?? "")")
-                                        .font(.ataruMono(13))
-                                        .foregroundStyle(Theme.textPrimary)
-                                }
-                            }
-                        }
-                        .padding(Theme.Space.m)
-                    }
-                }
+                // NO SENSORS CARD. Home Assistant's `sensors` list on this
+                // account is sun-cycle entities - next dawn, next dusk, next
+                // midnight - rendered as raw timestamps. Nothing on that card
+                // was ever worth the scroll, and none of it is actionable
+                // from a phone. The server still sends the list; the app
+                // ignores it, which is why the DTO no longer decodes it.
             }
             .padding(Theme.Space.screen)
         }
