@@ -89,8 +89,14 @@
        claim a reason to read the address book. A usage string left behind
        here would be a promise about access the app does not have and does not
        want. See Core/Telephony/ATARUContact.swift. -->
-  <key>NSFaceIDUsageDescription</key>
-  <string>ATARU can require Face ID before showing your private records.</string>
+  <!-- NO NSFaceIDUsageDescription either, and for the same reason. There was
+       one - "ATARU can require Face ID before showing your private records" -
+       backed by a `BiometricLock` class that nothing in the app ever
+       constructed: no screen offered the toggle, no view asked whether it was
+       unlocked. So the string promised a protection the app did not have, on
+       the one screen (the privacy sheet in Settings) where iOS shows a user
+       what an app claims. Both are gone. Re-add the string with the feature,
+       never before it. -->
   <key>ITSAppUsesNonExemptEncryption</key><false/>
 
   <!--
