@@ -43,6 +43,12 @@ enum CallEndReason: Equatable {
     case failed(String)
     /// The system tore everything down — `providerDidReset`.
     case reset
+    /// A second call arrived while this one was up, so this one gave way.
+    ///
+    /// Routine rather than exotic: the morning ladder redials every fifteen
+    /// minutes, and a redial landing on a call that is still nominally up is
+    /// exactly the overlap this reason names.
+    case superseded
 
     var label: String {
         switch self {
@@ -50,6 +56,7 @@ enum CallEndReason: Equatable {
         case .declined: return "Declined"
         case .failed: return "Call failed"
         case .reset: return "Call ended"
+        case .superseded: return "Call ended"
         }
     }
 }
@@ -120,6 +127,15 @@ final class CallService: NSObject, ObservableObject {
     /// bookkeeping and does not touch audio, so without this the call would
     /// display "muted" while still listening to the room.
     var onMuteChanged: ((Bool) -> Void)?
+    /// The system took the route away mid-call - hold the conversation where
+    /// it is rather than talking into a microphone that is not recording.
+    ///
+    /// Distinct from `onAudioDeactivated`, which means the call is over. An
+    /// interruption is temporary and the loop must survive it: tearing the
+    /// session down for a ten-second alarm would end the morning call.
+    var onAudioInterrupted: (() -> Void)?
+    /// The route came back and the system said it is ours again.
+    var onAudioResumed: (() -> Void)?
 
     private let provider: CXProvider
     private let controller = CXCallController()
@@ -128,6 +144,12 @@ final class CallService: NSObject, ObservableObject {
     private var callID: UUID?
     /// Whether `provider(_:didActivate:)` has arrived for the current call.
     private var didActivateAudio = false
+    /// Whether the system has taken the audio route away mid-call - an alarm,
+    /// a Siri invocation, a cellular call arriving over the top of this one.
+    private var isInterrupted = false
+    /// Observers for the two things that can happen to a live route without
+    /// CallKit saying a word about them.
+    private var audioObservers: [NSObjectProtocol] = []
 
     /// Nonisolated so it can be used as a default argument to `init`, which the
     /// caller may reach from outside the main actor.
@@ -163,6 +185,91 @@ final class CallService: NSObject, ObservableObject {
         // A nil queue means the main queue, which is what the `assumeIsolated`
         // calls in the delegate methods below rely on.
         provider.setDelegate(self, queue: nil)
+        observeAudioSession()
+    }
+
+    deinit {
+        // Nonisolated, and NotificationCenter is safe from any thread.
+        for observer in audioObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    /// Watches the two things that happen to a live route behind CallKit's
+    /// back.
+    ///
+    /// Nothing anywhere in the app listened for either of these. An
+    /// interruption (an alarm, Siri, a cellular call over the top) stops the
+    /// capture engine without telling the conversation loop, which then spends
+    /// its 20-second turn budget listening to a dead microphone, hears
+    /// nothing, and counts an empty turn - three of those hang the call up. At
+    /// 7am the alarm and the morning call are minutes apart by design, so this
+    /// is the likely collision rather than a theoretical one.
+    ///
+    /// A route change is not an error and does not pause anything; it is
+    /// recorded so the speaker toggle keeps telling the truth after AirPods
+    /// disconnect mid-call.
+    private func observeAudioSession() {
+        let center = NotificationCenter.default
+        audioObservers.append(
+            center.addObserver(forName: AVAudioSession.interruptionNotification,
+                               object: AVAudioSession.sharedInstance(),
+                               queue: .main) { [weak self] note in
+                MainActor.assumeIsolated { self?.handleInterruption(note) }
+            }
+        )
+        audioObservers.append(
+            center.addObserver(forName: AVAudioSession.routeChangeNotification,
+                               object: AVAudioSession.sharedInstance(),
+                               queue: .main) { [weak self] note in
+                MainActor.assumeIsolated { self?.handleRouteChange(note) }
+            }
+        )
+    }
+
+    private func handleInterruption(_ note: Notification) {
+        guard state.isLive else { return }
+        guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+
+        switch type {
+        case .began:
+            guard !isInterrupted else { return }
+            isInterrupted = true
+            onAudioInterrupted?()
+        case .ended:
+            guard isInterrupted else { return }
+            isInterrupted = false
+            // The system deactivated our session on the way in, so it has to
+            // be reclaimed before anything will record or play again. Under
+            // CallKit the provider usually re-activates it and
+            // `provider(_:didActivate:)` follows; asking here as well is
+            // harmless when it already happened and is the difference between
+            // a recovered call and a silent one when it did not.
+            try? AVAudioSession.sharedInstance().setActive(true)
+            applyAudioRoute()
+            onAudioResumed?()
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleRouteChange(_ note: Notification) {
+        guard state.isLive else { return }
+        guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+
+        switch reason {
+        case .oldDeviceUnavailable, .newDeviceAvailable, .override:
+            // Read the toggle back off the session rather than asserting it:
+            // when AirPods drop out mid-call iOS moves the call to the
+            // receiver, and a speaker button still showing "on" is a button
+            // that has stopped describing anything.
+            isSpeakerOn = AVAudioSession.sharedInstance().currentRoute.outputs
+                .contains { $0.portType == .builtInSpeaker }
+        default:
+            break
+        }
     }
 
     // MARK: - Placing and ending
@@ -258,9 +365,24 @@ final class CallService: NSObject, ObservableObject {
     func reportPushedCall(reason: String?, completion: @escaping () -> Void) {
         // An existing call is not a reason to skip: iOS still demands a report.
         // Ending the old one first keeps the single-call invariant.
-        if state.isLive, let existing = callID {
-            provider.reportCall(with: existing, endedAt: Date(), reason: .remoteEnded)
-            callID = nil
+        //
+        // THROUGH `teardown`, NOT BY HAND. Retiring the old call with a bare
+        // `reportCall(with:endedAt:)` + `callID = nil` looked equivalent and
+        // was not: `onAudioDeactivated` never fired, so `CallSessionModel.end()`
+        // never ran, its `loop` stayed non-nil, and the NEW call's `begin()`
+        // hit `guard loop == nil` and returned immediately. CallKit showed
+        // Connected while nothing spoke and nothing listened. It also left
+        // `isMuted` and `didActivateAudio` carried over from the dead call, so
+        // the new one could start muted, or skip the
+        // `startConversationIfSystemStaysQuiet` safety net that exists for
+        // precisely the case where the system never activates audio.
+        //
+        // The 15-minute redial ladder makes this overlap routine, not rare:
+        // it is the morning call ringing a phone that is still nominally on
+        // the previous morning call.
+        if state.isLive, callID != nil {
+            teardown(reason: .superseded, notifyProvider: true,
+                     providerReason: .remoteEnded)
         }
 
         let id = UUID()
@@ -440,9 +562,14 @@ final class CallService: NSObject, ObservableObject {
     ///   timed-out transaction — because otherwise the system keeps a call the
     ///   app has already forgotten and the two can never be reconciled. Pass
     ///   `false` from the delegate, where CallKit is the one telling *us*.
-    private func teardown(reason: CallEndReason, notifyProvider: Bool = false) {
+    /// - Parameter providerReason: what to tell CallKit the end was, when
+    ///   `notifyProvider` is set. Failure is the usual answer; a call displaced
+    ///   by an incoming one ended remotely, and saying `.failed` there would
+    ///   put a red missed-call entry in Recents for a call that was answered.
+    private func teardown(reason: CallEndReason, notifyProvider: Bool = false,
+                          providerReason: CXCallEndedReason = .failed) {
         if notifyProvider, let id = callID {
-            provider.reportCall(with: id, endedAt: Date(), reason: .failed)
+            provider.reportCall(with: id, endedAt: Date(), reason: providerReason)
         }
 
         // Donate before clearing state — this is what teaches iOS to offer
@@ -455,6 +582,7 @@ final class CallService: NSObject, ObservableObject {
         callID = nil
         isMuted = false
         didActivateAudio = false
+        isInterrupted = false
         // The call is over, so what it was for is over with it. Left set, the
         // next call placed from the Phone app would inherit "morning-brief"
         // and offer to confirm a morning that is not happening.
@@ -497,6 +625,14 @@ extension CallService: CXProviderDelegate {
             // requesting an end action — there is nothing left to end.
             callID = nil
             isMuted = false
+            // The same two fields `teardown` clears, and for the same reasons.
+            // Leaving `reason` set meant the NEXT ordinary call inherited
+            // "morning-brief" and offered an "I'm up" button for a morning that
+            // was not happening; leaving `didActivateAudio` set disarmed the
+            // quiet-system fallback for that call.
+            didActivateAudio = false
+            self.reason = nil
+            isInterrupted = false
             state = .ended(.reset)
             onAudioDeactivated?()
         }
