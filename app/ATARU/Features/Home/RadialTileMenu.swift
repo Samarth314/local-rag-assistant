@@ -245,6 +245,13 @@ struct RadialFan: Equatable {
     private static let rungs: [(lift: Double?, chord: Double)] =
         [(40, 52), (16, 52), (nil, 52), (nil, 46)]
 
+    /// The tightest spacing any rung will accept — the floor below which tiles
+    /// are never placed, whatever else the solver gives up to make a press
+    /// fit. Exposed so a test can assert legality against the ladder itself
+    /// rather than against a number copied out of it, which would then have to
+    /// be remembered every time the ladder is retuned.
+    static var minimumChord: Double { rungs.map(\.chord).min() ?? minChord }
+
     // MARK: - The vocabulary the rest of the file reads the fan through
 
     var stageOne: RadialArc { rings.first ?? RadialArc(radius: Self.ringOne, sweep: 0, center: -.pi / 2, count: 0) }

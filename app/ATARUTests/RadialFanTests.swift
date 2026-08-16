@@ -251,15 +251,57 @@ final class RadialFanTests: XCTestCase {
         }
     }
 
-    func testAPressWithRoomAllRoundFansTheFullArcUpward() {
+    func testAPressWithRoomAllRoundAimsStraightUp() {
         let fan = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
                                   count: HomeTile.allCases.count)
-        // The original width, and pointing away from the hand.
-        XCTAssertEqual(fan.stageOneSweep, .pi * 176 / 180, accuracy: 0.02)
+        // Direction, which IS chosen. Width is not asserted here: since
+        // cef2a2a the aim is picked first — the nearest-to-straight-up
+        // direction that holds every tile — and the rings then fill to
+        // whatever that direction affords, so sweep is an OUTPUT. The arc is
+        // deliberately not maximised, and pinning it to a number is pinning
+        // the solver's arithmetic rather than its behaviour.
         XCTAssertEqual(fan.centerAngle, -Double.pi / 2, accuracy: 0.05)
         // Every tile above the press, none below.
         for point in bubbles(fan) {
             XCTAssertLessThan(point.y, 380 + 1)
+        }
+    }
+
+    /// Room buys width. Which direction it buys it in is the aim's business,
+    /// but an open press must not fan NARROWER than a cornered one.
+    ///
+    /// The relative claim is the one worth making. Both of the assertions this
+    /// replaced were absolute angles, and both were wrong about a solver that
+    /// treats sweep as a result.
+    func testRoomAllRoundFansWiderThanAnEdgePress() {
+        let open = RadialFan.solve(at: CGPoint(x: 201, y: 380), in: field,
+                                   count: HomeTile.allCases.count)
+        let edge = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
+                                   count: HomeTile.allCases.count)
+        XCTAssertGreaterThan(open.stageOneSweep, edge.stageOneSweep,
+                             "an open press should not fan narrower than a cornered one")
+    }
+
+    /// The floor the old tests were really reaching for: not "the arc is wide"
+    /// but "the arc is not so narrow that its own tiles collide".
+    ///
+    /// Derived from the solver's rung ladder rather than a hardcoded angle, so
+    /// retuning the ladder retunes this rather than breaking it.
+    func testAnArcIsAlwaysWideEnoughToSeatItsOwnTiles() {
+        for x in stride(from: 0.0, through: 402, by: 26) {
+            for y in stride(from: 0.0, through: 818, by: 26) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count)
+                for (index, ring) in fan.rings.enumerated() where ring.count > 1 {
+                    XCTAssertGreaterThanOrEqual(
+                        ring.chord, RadialFan.minimumChord - 0.001,
+                        """
+                        ring \(index) packed its \(ring.count) tiles \
+                        \(ring.chord)pt apart at (\(x), \(y)), under the \
+                        \(RadialFan.minimumChord)pt floor
+                        """)
+                }
+            }
         }
     }
 
@@ -285,14 +327,22 @@ final class RadialFanTests: XCTestCase {
         }
     }
 
-    func testAnEdgePressKeepsAsMuchOfTheArcAsFits() {
+    func testAnEdgePressTurnsTowardTheOpenSideAndStillSeatsEveryTile() {
         let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
                                   count: HomeTile.allCases.count)
-        // Half a turn is what a straight edge leaves. Much less than that means
-        // the solver gave up on the arc rather than trimming it.
-        XCTAssertGreaterThanOrEqual(fan.stageOneSweep, .pi - 0.1)
         XCTAssertGreaterThan(cos(fan.centerAngle), 0.5,
                              "it should turn toward the open side")
+        // The old assertion here demanded half a turn of sweep, on the theory
+        // that less meant the solver had "given up on the arc". It has not
+        // given up: a cornered press legitimately fans narrow, and every tile
+        // is still placed and still on screen — which is what
+        // testEveryTileStaysOnScreenFromAnywhereIncludingTheCorners and the
+        // spacing floor above actually check.
+        XCTAssertEqual(fan.offsets.count, HomeTile.allCases.count,
+                       "an edge press must still place every tile")
+        for point in bubbles(fan) {
+            XCTAssertTrue(isInside(point), "a tile escaped at an edge press")
+        }
     }
 
     // MARK: - The current screen
