@@ -1,8 +1,17 @@
 name: ATARU
 options:
   bundleIdPrefix: com.ataru.client
+  # iOS 18, raised from 17 on 2026-08-16.
+  #
+  # Bought for one thing: `onScrollGeometryChange`, which is what lets a tile
+  # screen read its own page's scroll offset from the outside and so claim a
+  # downward drag ONLY at scroll top - the standard sheet rule. Under 17 that
+  # was unreachable, the drag had to be confined to a grab bar, and every tile
+  # screen therefore needed a visible X to close it. Every device in this
+  # fleet runs 18.3 or later, so the floor costs nothing and removes the
+  # chrome.
   deploymentTarget:
-    iOS: "17.0"
+    iOS: "18.0"
   createIntermediateGroups: true
   generateEmptyDirectories: false
 # Signing comes from Signing.xcconfig, which optionally includes the

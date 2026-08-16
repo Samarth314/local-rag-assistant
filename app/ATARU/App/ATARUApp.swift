@@ -50,6 +50,13 @@ struct ATARUApp: App {
             if phase == .background {
                 state.purgeDownloads()
             }
+            // Coming back is the other moment the world has moved on: the
+            // phone may have changed network, slept through the tunnel
+            // dropping, or been away for a day. A connection verdict from
+            // whenever it was last in front is not evidence about now.
+            if phase == .active {
+                state.probeConnection(reason: "foreground")
+            }
         }
     }
 }

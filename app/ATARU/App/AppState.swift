@@ -11,6 +11,16 @@ final class AppState: ObservableObject {
 
     @Published private(set) var service: ATARUService
     @Published private(set) var connection: ConnectionState = .unknown
+    /// Bumped every time `service` is replaced.
+    ///
+    /// Views used to key their `.task(id:)` on `ObjectIdentifier(state.service)`,
+    /// which is the OBJECT'S ADDRESS. Replacing a service releases the old one
+    /// and the allocator is free to hand the new one the same address — and a
+    /// same-address rebuild produces an identical id, so the task does not
+    /// re-run and every consumer keeps the old wiring. That is a coin flip
+    /// sitting under "save the token and push re-registers", so nothing keys
+    /// on identity any more.
+    @Published private(set) var serviceGeneration = 0
     @Published var configuration: AppConfiguration {
         didSet {
             guard configuration != oldValue else { return }
@@ -22,6 +32,21 @@ final class AppState: ObservableObject {
     private let defaults: UserDefaults
     private let tokenStore: TokenStoring
     private static let configurationKey = "ataru.configuration"
+
+    /// The launch/foreground probe, so a second one cancels the first rather
+    /// than racing it to publish a verdict.
+    private var probe: Task<Void, Never>?
+    private let reachability = Reachability()
+
+    /// How long to wait before each retry, in seconds. Five attempts over
+    /// about fifteen seconds, which comfortably outlasts a tailnet coming up.
+    ///
+    /// The ladder is the fix for the launch bug: the FIRST answer is not the
+    /// verdict any more. Nothing is published as a failure until every rung
+    /// has been tried, so a negative from second one - the common case on a
+    /// cold launch, before the Tailscale path exists - costs a retry rather
+    /// than a banner that then sticks.
+    private static let retryDelays: [Double] = [1, 2, 4, 8]
 
     init(defaults: UserDefaults? = nil, tokenStore: TokenStoring? = nil) {
         // UI tests get a throwaway defaults suite and an in-memory token, so a
@@ -39,6 +64,12 @@ final class AppState: ObservableObject {
         // configured should show a working app, not an error screen.
         self.service = DemoATARUService()
         rebuildService()
+        // A path that comes up mid-backoff gets a probe immediately, rather
+        // than waiting out whatever rung the ladder is on.
+        reachability.onPathRestored = { [weak self] in
+            self?.probeConnection(reason: "the network path came back")
+        }
+        reachability.start()
     }
 
     var freshness: DataFreshness {
@@ -59,8 +90,15 @@ final class AppState: ObservableObject {
         rebuildService()
     }
 
-    /// Probes the backend and records the result for the Settings screen.
+    /// One probe, and its answer is the verdict.
+    ///
+    /// For Settings' "Save and test" only, where the user has just asked a
+    /// direct question and deserves a direct answer - including "no". Cancels
+    /// any running ladder first, so a backoff started at launch cannot land a
+    /// late failure on top of a save that just succeeded.
     func refreshConnection() async {
+        probe?.cancel()
+        probe = nil
         guard configuration.mode == .live else {
             connection = .connected("demo")
             return
@@ -70,9 +108,80 @@ final class AppState: ObservableObject {
             let detail = try await service.checkStatus()
             connection = .connected(detail)
         } catch {
-            connection = .failed((error as? APIError)?.localizedDescription
-                                 ?? error.localizedDescription)
+            connection = .failed(Self.message(for: error))
         }
+    }
+
+    /// Probe, and keep probing: launch, foreground, and the network path
+    /// coming back.
+    ///
+    /// THE BUG THIS FIXES. The app showed "couldn't connect" on a launch where
+    /// the network was fine. One probe ran, from `RootView.task` - about as
+    /// early as anything can run, and reliably before the Tailscale path is up
+    /// - and its single negative became the published state. Nothing ever
+    /// re-probed, so the banner stayed until the URL was re-saved by hand.
+    ///
+    /// Three properties, and each one is a separate half of that:
+    ///
+    /// 1. A failure is only published once the whole ladder is spent. Until
+    ///    then the state is `.checking`, which draws no banner at all - a
+    ///    stale negative from second one is now structurally unrepresentable.
+    /// 2. A success clears the failure immediately, from any rung.
+    /// 3. It runs again on every foreground and every path restoration, so
+    ///    "connected once, wrong forever" cannot happen either.
+    func probeConnection(reason: String = "launch") {
+        probe?.cancel()
+        guard configuration.mode == .live else {
+            connection = .connected("demo")
+            return
+        }
+        probe = Task { [weak self] in await self?.runProbe(reason: reason) }
+    }
+
+    private func runProbe(reason: String) async {
+        // Never a downgrade on the way in. A working connection that is being
+        // re-checked in the background is still a working connection, and
+        // flashing "Testing…" over it on every foreground is noise.
+        if !connection.isConnected { connection = .checking }
+        var lastMessage = APIError.notConfigured.localizedDescription
+
+        for attempt in 0...Self.retryDelays.count {
+            if attempt > 0 {
+                let delay = Self.retryDelays[attempt - 1]
+                try? await Task.sleep(for: .seconds(delay))
+                if Task.isCancelled { return }
+            }
+            // Re-read every time: Settings can replace the service mid-ladder,
+            // and the probe should follow the app rather than the instance it
+            // started with.
+            guard configuration.mode == .live else {
+                connection = .connected("demo")
+                return
+            }
+            do {
+                let detail = try await service.checkStatus()
+                if Task.isCancelled { return }
+                netLog.notice("""
+                    connected on attempt \(attempt + 1, privacy: .public) \
+                    (\(reason, privacy: .public))
+                    """)
+                connection = .connected(detail)
+                return
+            } catch {
+                if Task.isCancelled { return }
+                lastMessage = Self.message(for: error)
+                netLog.notice("""
+                    probe attempt \(attempt + 1, privacy: .public) failed: \
+                    \(lastMessage, privacy: .public)
+                    """)
+            }
+        }
+        guard !Task.isCancelled else { return }
+        connection = .failed(lastMessage)
+    }
+
+    private static func message(for error: Error) -> String {
+        (error as? APIError)?.localizedDescription ?? error.localizedDescription
     }
 
     /// Drops every document this app has pulled onto the phone.
@@ -105,6 +214,22 @@ final class AppState: ObservableObject {
                 connection = .failed(APIError.notConfigured.localizedDescription)
             }
         }
+        serviceGeneration += 1
+        // PUSH FOLLOWS THE CREDENTIAL, IMMEDIATELY.
+        //
+        // Saving a new token in Settings used to change nothing about push
+        // until the next cold launch: the token this phone was registered with
+        // had been uploaded under the old credential, and the upload was only
+        // repeated when `RootView` noticed the service had changed - which it
+        // did by object identity, and so sometimes did not notice at all (see
+        // `serviceGeneration`). He hit this live: saved the token, and the
+        // morning call could not ring the phone.
+        //
+        // Doing it here rather than in Settings covers every way the backend
+        // can change - the token, the URL, a Demo ⇄ Live flip - with one call,
+        // and it cannot be forgotten by a future caller. `update` is a no-op
+        // until a token exists, so the one at init costs nothing.
+        RemotePushService.shared.update(service: service)
     }
 
     private func persist() {
