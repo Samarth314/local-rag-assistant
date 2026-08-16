@@ -294,7 +294,7 @@ struct TileScreenHost: View {
         // The gesture, the offset and the dissolve all live in a MODIFIER, and
         // that is load-bearing rather than tidy - see TileDismissal.
         .tileDismissal(onClose: onClose)
-        .background(AtaruBackdrop())
+        .background(AtaruBackdrop(surface: "tile.\(tile.rawValue)"))
         .preferredColorScheme(.dark)
     }
 
@@ -377,20 +377,6 @@ struct TileScreenHost: View {
 /// snapping back to zero and vanishing - which is what made the old exit feel
 /// abrupt, because the page jumped back UP to its origin at the same instant
 /// it disappeared.
-/// What the hosted page's own scrolling looks like from outside it.
-///
-/// Two facts, not one. "At the top" decides who owns a downward drag on a page
-/// that scrolls; "does it scroll at all" is what tells the two KINDS of tile
-/// page apart, and they need different rules - see `TileDismissal`.
-struct TileScrollFacts: Equatable {
-    var atTop: Bool
-    var scrolls: Bool
-
-    /// What a page with no ScrollView in it reports, by never reporting: it is
-    /// trivially at its top, and it does not scroll.
-    static let still = TileScrollFacts(atTop: true, scrolls: false)
-}
-
 /// Rects where a downward drag already means something to the control under it.
 ///
 /// Same idea as `PressExclusionKey`, deliberately a separate key: what a long
@@ -467,10 +453,14 @@ struct TileDismissal: ViewModifier {
     /// How far the page has been pulled, with the dead zone already
     /// subtracted. Never animated while a finger is down.
     @State private var pull: CGFloat = 0
-    /// What the hosted page's ScrollView is doing. `still` until told
+    /// Whether the hosted page's ScrollView is at its top. True until told
     /// otherwise: a page with no ScrollView never reports, and that is a real
-    /// answer rather than a missing one.
-    @State private var scroll = TileScrollFacts.still
+    /// answer rather than a missing one - it is trivially at its top.
+    ///
+    /// Note what this canNOT do on its own, which is the whole reason for the
+    /// dead zone: on a page with nothing to scroll it is true forever, so it
+    /// admits every downward wiggle. It is a handoff rule, not a protection.
+    @State private var atTop = true
     /// Controls that own their own drags, in global coordinates.
     @State private var exclusions: [CGRect] = []
     /// True once a drag has been claimed as a dismissal.
@@ -493,10 +483,23 @@ struct TileDismissal: ViewModifier {
     /// Travel before the gesture is anything at all. Between 25 and 30 was the
     /// brief; 28 is a deliberate wiggle and nowhere near a scroll flick.
     private let activateAt: CGFloat = 28
-    /// Past this, releasing closes. Longer on a page with nothing to scroll,
-    /// because there the dismissal is the ONLY thing a vertical drag can mean
-    /// and a mistake has nothing to fall back to.
-    private var releaseAt: CGFloat { scroll.scrolls ? 110 : 150 }
+    /// Past this, releasing closes. ONE number, on every page.
+    ///
+    /// It was 150 on pages with nothing to scroll and 110 on pages that
+    /// scroll, on the theory that the extra caution cost nothing where there
+    /// was no competing gesture. It cost plenty: "swipe feels better on docs
+    /// but it's bad on the finance page." Docs has a long list and therefore
+    /// scrolls; Finance is a ScrollView whose three cards FIT, so it reported
+    /// itself as not scrolling and got the heavy throw - as did Health,
+    /// Status, Journal, Workspaces, Plan and most of the app, since most tile
+    /// pages fit on a screen. Worse, `progress` divides by this, so those
+    /// pages also dissolved a quarter more slowly for the same travel: the
+    /// page moved under the thumb and looked less committed while doing it.
+    ///
+    /// What actually prevents an accidental dismissal is the dead zone, the
+    /// 2:1 dominance test and the control exclusions - all of which stay. The
+    /// extra 40pt was buying nothing but a heavy feel.
+    private let releaseAt: CGFloat = 110
     /// A drag starting inside this band from the top is treated as a handle
     /// drag and skips the at-top rule, the way a sheet's grabber does. It
     /// covers the navigation bar and the grab bar under it, neither of which
@@ -507,13 +510,10 @@ struct TileDismissal: ViewModifier {
         content
             // The page's own scroll position and whether it scrolls at all,
             // read from out here. This is what the iOS 18 floor was raised for.
-            .onScrollGeometryChange(for: TileScrollFacts.self) { geometry in
-                TileScrollFacts(
-                    atTop: geometry.contentOffset.y <= geometry.contentInsets.top + 0.5,
-                    scrolls: geometry.contentSize.height
-                        > geometry.containerSize.height + 1)
-            } action: { _, facts in
-                scroll = facts
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
+            } action: { _, top in
+                atTop = top
             }
             .onPreferenceChange(DismissExclusionKey.self) { exclusions = $0 }
             // Handing the gesture over cleanly rather than letting two things
@@ -604,9 +604,11 @@ struct TileDismissal: ViewModifier {
         // scrolling content, so they close the page however far down it has
         // been read - which is what a sheet's grabber does.
         if value.startLocation.y < handleBand { return true }
-        // Anywhere else: a page that scrolls must be at its top, and a page
-        // that does not scroll has already passed the longer test above.
-        return scroll.atTop
+        // Anywhere else: the content has to be at its top, which is the
+        // standard sheet rule. On a page that does not scroll this is always
+        // true - the dead zone and the dominance test above are what stand
+        // between a wiggle and a dismissal there.
+        return atTop
     }
 
     /// Commit. The page keeps travelling as it dissolves rather than snapping
