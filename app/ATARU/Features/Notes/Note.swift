@@ -47,7 +47,7 @@ struct Note: Identifiable, Codable, Hashable {
     /// Taken from the first point rather than the summary: the summary may
     /// start anywhere in the note, and a list you scan wants the opening words.
     static func derivedTitle(from digest: NoteDigest, transcript: String) -> String {
-        let source = digest.bullets.first
+        let source = digest.bullets.first.map(NoteDigest.condense)
             ?? digest.summary.nilIfBlank
             ?? transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         let words = source.split(separator: " ")

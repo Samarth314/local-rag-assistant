@@ -43,7 +43,18 @@ struct NoteTask: Identifiable, Codable, Hashable {
     /// feature does not get to stop working when the Orin is unreachable. The
     /// parsed version replaces these when it arrives; see `NoteStore.adopt`.
     static func fromBullets(_ bullets: [String]) -> [NoteTask] {
-        bullets.map { NoteTask(title: $0) }
+        // Condensed, not verbatim. A to-do list of full spoken sentences is
+        // the transcript with circles next to it - see NoteDigest.condense.
+        var seen = Set<String>()
+        return bullets.compactMap { bullet in
+            let title = NoteDigest.condense(bullet)
+            guard title.split(separator: " ").count >= 2 else { return nil }
+            // Two sentences can condense to the same item once the scaffolding
+            // is gone: "I need to call the bank" and "remember to call the
+            // bank because of the fee" are one task.
+            guard seen.insert(title.lowercased()).inserted else { return nil }
+            return NoteTask(title: title)
+        }
     }
 }
 

@@ -81,14 +81,31 @@ final class NoteDigestTests: XCTestCase {
 
     // MARK: - Summary
 
-    func testAShortNoteIsItsOwnSummaryRatherThanHalfOfItself() {
-        // Extracting "the best" of two sentences throws away half a note that
-        // was already short enough to read.
+    /// The complaint this fixes: "the summary is literally just a repeat of
+    /// what I am saying already".
+    ///
+    /// It was, and it could not have been anything else. An extractive summary
+    /// picks sentences the note already contains, so on a short note it IS the
+    /// note — and the old version made that explicit, returning the whole thing
+    /// verbatim whenever there were two points or fewer.
+    func testAShortNoteHasNoSummaryAtAll() {
         let digest = NoteDigest.make(from: "Book the flight. Pay the deposit.")
         XCTAssertEqual(digest.bullets.count, 2)
-        for bullet in digest.bullets {
-            XCTAssertTrue(digest.summary.contains(bullet),
-                          "a two-point note dropped “\(bullet)” from its summary")
+        XCTAssertTrue(digest.summary.isEmpty,
+                      "a two-point note does not need summarising, it needs showing")
+    }
+
+    func testASummaryIsNeverMostOfTheNote() {
+        // Five short points: a third of them by count is still half the text,
+        // which is a repeat wearing a heading.
+        let digest = NoteDigest.make(from: """
+        Buy milk. Call the bank. Book the car in. Water the plants. Post the form.
+        """)
+        if !digest.summary.isEmpty {
+            let whole = digest.bullets.joined(separator: " ")
+            XCTAssertLessThanOrEqual(Double(digest.summary.count),
+                                     Double(whole.count) * 0.6,
+                                     "the summary is most of the note")
         }
     }
 
@@ -129,6 +146,68 @@ final class NoteDigestTests: XCTestCase {
                        "the summary reordered what was said")
     }
 
+    // MARK: - Condensing
+
+    /// The other complaint: items were the whole transcribed sentence.
+    func testTheScaffoldingPeopleSpeakInIsDropped() {
+        let cases = [
+            "I need to call the landlord": "Call the landlord",
+            "I should book the dentist": "Book the dentist",
+            "Remember to pay the council tax": "Pay the council tax",
+            "Don't forget to water the plants": "Water the plants",
+            "We need to renew the insurance": "Renew the insurance",
+            "I'm going to email Arya": "Email Arya",
+            "Gotta post the form": "Post the form"
+        ]
+        for (spoken, expected) in cases {
+            XCTAssertEqual(NoteDigest.condense(spoken), expected)
+        }
+    }
+
+    func testTheReasonIsDroppedButTheTaskIsNot() {
+        XCTAssertEqual(
+            NoteDigest.condense("I need to call the landlord because the heating is broken"),
+            "Call the landlord")
+        XCTAssertEqual(
+            NoteDigest.condense("Book the car in since the MOT runs out"),
+            "Book the car in")
+    }
+
+    func testAnItemIsShortEnoughToScan() {
+        let long = """
+        I really need to call the landlord about the boiler in the upstairs \
+        bathroom before the weekend
+        """
+        let title = NoteDigest.condense(long)
+        XCTAssertLessThanOrEqual(title.split(separator: " ").count, 8,
+                                 "“\(title)” is still a sentence")
+        XCTAssertTrue(title.lowercased().hasPrefix("call the landlord"),
+                      "the cut lost the actual task: “\(title)”")
+    }
+
+    /// Cutting is at a phrase boundary or not at all — a title ending
+    /// mid-thought is worse than one word over budget.
+    func testAnItemIsNeverCutMidThought() {
+        let title = NoteDigest.condense(
+            "Reconcile the quarterly reimbursement spreadsheet accurately")
+        XCTAssertFalse(title.hasSuffix("…"))
+        XCTAssertFalse(title.hasSuffix(" the"))
+        XCTAssertFalse(title.hasSuffix(" a"))
+    }
+
+    func testAlreadyShortItemsAreLeftAlone() {
+        XCTAssertEqual(NoteDigest.condense("Buy milk"), "Buy milk")
+        XCTAssertEqual(NoteDigest.condense("Call Arya"), "Call Arya")
+    }
+
+    func testItemsAreBuiltFromCondensedPointsAndDeduped() {
+        let note = Note(transcript: """
+        I need to call the bank. Remember to call the bank because of the fee. \
+        I should also book the dentist.
+        """)
+        XCTAssertEqual(note.tasks.map(\.title), ["Call the bank", "Book the dentist"])
+    }
+
     // MARK: - Degenerate input
 
     func testSilenceProducesNothingRatherThanAnEmptyNote() {
@@ -146,15 +225,17 @@ final class NoteDigestTests: XCTestCase {
 
     // MARK: - Note
 
-    func testTheTitleIsTheOpeningWordsNotTheSummary() {
+    func testTheTitleIsTheFirstItemNotTheFirstSentence() {
         let note = Note(transcript: """
         Remember to renew the parking permit. The permit costs ninety pounds. \
         The permit expires at the end of the month. Parking is impossible \
         without the permit.
         """)
 
-        XCTAssertTrue(note.title.lowercased().hasPrefix("remember"),
-                      "the title should read as the note's opening, got “\(note.title)”")
+        // "Remember to" is scaffolding in a title exactly as it is in an item,
+        // and a list of notes all beginning "Remember to" distinguishes none
+        // of them. This asserted the opposite until condensing existed.
+        XCTAssertEqual(note.title, "Renew the parking permit")
         XCTAssertLessThanOrEqual(note.title.split(separator: " ").count, 8)
     }
 

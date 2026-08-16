@@ -34,6 +34,86 @@ struct NoteDigest: Hashable, Codable {
         return NoteDigest(summary: summary(of: sentences), bullets: sentences)
     }
 
+    /// A spoken point, cut down to something that reads as a to-do.
+    ///
+    /// People do not dictate in list form. They say "um so I need to call the
+    /// landlord about the boiler before Friday because the heating is broken",
+    /// and the item worth ticking is "Call the landlord about the boiler". Two
+    /// cuts get most of the way there: the self-reference and modal at the
+    /// front ("I need to", "remember to", "make sure I"), which is scaffolding
+    /// every item would otherwise repeat, and the explanation at the back
+    /// ("because…", "since…"), which is why the task exists rather than what
+    /// it is.
+    ///
+    /// Length is the last resort, not the method, and it never truncates
+    /// mid-thought: a title cut to "Call the landlord about the…" is worse
+    /// than one word over budget. It cuts at a preposition or not at all.
+    static func condense(_ point: String) -> String {
+        var text = point.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var strippedSomething = true
+        while strippedSomething {
+            strippedSomething = false
+            for opener in openers {
+                guard text.lowercased().hasPrefix(opener + " ") else { continue }
+                text = String(text.dropFirst(opener.count + 1))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                strippedSomething = true
+            }
+        }
+
+        // The reason, not the task.
+        for tail in reasonSeams {
+            guard let range = text.lowercased().range(of: tail) else { continue }
+            let head = String(text[text.startIndex..<range.lowerBound])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,;:"))
+            if head.split(separator: " ").count >= 2 { text = head }
+        }
+
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: " .,;:"))
+        if text.split(separator: " ").count > maxWordsPerTitle {
+            text = trimmedAtAPreposition(text)
+        }
+        guard let first = text.first else { return point }
+        return first.uppercased() + text.dropFirst()
+    }
+
+    /// Cuts before a trailing prepositional phrase, when that leaves something
+    /// still worth reading. Otherwise leaves the text long.
+    private static func trimmedAtAPreposition(_ text: String) -> String {
+        let words = text.split(separator: " ").map(String.init)
+        for index in stride(from: min(words.count - 1, maxWordsPerTitle), through: 3, by: -1) {
+            guard prepositions.contains(words[index].lowercased()) else { continue }
+            return words[0..<index].joined(separator: " ")
+        }
+        return text
+    }
+
+    /// Scaffolding that every dictated item repeats. Longest first, so "i need
+    /// to" is not half-eaten by "i".
+    private static let openers = [
+        "i really need to", "i also need to", "i just need to",
+        "don't forget to", "dont forget to", "make sure that i", "make sure i",
+        "make sure to", "i'm going to", "im going to", "i am going to",
+        "i've got to", "ive got to", "i have got to", "i have to", "i need to",
+        "i should also", "i should", "i must", "i want to", "i will", "i'll",
+        "we need to", "we should", "we have to", "we'll", "remember to",
+        "need to", "have to", "got to", "gotta", "should", "must"
+    ]
+
+    /// What follows these is why, not what.
+    private static let reasonSeams = [
+        " because ", " since ", " so that ", " otherwise ", " in order to ",
+        " which means ", " that way "
+    ]
+
+    private static let prepositions: Set<String> = [
+        "about", "for", "with", "at", "on", "in", "by", "from", "before",
+        "after", "until", "till", "regarding", "re"
+    ]
+
+    private static let maxWordsPerTitle = 8
+
     /// Splits dictation into the points it contains.
     ///
     /// Sentence tokenisation alone is not enough. Dictation punctuates
@@ -75,12 +155,28 @@ struct NoteDigest: Hashable, Codable {
     /// Classic term-frequency extraction — a sentence scores by how much of the
     /// note's own vocabulary it carries, averaged over its length so a rambling
     /// one does not win merely by being long.
+    /// The summary, or nothing at all.
+    ///
+    /// ## Why this is often empty now
+    ///
+    /// This is extractive: it can only pick sentences the note already
+    /// contains. On a short note that is not a summary, it is the note typed
+    /// out twice — which is exactly what it looked like, because that is
+    /// exactly what it was. The previous version made it worse by design,
+    /// returning the whole note verbatim whenever there were two points or
+    /// fewer.
+    ///
+    /// An honest extractive summary has to earn its place, so it appears only
+    /// when it is a real reduction: enough points that picking a few is a
+    /// choice, and a result meaningfully shorter than the note it came from.
+    /// Below that the list IS the note, and the screen shows the list.
+    ///
+    /// Writing a genuinely new sentence is abstractive and needs the model —
+    /// available now that `/api/parse-tasks` exists, and deliberately not
+    /// wired here, because a note must still work with the Orin unreachable.
     private static func summary(of sentences: [String]) -> String {
-        // Two points or fewer IS the summary; extracting one of two sentences
-        // and calling it an overview only throws half the note away.
-        guard sentences.count > 2 else {
-            return sentences.joined(separator: " ")
-        }
+        // Fewer than this and any extract is most of the note.
+        guard sentences.count >= minimumPointsForSummary else { return "" }
 
         var frequency: [String: Int] = [:]
         for sentence in sentences {
@@ -111,8 +207,23 @@ struct NoteDigest: Hashable, Codable {
             .map(\.0)
             .sorted()
 
-        return chosen.map { sentences[$0] }.joined(separator: " ")
+        let extract = chosen.map { sentences[$0] }.joined(separator: " ")
+        // The last guard, and the one that catches the case the count test
+        // cannot: five points can still be five short ones, where "a third of
+        // them" is half the characters. If it is not a reduction it is a
+        // repeat, and a repeat is worth less than the space it takes.
+        let whole = sentences.joined(separator: " ")
+        guard Double(extract.count) <= Double(whole.count) * maximumSummaryShare else {
+            return ""
+        }
+        return extract
     }
+
+    /// Below this many points, the list is the note and no extract is a
+    /// summary of it.
+    private static let minimumPointsForSummary = 5
+    /// An extract longer than this share of the note is a repeat.
+    private static let maximumSummaryShare = 0.6
 
     // MARK: - Text
 
