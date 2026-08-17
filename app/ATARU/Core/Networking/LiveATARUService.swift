@@ -267,6 +267,14 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(ParseTasksDTO.Reply.self, from: data).tasks.compactMap(\.domain)
     }
 
+    // MARK: - Cards
+
+    func cardCatalog() async throws -> CardCatalog {
+        guard let url = endpoints.url("api/cards/catalog") else { throw APIError.invalidURL }
+        let (data, _) = try await perform(request(for: url))
+        return try decode(CardCatalog.self, from: data)
+    }
+
     // MARK: - Calls
 
     func registerVoIPToken(_ token: String, environment: String) async throws {

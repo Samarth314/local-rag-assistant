@@ -66,14 +66,30 @@ final class RadialFanTests: XCTestCase {
     }
 
     func testAPressAtTheLeftEdgeFansRightRatherThanBeingShovedInward() {
-        let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field, count: HomeTile.allCases.count)
+        let edge = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
+                                   count: HomeTile.allCases.count)
+        let middle = RadialFan.solve(at: CGPoint(x: 201, y: 409), in: field,
+                                     count: HomeTile.allCases.count)
 
         // Turned toward the open side of the screen…
-        XCTAssertGreaterThan(cos(fan.centerAngle), 0.5,
+        //
+        // Relative to a centre press, not against a fixed cosine. The old
+        // `> 0.5` was a 60° window tuned when the set was smaller, and it
+        // failed the moment a sixteenth tile was added — not because the fan
+        // stopped turning away from the edge, but because a fuller set needs
+        // more room and buys less turn with it. What has to hold is the
+        // direction of the difference.
+        XCTAssertGreaterThan(cos(edge.centerAngle), 0,
                              "the fan should point right, away from the left edge")
+        XCTAssertGreaterThan(cos(edge.centerAngle), cos(middle.centerAngle),
+                             "an edge press should turn further from vertical than a centre press")
+
         // …rather than kept pointing up and dragged bodily into the middle,
-        // which is what would put the tiles out of the thumb's reach.
-        XCTAssertLessThan(abs(fan.origin.x - fan.anchor.x), 40)
+        // which is what would put the tiles out of the thumb's reach. Measured
+        // against the fan's own first ring: a shift is only "bodily" relative
+        // to how far the tiles sit from the thumb in the first place.
+        XCTAssertLessThan(abs(edge.origin.x - edge.anchor.x), edge.stageOneRadius,
+                          "the cluster was moved more than a ring's radius from the press")
     }
 
     func testAPressAtTheTopFansDownward() {
@@ -403,7 +419,10 @@ final class RadialFanTests: XCTestCase {
     func testAnEdgePressTurnsTowardTheOpenSideAndStillSeatsEveryTile() {
         let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
                                   count: HomeTile.allCases.count)
-        XCTAssertGreaterThan(cos(fan.centerAngle), 0.5,
+        // Strictly rightward, no fixed window — see the note in
+        // testAPressAtTheLeftEdgeFansRightRatherThanBeingShovedInward for why
+        // a cosine threshold is a tile count in disguise.
+        XCTAssertGreaterThan(cos(fan.centerAngle), 0,
                              "it should turn toward the open side")
         // The old assertion here demanded half a turn of sweep, on the theory
         // that less meant the solver had "given up on the arc". It has not

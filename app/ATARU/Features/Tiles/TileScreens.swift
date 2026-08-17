@@ -406,6 +406,7 @@ struct TileScreenHost: View {
         switch tile {
         case .plan:       PlanView()
         case .notes:      NotesScreen()
+        case .cards:      CardsScreen()
         case .finance:    FinanceScreen()
         case .health:     HealthScreen()
         case .home:       HomeScreen()

@@ -89,6 +89,15 @@ protocol ATARUService: AnyObject, Sendable {
     /// recogniser.
     func parseTasks(transcript: String) async throws -> [NoteTask]
 
+    /// The card catalog the scraping agent maintains.
+    ///
+    /// Refreshed on the server roughly annually - issuers change these once or
+    /// twice a year, not monthly - so the client asks once per appearance and
+    /// is happy with whatever it gets. Nothing about the user's own wallet goes
+    /// up: this is a read of public card terms, and which cards someone
+    /// carries never leaves the phone.
+    func cardCatalog() async throws -> CardCatalog
+
     /// Sets the call time, for `date` or - when that is nil - for tomorrow.
     ///
     /// Deliberately has NO default implementation that pretends to succeed. A
@@ -178,6 +187,13 @@ extension ATARUService {
     /// array would mean "parsed it, found nothing" and replace them with
     /// nothing. See NoteStore.adopt.
     func parseTasks(transcript: String) async throws -> [NoteTask] {
+        throw APIError.notFound
+    }
+
+    /// A backend with no catalog is not an error worth showing anyone: the
+    /// bundled card list still fills the picker, and the amounts were always
+    /// going to come from the agent or from the user reading their statement.
+    func cardCatalog() async throws -> CardCatalog {
         throw APIError.notFound
     }
 

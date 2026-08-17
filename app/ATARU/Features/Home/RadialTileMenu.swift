@@ -23,7 +23,7 @@ import SwiftUI
 enum HomeTile: String, CaseIterable, Identifiable {
     // The surfaces holding his own data and the ones that change day to day,
     // in reach order.
-    case assistant, plan, notes, finance, health, journal, documents, home, workspaces
+    case assistant, plan, notes, finance, cards, health, journal, documents, home, workspaces
     // Settings-class: dialled once and then left alone. `morning` is his own
     // daily routine rather than a machine or a media server, so it does not
     // belong with the second group - and `settings` is the same shape of
@@ -48,6 +48,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "Ask"
         case .plan:          return "Plan"
         case .notes:         return "Notes"
+        case .cards:         return "Cards"
         case .finance:       return "Finance"
         case .health:        return "Health"
         case .home:          return "Home"
@@ -70,6 +71,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "waveform"
         case .plan:          return "checklist"
         case .notes:         return "waveform.badge.mic"
+        case .cards:         return "creditcard"
         case .finance:       return "dollarsign.circle"
         case .health:        return "heart.text.square"
         case .home:          return "lightbulb"
@@ -93,6 +95,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "Voice · chat"
         case .plan:          return "Top 3 · todos"
         case .notes:         return "Dictate · summarise"
+        case .cards:         return "Credits · expiries"
         case .finance:       return "Spending · net worth"
         case .health:        return "Labs · meds"
         case .home:          return "Devices · switches"
