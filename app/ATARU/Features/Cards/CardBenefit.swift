@@ -136,6 +136,50 @@ struct CardBenefit: Identifiable, Codable, Hashable {
     }
 
     var hasCashValue: Bool { (amount ?? 0) > 0 }
+
+    /// Folds a refreshed catalog into the benefits a card already carries.
+    ///
+    /// ## Why identity has to survive
+    ///
+    /// Redemptions are keyed by `benefit.id`, so a refresh that hands every
+    /// credit a fresh UUID silently un-ticks the lot. The user opens the app
+    /// the morning after the annual scrape and every credit they have already
+    /// spent is back on the list — which is worse than not refreshing at all,
+    /// because now they will go and try to spend it twice. Rows matching by
+    /// title keep their id and take the catalog's numbers.
+    ///
+    /// ## Why this is a union, unlike `NoteTask.merge`
+    ///
+    /// A parsed note is authoritative about that note, so the merge next door
+    /// returns only what came back. A catalog is NOT authoritative about a
+    /// card: terms vary by when the card was opened and what retention offer
+    /// was taken, so the credits someone typed themselves are exactly the ones
+    /// the scraper was never going to know. Anything with no catalog
+    /// counterpart is kept, not dropped.
+    static func merge(catalog: [CardBenefit], into existing: [CardBenefit]) -> [CardBenefit] {
+        var byTitle: [String: CardBenefit] = [:]
+        for benefit in existing {
+            byTitle[matchKey(benefit.title)] = byTitle[matchKey(benefit.title)] ?? benefit
+        }
+
+        var claimed = Set<UUID>()
+        let refreshed = catalog.map { entry -> CardBenefit in
+            guard let previous = byTitle[matchKey(entry.title)],
+                  claimed.insert(previous.id).inserted else { return entry }
+            return CardBenefit(id: previous.id, title: entry.title,
+                               merchant: entry.merchant, amount: entry.amount,
+                               cycle: entry.cycle, notes: entry.notes)
+        }
+        // Hand-entered credits the catalog has never heard of.
+        let kept = existing.filter { !claimed.contains($0.id) }
+        return refreshed + kept
+    }
+
+    /// Case and trailing punctuation are not the difference between two credits.
+    private static func matchKey(_ title: String) -> String {
+        title.lowercased().trimmingCharacters(
+            in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".,;:!?")))
+    }
 }
 
 /// A card the user actually holds.

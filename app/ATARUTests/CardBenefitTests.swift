@@ -176,6 +176,71 @@ final class CardBenefitTests: XCTestCase {
         XCTAssertNotEqual(first.benefits[0].id, second.benefits[0].id)
     }
 
+    // MARK: - Catalog refresh
+
+    /// The bug an annual scrape would otherwise ship: every credit already
+    /// spent this period comes back unticked, and the user goes and tries to
+    /// spend money that is gone.
+    func testARefreshKeepsBenefitIdentitySoRedemptionsSurvive() {
+        let existing = CardBenefit(title: "Lululemon credit", amount: 75, cycle: .quarterly)
+        let fromCatalog = CardBenefit(title: "Lululemon credit", amount: 100,
+                                      cycle: .quarterly)
+
+        let merged = CardBenefit.merge(catalog: [fromCatalog], into: [existing])
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].id, existing.id, "a refresh renamed the benefit's identity")
+        XCTAssertEqual(merged[0].amount, 100, "the refreshed amount was not taken")
+    }
+
+    func testARefreshedBenefitKeepsItsRedemptionKey() {
+        let existing = CardBenefit(title: "Airline fee credit", amount: 200,
+                                   cycle: .annualCalendar)
+        let period = BenefitCycle.annualCalendar.period(containing: day("2026-08-16"),
+                                                        calendar: calendar)
+        let before = CardWallet.key(existing, period: period)
+
+        let merged = CardBenefit.merge(
+            catalog: [CardBenefit(title: "Airline fee credit", amount: 200,
+                                  cycle: .annualCalendar)],
+            into: [existing])
+
+        XCTAssertEqual(CardWallet.key(merged[0], period: period), before)
+    }
+
+    /// The deliberate difference from NoteTask.merge.
+    func testHandEnteredCreditsSurviveARefreshThatDoesNotMentionThem() {
+        let typed = CardBenefit(title: "Retention offer credit", amount: 50,
+                                cycle: .annualCardmember)
+        let known = CardBenefit(title: "Lululemon credit", amount: 75, cycle: .quarterly)
+
+        let merged = CardBenefit.merge(catalog: [known], into: [typed, known])
+
+        XCTAssertEqual(merged.count, 2, "the scrape deleted a credit the user typed")
+        XCTAssertTrue(merged.contains { $0.id == typed.id })
+    }
+
+    func testTitleMatchingIgnoresCaseAndTrailingPunctuation() {
+        let existing = CardBenefit(title: "Uber Cash", amount: 15, cycle: .monthly)
+        let merged = CardBenefit.merge(
+            catalog: [CardBenefit(title: "uber cash.", amount: 15, cycle: .monthly)],
+            into: [existing])
+
+        XCTAssertEqual(merged.count, 1, "the same credit was kept twice")
+        XCTAssertEqual(merged[0].id, existing.id)
+    }
+
+    func testTwoCatalogRowsCannotBothClaimOneExistingBenefit() {
+        let existing = CardBenefit(title: "Dining credit", amount: 10, cycle: .monthly)
+        let merged = CardBenefit.merge(
+            catalog: [CardBenefit(title: "Dining credit", amount: 10, cycle: .monthly),
+                      CardBenefit(title: "Dining credit", amount: 10, cycle: .monthly)],
+            into: [existing])
+
+        let reused = merged.filter { $0.id == existing.id }
+        XCTAssertEqual(reused.count, 1, "one identity was handed to two rows")
+    }
+
     // MARK: - Helpers
 
     private func makeStatus(cycle: BenefitCycle, now: Date,

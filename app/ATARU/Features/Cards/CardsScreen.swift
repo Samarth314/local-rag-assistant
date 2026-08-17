@@ -18,8 +18,19 @@ struct CardsScreen: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: Theme.Space.m) {
+                if let failure = wallet.failure {
+                    // Above everything, and never replaced by the empty state:
+                    // "No cards yet" over a file that would not open says the
+                    // wallet is empty when it is not.
+                    Label(failure, systemImage: "exclamationmark.triangle")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.amber)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, Theme.Space.s)
+                }
                 if wallet.cards.isEmpty {
-                    empty
+                    if wallet.failure == nil { empty }
                 } else {
                     headline
                     ForEach(wallet.statuses(at: now)) { status in
@@ -61,6 +72,10 @@ struct CardsScreen: View {
             // come from the user or the agent, not from this binary.
             if let fetched = try? await state.service.cardCatalog(), !fetched.cards.isEmpty {
                 catalog = fetched
+                // Fold the refreshed terms into cards already held, keeping
+                // every tick and every hand-entered credit. See
+                // CardWallet.refresh.
+                wallet.refresh(from: fetched)
             }
         }
         .task(id: wallet.redemptions) {
