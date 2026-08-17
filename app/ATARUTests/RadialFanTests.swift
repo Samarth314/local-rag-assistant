@@ -117,6 +117,79 @@ final class RadialFanTests: XCTestCase {
         }
     }
 
+    /// The same claim as above, from every press on the screen rather than
+    /// from the one comfortable one in the middle.
+    ///
+    /// THE BUG THIS GUARDS: `index(at:)` took the angle from `origin` and the
+    /// reach from `anchor`. Those are the same point only when the fan opens
+    /// exactly where the thumb went down - and a quarter of the presses on
+    /// this field are nudged inward to seat, more on a shorter one. On those,
+    /// the direction and the ring were answered in different frames and the
+    /// tile that came back was not the tile under the thumb. A standalone
+    /// sweep (ops/radial-sweep.sh) put it at 2,595 of 7,922 presses across
+    /// every layer, every one of them nudged and not one un-nudged.
+    ///
+    /// Testing this at a single press could never have caught it, because the
+    /// press that was tested is not nudged.
+    func testAimingAtATileSelectsItFromEveryPressIncludingNudgedFans() {
+        var nudged = 0
+        for x in stride(from: 0.0, through: 402, by: 22) {
+            for y in stride(from: 0.0, through: 818, by: 22) {
+                let fan = RadialFan.solve(at: CGPoint(x: x, y: y), in: field,
+                                          count: HomeTile.allCases.count,
+                                          keepOut: keepOut)
+                if fan.origin != fan.anchor { nudged += 1 }
+                for (index, point) in bubbles(fan).enumerated() {
+                    XCTAssertEqual(
+                        fan.index(at: point, stageTwoVisible: true), index,
+                        """
+                        pointing at tile \(index) selected something else for a \
+                        press at (\(x), \(y)) \
+                        (origin \(fan.origin), anchor \(fan.anchor))
+                        """)
+                    // And not merely the centre pixel: the bubble is a 44pt
+                    // target, so a thumb resting anywhere on it counts.
+                    for offset in [CGSize(width: 8, height: 0), CGSize(width: -8, height: 0),
+                                   CGSize(width: 0, height: 8), CGSize(width: 0, height: -8)] {
+                        let near = CGPoint(x: point.x + offset.width,
+                                           y: point.y + offset.height)
+                        guard hypot(near.x - fan.origin.x,
+                                    near.y - fan.origin.y) > RadialFan.deadZone else { continue }
+                        XCTAssertEqual(
+                            fan.index(at: near, stageTwoVisible: true), index,
+                            "resting 8pt off tile \(index) missed it at (\(x), \(y))")
+                    }
+                }
+            }
+        }
+        // The case above is only covered while nudged fans actually occur. If
+        // the solver ever stops nudging, this test has quietly stopped testing
+        // the thing it exists for and should be re-aimed rather than deleted.
+        XCTAssertGreaterThan(nudged, 0, "no press was nudged - this test proves nothing")
+    }
+
+    /// The dead zone is the circle that is DRAWN, which is at the origin.
+    ///
+    /// Same frame confusion, other half: measuring the cancel radius from the
+    /// anchor means the ring someone can see is not the ring that cancels.
+    func testTheDeadZoneIsTheCircleThatIsDrawnEvenWhenTheFanIsNudged() {
+        // A left-edge press: the fan cannot be seated at the thumb, so it is
+        // nudged 30pt inward.
+        let fan = RadialFan.solve(at: CGPoint(x: 4, y: 409), in: field,
+                                  count: HomeTile.allCases.count)
+        XCTAssertNotEqual(fan.origin, fan.anchor, "this press is meant to nudge")
+
+        for k in 0..<24 {
+            let a = -Double.pi + Double(k) * (2 * .pi / 24)
+            for r in [RadialFan.deadZone * 0.3, RadialFan.deadZone * 0.95] {
+                let point = CGPoint(x: fan.origin.x + r * cos(a),
+                                    y: fan.origin.y + r * sin(a))
+                XCTAssertNil(fan.index(at: point, stageTwoVisible: true),
+                             "\(Int(r))pt from the pivot selected a tile")
+            }
+        }
+    }
+
     // MARK: - Staging
 
     private func fanAtRest() -> RadialFan {

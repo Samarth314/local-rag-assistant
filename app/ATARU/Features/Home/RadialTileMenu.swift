@@ -348,8 +348,28 @@ struct RadialFan: Equatable {
         rings.prefix(max(0, n)).reduce(0) { $0 + $1.count }
     }
 
+    /// How far a point is from the pivot the fan is drawn about.
+    ///
+    /// From `origin`, not `anchor`. THE BUG THIS REPLACES: this measured from
+    /// the anchor while `index(at:)` took its angle from the origin, so on
+    /// every fan the solver had to nudge inward - a third of the presses on a
+    /// portrait phone and nearly two thirds of them in landscape - the two
+    /// halves of a selection were answered in different frames. The angle said
+    /// which direction the tile is in, the reach said which ring, and with the
+    /// frames up to 150pt apart the ring was routinely the wrong one: a
+    /// standalone sweep put it at 2,595 of 7,922 presses, every one of them
+    /// nudged and not one un-nudged.
+    ///
+    /// The origin is the correct frame because it is the DRAWN one. The
+    /// bubbles are positioned at `origin + offset`, the ring radii are
+    /// measured from there, and the dead-zone circle is drawn there too - so
+    /// origin is the only frame in which what is selected can match what is on
+    /// screen. Reach is also what the reveal threshold is compared against
+    /// (see `RadialPressMenu.move(to:)`), and reading that from a different
+    /// point than the ring boundaries meant a thumb could cross into ring two
+    /// before ring two was drawn.
     func distance(to point: CGPoint) -> Double {
-        hypot(point.x - anchor.x, point.y - anchor.y)
+        hypot(point.x - origin.x, point.y - origin.y)
     }
 
     /// Which tile a finger at `point` is pointing at, or nil for "nothing".
@@ -357,10 +377,15 @@ struct RadialFan: Equatable {
     /// Ring first, then angle - deliberately NOT nearest-bubble. Nearest-bubble
     /// was tried and reverted: it makes the outer ring steal selections from
     /// the inner one wherever the two are angularly close.
+    ///
+    /// Angle and reach are both taken from `origin`. They have to be the same
+    /// point: they are polar coordinates of one position, and answering them
+    /// in two frames does not describe anywhere at all.
     func index(at point: CGPoint, visibleRings: Int) -> Int? {
-        guard distance(to: point) > Self.deadZone, !rings.isEmpty else { return nil }
+        guard !rings.isEmpty else { return nil }
         let angle = atan2(point.y - origin.y, point.x - origin.x)
         let reach = distance(to: point)
+        guard reach > Self.deadZone else { return nil }
         var ring = 0
         while ring + 1 < min(visibleRings, rings.count), reach >= boundary(past: ring) {
             ring += 1
