@@ -79,8 +79,12 @@ final class VoiceViewModel: ObservableObject {
         self.isStandby = RuntimeMode.isUITesting
             ? false
             : UserDefaults.standard.bool(forKey: Self.standbyKey)
-        wake.onWake = { [weak self] in self?.beginWakeTurn() }
+        wake.onWake = { [weak self] command in self?.beginWakeTurn(command: command) }
         wake.onStatusChange = { [weak self] status in self?.wakeStatus = status }
+        // A hands-free turn is a turn in which the name has just been said, so
+        // this recogniser needs to expect it too - and a question that MENTIONS
+        // ATARU is transcribed better for it either way.
+        dictation.contextualBias = WakePhrase.contextualStrings
     }
 
     /// Opens the microphone if standby was left on. Called from the view once
@@ -232,7 +236,14 @@ final class VoiceViewModel: ObservableObject {
     }
 
     /// The phrase was heard. Run one hands-free turn, then go back to standby.
-    private func beginWakeTurn() {
+    ///
+    /// `command` is the same-breath question, when there was one: "hey ataru
+    /// check the time" is ONE utterance, and standby's own recogniser has
+    /// already transcribed all of it. Opening a second microphone to ask again
+    /// is how that question used to get lost - by the time the new recogniser
+    /// is up, the words are gone. So a command that already exists is asked
+    /// directly, and only a bare name gets the cue and a listening turn.
+    private func beginWakeTurn(command: String?) {
         guard phase.allowsNewQuestion else {
             releaseStandby()
             return
@@ -247,6 +258,10 @@ final class VoiceViewModel: ObservableObject {
         // down from under it at T+5s, mid-question, by an object that has
         // already finished. That is the exact failure `AudioSessionOwner`
         // exists for; standby is simply another user of the session.
+        //
+        // It matters MORE on the same-breath path, not less: there, no second
+        // recogniser opens at all, so nothing else cancels that pending
+        // deactivation before the answer starts playing.
         AudioSessionOwner.shared.retain()
         wakeTurn = Task { @MainActor [weak self] in
             // The retain is released however this ends - answered, cancelled
@@ -258,7 +273,15 @@ final class VoiceViewModel: ObservableObject {
             // that turn uncancellable.
             defer { AudioSessionOwner.shared.release() }
             guard let self else { return }
-            let question = await self.listenHandsFree()
+            let question: String
+            if let command, !command.isEmpty {
+                // Already heard. The same haptic the orb and the cue give, so
+                // the two ways of asking feel identical from the outside.
+                Haptics.fire(.tap)
+                question = command
+            } else {
+                question = await self.listenHandsFree()
+            }
             guard !Task.isCancelled else { return }
             guard !question.isEmpty else {
                 // Woken by something that was not a question - the television,
@@ -279,6 +302,10 @@ final class VoiceViewModel: ObservableObject {
     }
 
     /// Records until the speaker stops, the way a call turn does.
+    ///
+    /// Reached only when the wake phrase was the WHOLE utterance - "hey ATARU",
+    /// pause. A question asked in the same breath never gets here, because
+    /// standby's own stream already has it.
     ///
     /// Nobody is holding anything after a wake word, so the end of the question
     /// is judged from a quiet MICROPHONE rather than from a transcript that has

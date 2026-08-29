@@ -163,6 +163,16 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// when the backend changes. Empty just means unbiased transcription.
     static var sharedVocabulary: [String] = []
 
+    /// Words this particular recogniser must expect whatever the roster says,
+    /// carried ahead of it into `contextualStrings`.
+    ///
+    /// It exists because the roster is CORRESPONDENTS - people the vault knows
+    /// about - and the one word the wake listener needs biased is the
+    /// assistant's own name, which is in no correspondent list and is a word
+    /// Apple's recogniser has never seen. Merged rather than substituted, so a
+    /// question asked hands-free still gets the names right.
+    var contextualBias: [String] = []
+
     /// The backend that transcribes a finished turn, set wherever the roster
     /// is warmed. Nil in Demo, and nil is simply the on-device path.
     static var sharedService: ATARUService?
@@ -344,9 +354,13 @@ final class SpeechDictation: NSObject, ObservableObject {
         // weaker lever than Whisper's prompt, but it is free and it applies to
         // the live partials the user watches AND to the transcript that stands
         // in whenever ATARU's own engine cannot be reached.
-        if !vocabulary.isEmpty || !Self.sharedVocabulary.isEmpty {
-            let roster = vocabulary.isEmpty ? Self.sharedVocabulary : vocabulary
-            request.contextualStrings = Array(roster.prefix(100))
+        let roster = vocabulary.isEmpty ? Self.sharedVocabulary : vocabulary
+        // The bias goes FIRST and the roster is truncated around it, so a long
+        // correspondent list can never push the assistant's own name out of the
+        // hundred strings Apple is given.
+        let biased = contextualBias + roster.filter { !contextualBias.contains($0) }
+        if !biased.isEmpty {
+            request.contextualStrings = Array(biased.prefix(100))
         }
         self.request = request
         requestBox.set(request)
