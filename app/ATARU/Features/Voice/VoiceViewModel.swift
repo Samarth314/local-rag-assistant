@@ -24,6 +24,37 @@ final class VoiceViewModel: ObservableObject {
     let player = AnswerPlayer()
     /// Speaks the answer while the model is still writing it. See `ask`.
     let streamPlayer = StreamingAnswerPlayer()
+    /// "Hey ATARU", while the app is on screen. See `WakeWordListener`.
+    let wake = WakeWordListener()
+
+    /// Whether standby is armed. Persisted, because a mode you have to switch
+    /// on every time the app cold-starts is a mode nobody uses.
+    @Published var isStandby: Bool {
+        didSet {
+            guard isStandby != oldValue else { return }
+            UserDefaults.standard.set(isStandby, forKey: Self.standbyKey)
+            if isStandby {
+                Task { await wake.enable() }
+            } else {
+                standbyGate?.cancel()
+                standbyGate = nil
+                wake.disable()
+            }
+        }
+    }
+
+    /// What standby is actually doing, mirrored out of the listener so the UI
+    /// has something published to watch. See `WakeWordListener.onStatusChange`.
+    @Published private(set) var wakeStatus: WakeWordListener.Status = .off
+
+    static let standbyKey = "ataru.wakeword.standby"
+
+    /// The pending "give the microphone back to standby once this turn is
+    /// over" job. One at a time; a new hold cancels it.
+    private var standbyGate: Task<Void, Never>?
+    /// The wake-word turn currently running, so switching standby off or
+    /// starting a call can tear it down.
+    private var wakeTurn: Task<Void, Never>?
 
     private var service: ATARUService
     private var askTask: Task<Void, Never>?
@@ -41,6 +72,23 @@ final class VoiceViewModel: ObservableObject {
 
     init(service: ATARUService) {
         self.service = service
+        // The UI suite gets a throwaway everything else (see `AppState.init`),
+        // and it must get standby off too: a developer whose own phone has the
+        // wake word armed would otherwise have every test run open the
+        // microphone and answer its own fixtures out loud.
+        self.isStandby = RuntimeMode.isUITesting
+            ? false
+            : UserDefaults.standard.bool(forKey: Self.standbyKey)
+        wake.onWake = { [weak self] in self?.beginWakeTurn() }
+        wake.onStatusChange = { [weak self] status in self?.wakeStatus = status }
+    }
+
+    /// Opens the microphone if standby was left on. Called from the view once
+    /// it is on screen - never from `init`, which runs while a preview or a
+    /// test is being built and has no business asking for the microphone.
+    func startStandbyIfEnabled() async {
+        guard isStandby else { return }
+        await wake.enable()
     }
 
     /// Called when the environment's service changes (Demo ⇄ Live).
@@ -65,6 +113,9 @@ final class VoiceViewModel: ObservableObject {
     func beginListening() async {
         guard phase.allowsNewQuestion else { return }
         holdActive = true
+        // A held orb is the user taking the microphone by hand. Standby lets
+        // go of it rather than recording the same words twice.
+        holdStandby()
         guard await dictation.requestAuthorization() else {
             phase = .failed(SpeechDictation.Failure.permissionDenied.localizedDescription)
             return
@@ -111,6 +162,7 @@ final class VoiceViewModel: ObservableObject {
             partialTranscript = ""
             guard !question.isEmpty else {
                 phase = .failed(SpeechDictation.Failure.noSpeechDetected.localizedDescription)
+                releaseStandby()
                 return
             }
             ask(question)
@@ -122,6 +174,152 @@ final class VoiceViewModel: ObservableObject {
         dictation.cancel()
         partialTranscript = ""
         phase = .idle
+        releaseStandby()
+    }
+
+    // MARK: - Standby ("Hey ATARU")
+
+    /// Something else needs the microphone. Standby stays armed, but shuts up.
+    ///
+    /// The two SpeechDictation instances - standby's and the turn's - each own
+    /// an `AVAudioEngine`, and two engines tapping the same input node is how a
+    /// wake word turns into a turn that records silence. Only one is ever open.
+    func standbyPause() {
+        let hadWakeTurn = wakeTurn != nil
+        wakeTurn?.cancel()
+        wakeTurn = nil
+        // A cancelled task does not close a microphone. A wake turn cut short
+        // by a call arriving would otherwise leave the recogniser running
+        // underneath the call - two engines on one input, which is the exact
+        // collision standby exists to avoid.
+        if hadWakeTurn, phase == .listening {
+            holdActive = false
+            dictation.cancel()
+            partialTranscript = ""
+            phase = .idle
+        }
+        holdStandby()
+    }
+
+    /// The microphone is free again - the app came back to the foreground, or
+    /// a call ended. A no-op when standby is off.
+    func standbyResume() {
+        releaseStandby()
+    }
+
+    private func holdStandby() {
+        standbyGate?.cancel()
+        standbyGate = nil
+        wake.pause()
+    }
+
+    /// Gives the microphone back to standby, but only once the turn in flight
+    /// is genuinely over.
+    ///
+    /// Resuming the instant a question is SENT would have standby listening
+    /// through the answer being spoken - and the recogniser would hear "ATARU"
+    /// in ATARU's own voice and wake itself in a loop.
+    private func releaseStandby() {
+        guard isStandby else { return }
+        standbyGate?.cancel()
+        standbyGate = Task { @MainActor [weak self] in
+            while let self, !Task.isCancelled, !self.phase.allowsNewQuestion {
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+            guard let self, !Task.isCancelled, self.isStandby else { return }
+            await self.wake.resume()
+        }
+    }
+
+    /// The phrase was heard. Run one hands-free turn, then go back to standby.
+    private func beginWakeTurn() {
+        guard phase.allowsNewQuestion else {
+            releaseStandby()
+            return
+        }
+        wakeTurn?.cancel()
+        // HOLD THE AUDIO SESSION ACROSS THE HANDOFF.
+        //
+        // Standby's recogniser has just closed, which arms
+        // `SpeechDictation`'s 5-second deferred deactivation of the SHARED
+        // session. The turn's own recogniser opens milliseconds later and runs
+        // for up to twelve seconds - so without a retain, the session is torn
+        // down from under it at T+5s, mid-question, by an object that has
+        // already finished. That is the exact failure `AudioSessionOwner`
+        // exists for; standby is simply another user of the session.
+        AudioSessionOwner.shared.retain()
+        wakeTurn = Task { @MainActor [weak self] in
+            // The retain is released however this ends - answered, cancelled
+            // by a call, or thrown away by standby being switched off.
+            //
+            // It does NOT clear `wakeTurn`. By the time a finished turn's
+            // teardown runs, standby may already have heard the phrase again
+            // and stored a NEW task there, and nilling it then would leave
+            // that turn uncancellable.
+            defer { AudioSessionOwner.shared.release() }
+            guard let self else { return }
+            let question = await self.listenHandsFree()
+            guard !Task.isCancelled else { return }
+            guard !question.isEmpty else {
+                // Woken by something that was not a question - the television,
+                // a passing "Atari". Say nothing and go back to waiting.
+                if self.phase == .listening { self.phase = .idle }
+                self.releaseStandby()
+                return
+            }
+            self.ask(question)
+            await self.askTask?.value
+            // `ask` only awaits playback on the streaming path; the blocking
+            // one hands the answer to a callback-driven player. Either way
+            // standby must not reopen while ATARU is still talking.
+            while !Task.isCancelled, self.phase == .speaking {
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+        }
+    }
+
+    /// Records until the speaker stops, the way a call turn does.
+    ///
+    /// Nobody is holding anything after a wake word, so the end of the question
+    /// is judged from a quiet MICROPHONE rather than from a transcript that has
+    /// stopped growing - the same ground truth, and the same tuning, the call
+    /// loop settled on. See `CallSessionModel.listenForOneTurn`.
+    private func listenHandsFree() async -> String {
+        do {
+            try dictation.start()
+        } catch let failure as SpeechDictation.Failure {
+            phase = .failed(failure.localizedDescription)
+            return ""
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return ""
+        }
+
+        partialTranscript = ""
+        phase = .listening
+        // The existing listening cue, so waking sounds like pressing the orb.
+        Haptics.fire(.tap)
+
+        var lastVoiceAt: ContinuousClock.Instant?
+        // Shorter than a call's 20s: a call is a conversation with pauses in
+        // it, and this is one question asked of a phone across the room.
+        let deadline = ContinuousClock.now + .seconds(12)
+
+        while !Task.isCancelled, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(120))
+            partialTranscript = dictation.transcript
+            if dictation.level > CallSessionModel.voiceLevel {
+                lastVoiceAt = ContinuousClock.now
+            }
+            if let voiced = lastVoiceAt,
+               ContinuousClock.now - voiced > CallSessionModel.silenceGrace {
+                break
+            }
+        }
+
+        let question = await dictation.finish()
+        partialTranscript = ""
+        return question
     }
 
     // MARK: - Asking
@@ -137,6 +335,10 @@ final class VoiceViewModel: ObservableObject {
     func ask(_ question: String) {
         askTask?.cancel()
         phase = .thinking
+        // Every question ends in an answer being spoken aloud, and standby
+        // must not be listening while that happens - see `releaseStandby`.
+        holdStandby()
+        releaseStandby()
         askTask = Task { [service] in
             // Streaming first, because the wait is the whole complaint.
             //
@@ -265,6 +467,9 @@ final class VoiceViewModel: ObservableObject {
         player.stop()
         streamPlayer.stop()
         phase = .idle
+        // Stopping an answer is the end of the turn as surely as finishing one
+        // is, so standby gets the microphone back here too.
+        releaseStandby()
     }
 
     /// Last resort: leave the speaking phase even if socket, server and audio

@@ -7,6 +7,9 @@ import SwiftUI
 /// the user stopped talking, and releasing early is a natural cancel.
 struct VoiceView: View {
     @EnvironmentObject private var state: AppState
+    /// Standby has to let go of the microphone the moment a call takes it, and
+    /// take it back when the call ends. RootView puts this in the environment.
+    @EnvironmentObject private var call: CallService
     @StateObject private var model: VoiceViewModel
 
     /// The keyboard's actual owner. Everything that dismisses the keyboard -
@@ -168,8 +171,29 @@ struct VoiceView: View {
         }
         // The window opens and closes while the app is closed, so coming back
         // is exactly when the answer may have changed.
+        //
+        // Standby rides the same switch, and it is not cosmetic: iOS takes the
+        // microphone away from an app that is not frontmost, so a standby
+        // session left "running" in the background is a recogniser being fed
+        // nothing. It is closed on the way out and reopened on the way back.
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { Task { await morning.refresh() } }
+            if phase == .active {
+                Task { await morning.refresh() }
+                if !call.state.isLive { model.standbyResume() }
+            } else {
+                model.standbyPause()
+            }
+        }
+        // A call owns the microphone outright - CallKit owns the audio session
+        // too - so standby stands down for the duration and comes back after.
+        .onChange(of: call.state.isLive) { _, isLive in
+            if isLive { model.standbyPause() } else { model.standbyResume() }
+        }
+        // Standby was left on in a previous run. Started here rather than in
+        // the model's init, which runs during previews and tests.
+        .task {
+            guard !call.state.isLive else { return }
+            await model.startStandbyIfEnabled()
         }
         .onChange(of: composerFocused) { _, focused in
             withAnimation(.easeOut(duration: 0.18)) { composerActive = focused }
@@ -380,9 +404,13 @@ struct VoiceView: View {
     /// orb, which is exactly where the radial launcher fans out, so it was
     /// permanent clutter showing through the tiles.
     private var hint: String {
-        state.isDemo
-            ? "Demo mode answers from sample files."
-            : ""
+        if state.isDemo { return "Demo mode answers from sample files." }
+        // The one exception to the empty hint: standby is invisible by design,
+        // and a microphone that is open has to say so somewhere. A wake word
+        // nobody can tell is armed is also a wake word nobody trusts.
+        if case .unavailable(let reason) = model.wakeStatus { return reason }
+        if model.isStandby, model.wakeStatus.isListening { return "Say \"Hey ATARU\"" }
+        return ""
     }
 
     /// Typing lives inline, not behind a sheet. The orb above is the voice
@@ -390,6 +418,8 @@ struct VoiceView: View {
     private var typeField: some View {
         VStack(spacing: Theme.Space.s) {
             HStack(spacing: Theme.Space.s) {
+                standbyToggle
+
                 TextField("Type instead", text: $model.typedQuestion, axis: .vertical)
                     .textFieldStyle(.plain)
                     .font(.ataruBody())
@@ -452,6 +482,45 @@ struct VoiceView: View {
             }
         }
         .padding(.horizontal, Theme.Space.screen)
+    }
+
+    /// Arms "Hey ATARU".
+    ///
+    /// IT LIVES INSIDE THE COMPOSER CAPSULE, and that is a layout decision
+    /// rather than an aesthetic one. Every block on this screen is given an
+    /// exact height by `AskMetrics`, which exists because the fixed blocks
+    /// already add up to more than a phone with the keyboard up has to give -
+    /// so a new ROW here would push the composer back under the keyboard, the
+    /// one bug on this screen that keeps coming back. A control that sits
+    /// inside an existing 52pt box costs nothing.
+    private var standbyToggle: some View {
+        Button {
+            model.isStandby.toggle()
+            Haptics.fire(.selection)
+        } label: {
+            Image(systemName: model.isStandby ? "ear.fill" : "ear")
+                .font(.system(size: 18))
+                .foregroundStyle(standbyTint)
+                .hitTarget()
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Wake phrase")
+        .accessibilityValue(model.isStandby ? "On" : "Off")
+        .accessibilityHint("When on, say Hey ATARU to ask without touching the phone.")
+        .accessibilityIdentifier("standby-toggle")
+        // A hold here is the radial launcher's, not this button's - but the
+        // toggle should still answer a tap during the hold's own delay.
+        .pressMenuExclusion()
+    }
+
+    /// Three states, and they are genuinely different things: off, armed and
+    /// listening, and armed but unable to run. The last one is the one that
+    /// must never look like the second - a wake word that silently is not
+    /// running is worse than one that was never switched on.
+    private var standbyTint: Color {
+        guard model.isStandby else { return Theme.textTertiary }
+        if case .unavailable = model.wakeStatus { return Theme.amber }
+        return model.wakeStatus.isListening ? Theme.cyan : Theme.cyanSubdued
     }
 
     /// Submitting always puts the keyboard away: the answer is about to be
@@ -544,5 +613,9 @@ private struct ExchangeCard: View {
 }
 
 #Preview {
-    VoiceView().environmentObject(AppState())
+    VoiceView()
+        .environmentObject(AppState())
+        // Standby reads the call's state, so the preview has to supply one -
+        // a missing EnvironmentObject is a crash, not a blank view.
+        .environmentObject(CallStack.shared.call)
 }
