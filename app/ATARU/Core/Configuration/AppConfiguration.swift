@@ -82,6 +82,27 @@ struct AppConfiguration: Equatable, Codable {
         }
     }
 
+    /// Where the saved configuration lives in UserDefaults.
+    ///
+    /// Public because `AppState` is not the only reader any more: an App
+    /// Intent runs without the app's object graph and has to load the address
+    /// from disk itself. One constant, so the two cannot drift onto different
+    /// keys and silently disagree about which server the phone is pointed at.
+    static let defaultsKey = "ataru.configuration"
+
+    /// The configuration as last saved, or the built-in default.
+    ///
+    /// Never throws and never returns nil: a caller with no UI has nothing
+    /// useful to do with "the stored blob would not decode", and `.default`
+    /// carries the base URL baked in at build time, which is the right answer
+    /// on a phone whose Settings screen has never been opened.
+    static func stored(in defaults: UserDefaults = .standard) -> AppConfiguration {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let decoded = try? JSONDecoder().decode(AppConfiguration.self, from: data)
+        else { return .default }
+        return decoded
+    }
+
     /// Private-range / link-local / `.local` hosts used on a home LAN.
     static func isPrivateHost(_ host: String) -> Bool {
         if host == "localhost" || host.hasSuffix(".local") || host.hasSuffix(".ts.net") { return true }

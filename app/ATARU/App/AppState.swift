@@ -46,7 +46,9 @@ final class AppState: ObservableObject {
 
     private let defaults: UserDefaults
     private let tokenStore: TokenStoring
-    private static let configurationKey = "ataru.configuration"
+    /// One key, defined on the configuration itself - the App Intents path
+    /// reads the same blob without any of this object being alive.
+    private static let configurationKey = AppConfiguration.defaultsKey
 
     /// The launch/foreground probe, so a second one cancels the first rather
     /// than racing it to publish a verdict.
