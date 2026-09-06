@@ -436,14 +436,20 @@ final class CallSessionModel: ObservableObject {
         phase = .thinking
         heard = question
 
+        // Read here and carried by hand, rather than looked up further down.
+        // Barge-in reopens the microphone as soon as audio starts, and a
+        // confidence read after that belongs to a turn that has not been
+        // asked yet.
+        let stt = dictation.lastConfidence
+
         // Streaming first: sentence audio starts while the model is still
         // writing. Any failure before audio starts falls through to the
         // blocking path, so a broken socket costs latency, never an answer.
-        if await streamAnswer(question) { return }
+        if await streamAnswer(question, stt: stt) { return }
         guard !Task.isCancelled else { return }
 
         do {
-            let spoken = try await service.ask(question: question)
+            let spoken = try await service.ask(question: question, stt: stt)
             guard !Task.isCancelled else { return }
             exchanges.insert(
                 VoiceExchange(question: question, answer: spoken.text, source: spoken.source),
@@ -461,7 +467,7 @@ final class CallSessionModel: ObservableObject {
     /// Answers over the streaming session. Returns true when the question was
     /// handled (fully, or far enough that re-asking would repeat audio the
     /// caller already heard); false means fall back to the blocking path.
-    private func streamAnswer(_ question: String) async -> Bool {
+    private func streamAnswer(_ question: String, stt: STTConfidence?) async -> Bool {
         if stream == nil { stream = service.voiceStream() }
         guard let stream else { return false }
 
@@ -473,7 +479,7 @@ final class CallSessionModel: ObservableObject {
         defer { endBargeIn() }
 
         do {
-            for try await event in stream.ask(question) {
+            for try await event in stream.ask(question, stt: stt) {
                 guard !Task.isCancelled else {
                     streamPlayer.stop()
                     return true

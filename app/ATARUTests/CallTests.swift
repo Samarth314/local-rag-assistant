@@ -29,7 +29,7 @@ private final class CallStubService: ATARUService, @unchecked Sendable {
 
     func vocabulary() async throws -> [String] { [] }
 
-    func transcribe(samples: [Float]) async -> String? { nil }
+    func transcribe(samples: [Float]) async -> Transcription? { nil }
 
     func registerVoIPToken(_ token: String, environment: String) async throws {}
 

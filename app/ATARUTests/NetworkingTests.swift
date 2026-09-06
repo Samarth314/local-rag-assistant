@@ -231,3 +231,122 @@ final class FreshnessCopyTests: XCTestCase {
         XCTAssertFalse(DataFreshness.demo.isOffline)
     }
 }
+
+/// The `stt` object the server attaches to a transcript, and the `ask` frame
+/// that carries it back to it.
+///
+/// Three states have to survive the wire and stay apart: not reported at all
+/// (an older server), reported but not measured (nulls), and measured. Two of
+/// them collapsing into one turns "nobody knows" into "it was fine", which is
+/// the single answer that must never be invented - the flag exists so the
+/// server can ask "did you say X?", and a false it made up is a question never
+/// asked. See `STTConfidence`.
+final class STTConfidenceTests: XCTestCase {
+
+    private func payload(_ json: String) throws -> RemoteTranscriber.Payload {
+        try JSONDecoder().decode(RemoteTranscriber.Payload.self, from: Data(json.utf8))
+    }
+
+    // MARK: Decoding
+
+    func testConfidenceDecodesFromTheTranscribeResponse() throws {
+        let decoded = try payload("""
+        {"text":"call Saikat Chaudhuri","engine":"whisper","biased":true,
+         "latency_ms":624.0,"silence":false,"rejected":null,
+         "stt":{"avg_logprob":-0.42,"min_logprob":-1.75,"low_confidence":true}}
+        """)
+        XCTAssertEqual(decoded.text, "call Saikat Chaudhuri")
+        let stt = try XCTUnwrap(decoded.stt)
+        XCTAssertEqual(stt.avgLogprob, -0.42)
+        XCTAssertEqual(stt.minLogprob, -1.75)
+        XCTAssertEqual(stt.lowConfidence, true)
+        XCTAssertTrue(stt.isLowConfidence)
+    }
+
+    /// A server that does not report confidence at all. Everything else about
+    /// the response still has to decode, or the transcript is lost over a
+    /// field that was never part of the contract.
+    func testAMissingSTTObjectIsNilAndBreaksNothingElse() throws {
+        let decoded = try payload("""
+        {"text":"what is on my calendar","engine":"whisper","biased":true,
+         "latency_ms":510.0,"silence":null,"rejected":null}
+        """)
+        XCTAssertEqual(decoded.text, "what is on my calendar")
+        XCTAssertNil(decoded.stt)
+    }
+
+    func testAnExplicitlyNullSTTObjectIsAlsoNil() throws {
+        XCTAssertNil(try payload(#"{"text":"hello","stt":null}"#).stt)
+    }
+
+    /// The server measures nothing this turn. The object is present - it DOES
+    /// report confidence - and every reading inside it is nil. `false` here
+    /// would be a measurement nobody took.
+    func testNullMeasurementsStayNilRatherThanBecomingFalseOrZero() throws {
+        let decoded = try payload("""
+        {"text":"hello","stt":{"avg_logprob":null,"min_logprob":null,
+         "low_confidence":null}}
+        """)
+        let stt = try XCTUnwrap(decoded.stt)
+        XCTAssertNil(stt.avgLogprob)
+        XCTAssertNil(stt.minLogprob)
+        XCTAssertNil(stt.lowConfidence)
+        XCTAssertFalse(stt.isLowConfidence,
+                       "an unmeasured turn must not read as a confident one")
+        XCTAssertTrue(stt.jsonObject.isEmpty,
+                      "there is nothing to send back when nothing was measured")
+    }
+
+    /// Fields are independent: a server may flag the transcript without
+    /// reporting the numbers behind it.
+    func testAPartialSTTObjectKeepsWhatItHas() throws {
+        let stt = try XCTUnwrap(try payload(#"{"text":"hi","stt":{"low_confidence":false}}"#).stt)
+        XCTAssertEqual(stt.lowConfidence, false)
+        XCTAssertNil(stt.avgLogprob)
+        XCTAssertNil(stt.minLogprob)
+        XCTAssertFalse(stt.isLowConfidence)
+    }
+
+    // MARK: The ask frame
+
+    func testAskFrameCarriesTheConfidenceWhenThereIsOne() throws {
+        let frame = VoiceStreamSession.askFrame(
+            question: "when did I last email Wes",
+            stt: STTConfidence(avgLogprob: -0.42, minLogprob: -1.75, lowConfidence: true))
+
+        XCTAssertEqual(frame["type"] as? String, "ask")
+        XCTAssertEqual(frame["q"] as? String, "when did I last email Wes")
+        let stt = try XCTUnwrap(frame["stt"] as? [String: Any])
+        XCTAssertEqual(stt["avg_logprob"] as? Double, -0.42)
+        XCTAssertEqual(stt["min_logprob"] as? Double, -1.75)
+        XCTAssertEqual(stt["low_confidence"] as? Bool, true)
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(frame),
+                      "the frame is sent through JSONSerialization and must not throw")
+    }
+
+    /// The question is unchanged when there is nothing to attach - which is
+    /// every typed question, every Apple-transcribed turn, and every turn
+    /// against a server that does not measure.
+    func testAskFrameOmitsTheConfidenceWhenThereIsNone() {
+        let frame = VoiceStreamSession.askFrame(question: "hello", stt: nil)
+        XCTAssertEqual(frame["type"] as? String, "ask")
+        XCTAssertEqual(frame["q"] as? String, "hello")
+        XCTAssertNil(frame["stt"])
+        XCTAssertEqual(frame.count, 2)
+    }
+
+    /// Present but empty is not something the wire has a meaning for, so it is
+    /// left off entirely rather than sent as `{}`.
+    func testAnUnmeasuredConfidenceIsNotAttachedAtAll() {
+        let frame = VoiceStreamSession.askFrame(question: "hello", stt: STTConfidence())
+        XCTAssertNil(frame["stt"])
+    }
+
+    func testAskFrameSendsOnlyTheFieldsThatWereMeasured() throws {
+        let frame = VoiceStreamSession.askFrame(question: "hello",
+                                                stt: STTConfidence(lowConfidence: true))
+        let stt = try XCTUnwrap(frame["stt"] as? [String: Any])
+        XCTAssertEqual(stt.count, 1)
+        XCTAssertEqual(stt["low_confidence"] as? Bool, true)
+    }
+}

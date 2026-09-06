@@ -16,6 +16,16 @@ final class VoiceViewModel: ObservableObject {
     /// Set when dictation is unavailable, so the UI can offer typing.
     @Published var typedQuestion: String = ""
     @Published var isShowingTypeField = false
+    /// The server transcribed the last spoken question and said it was not
+    /// sure of it.
+    ///
+    /// Nothing about the turn changes: the question is asked exactly as it
+    /// would have been. What this drives is a note next to the composer, with
+    /// the words it heard sitting in the field - so a mangled name can be
+    /// corrected and asked again by typing over it, instead of the user
+    /// discovering the mishearing from a confident answer to a question they
+    /// did not ask.
+    @Published private(set) var heardLowConfidence = false
     /// The document a pull-up turn opened. Setting it presents the viewer;
     /// clearing it puts the viewer away and leaves the answer on screen.
     @Published var presentedDocument: DocumentRef?
@@ -132,6 +142,7 @@ final class VoiceViewModel: ObservableObject {
     func beginListening() async {
         guard phase.allowsNewQuestion else { return }
         holdActive = true
+        heardLowConfidence = false
         // A held orb is the user taking the microphone by hand. Standby lets
         // go of it rather than recording the same words twice.
         holdStandby()
@@ -178,13 +189,15 @@ final class VoiceViewModel: ObservableObject {
         phase = .thinking
         Task {
             let question = await dictation.finish()
+            let stt = dictation.lastConfidence
             partialTranscript = ""
             guard !question.isEmpty else {
                 phase = .failed(SpeechDictation.Failure.noSpeechDetected.localizedDescription)
                 releaseStandby()
                 return
             }
-            ask(question)
+            noteConfidence(stt, transcript: question)
+            ask(question, stt: stt)
         }
     }
 
@@ -192,8 +205,22 @@ final class VoiceViewModel: ObservableObject {
         holdActive = false
         dictation.cancel()
         partialTranscript = ""
+        heardLowConfidence = false
         phase = .idle
         releaseStandby()
+    }
+
+    /// Surfaces a shaky transcript without acting on it.
+    ///
+    /// Deliberately does NOT hold the question back for confirmation. A prompt
+    /// between speaking and answering costs every turn a tap to pay for the
+    /// few that were misheard, and the server is the thing that decides
+    /// whether to ask "did you say X?" - it now has the same measurement. All
+    /// this does is put the words where they can be corrected.
+    private func noteConfidence(_ stt: STTConfidence?, transcript: String) {
+        heardLowConfidence = stt?.isLowConfidence ?? false
+        guard heardLowConfidence else { return }
+        typedQuestion = transcript
     }
 
     // MARK: - Standby ("Hey ATARU")
@@ -289,13 +316,18 @@ final class VoiceViewModel: ObservableObject {
             defer { AudioSessionOwner.shared.release() }
             guard let self else { return }
             let question: String
+            // Only the listening branch has one: the same-breath path was
+            // transcribed by standby's own recogniser, which measures nothing.
+            var stt: STTConfidence?
             if let command, !command.isEmpty {
                 // Already heard. The same haptic the orb and the cue give, so
                 // the two ways of asking feel identical from the outside.
                 Haptics.fire(.tap)
                 question = command
             } else {
-                question = await self.listenHandsFree()
+                let heard = await self.listenHandsFree()
+                question = heard.question
+                stt = heard.stt
             }
             guard !Task.isCancelled else { return }
             guard !question.isEmpty else {
@@ -305,7 +337,8 @@ final class VoiceViewModel: ObservableObject {
                 self.releaseStandby()
                 return
             }
-            self.ask(question)
+            self.noteConfidence(stt, transcript: question)
+            self.ask(question, stt: stt)
             await self.askTask?.value
             // `ask` only awaits playback on the streaming path; the blocking
             // one hands the answer to a callback-driven player. Either way
@@ -326,15 +359,15 @@ final class VoiceViewModel: ObservableObject {
     /// is judged from a quiet MICROPHONE rather than from a transcript that has
     /// stopped growing - the same ground truth, and the same tuning, the call
     /// loop settled on. See `CallSessionModel.listenForOneTurn`.
-    private func listenHandsFree() async -> String {
+    private func listenHandsFree() async -> (question: String, stt: STTConfidence?) {
         do {
             try dictation.start()
         } catch let failure as SpeechDictation.Failure {
             phase = .failed(failure.localizedDescription)
-            return ""
+            return ("", nil)
         } catch {
             phase = .failed(error.localizedDescription)
-            return ""
+            return ("", nil)
         }
 
         partialTranscript = ""
@@ -360,8 +393,9 @@ final class VoiceViewModel: ObservableObject {
         }
 
         let question = await dictation.finish()
+        let stt = dictation.lastConfidence
         partialTranscript = ""
-        return question
+        return (question, stt)
     }
 
     // MARK: - Asking
@@ -371,10 +405,14 @@ final class VoiceViewModel: ObservableObject {
         guard !question.isEmpty else { return }
         typedQuestion = ""
         isShowingTypeField = false
+        // Typed over: whatever was misheard has been dealt with, one way or
+        // the other, and a note about a transcript nobody is looking at any
+        // more is just clutter.
+        heardLowConfidence = false
         ask(question)
     }
 
-    func ask(_ question: String) {
+    func ask(_ question: String, stt: STTConfidence? = nil) {
         askTask?.cancel()
         phase = .thinking
         // Every question ends in an answer being spoken aloud, and standby
@@ -392,10 +430,10 @@ final class VoiceViewModel: ObservableObject {
             // first sentence is spoken while the rest is still being written -
             // and there was never a reason for a held-orb question to be any
             // slower than the same question asked on a call.
-            if await self.streamAnswer(question) { return }
+            if await self.streamAnswer(question, stt: stt) { return }
             guard !Task.isCancelled else { return }
             do {
-                let answer = try await service.ask(question: question)
+                let answer = try await service.ask(question: question, stt: stt)
                 guard !Task.isCancelled else { return }
                 record(question: question, answer: answer)
                 speak(answer)
@@ -412,14 +450,14 @@ final class VoiceViewModel: ObservableObject {
     /// Answers over the streaming session, returning false to fall back to the
     /// blocking path - which stays exactly as it was, and is what Demo and any
     /// server without a voice engine still use.
-    private func streamAnswer(_ question: String) async -> Bool {
+    private func streamAnswer(_ question: String, stt: STTConfidence?) async -> Bool {
         if stream == nil { stream = service.voiceStream() }
         guard let stream else { return false }
 
         var text = ""
         var spokenAnything = false
         do {
-            for try await event in stream.ask(question) {
+            for try await event in stream.ask(question, stt: stt) {
                 guard !Task.isCancelled else {
                     streamPlayer.stop()
                     return true

@@ -491,6 +491,21 @@ struct VoiceView: View {
             // field has focus.
             .pressMenuExclusion()
 
+            // The server transcribed the question and said it was not sure.
+            // A caption, not an alert: the question has already gone, and the
+            // words are sitting in the field above ready to be corrected if
+            // the answer turns out to be about the wrong thing. Conditional,
+            // like the Stop button below it, so it costs the composer no
+            // height on the turns it has nothing to say.
+            if model.heardLowConfidence {
+                Text("heard, low confidence")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, Theme.Space.m)
+                    .accessibilityIdentifier("low-confidence-hint")
+            }
+
             if model.phase == .speaking {
                 Button("Stop") { model.stopSpeaking() }
                     .font(.ataruCaption())

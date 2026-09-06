@@ -1,5 +1,67 @@
 import Foundation
 
+/// How sure the server's recogniser was about the transcript it just returned.
+///
+/// Every field is optional and the whole object may be missing, and those are
+/// three different answers that must not be collapsed into one:
+///
+///  - the object is absent -> this server does not report confidence at all
+///  - a field is null -> it reports confidence, but could not measure this
+///  - a field has a value -> that is the measurement
+///
+/// So nothing here is defaulted. `low_confidence` in particular is a `Bool?`
+/// rather than a `Bool`, because "not measured" must never render as "measured
+/// and fine" - the whole point of the flag is that the server can ask "did you
+/// say X?" when it is true, and a false it invented is a question never asked.
+struct STTConfidence: Equatable, Sendable {
+    let avgLogprob: Double?
+    let minLogprob: Double?
+    let lowConfidence: Bool?
+
+    init(avgLogprob: Double? = nil, minLogprob: Double? = nil, lowConfidence: Bool? = nil) {
+        self.avgLogprob = avgLogprob
+        self.minLogprob = minLogprob
+        self.lowConfidence = lowConfidence
+    }
+
+    /// True only when the server SAID so. See the note above.
+    var isLowConfidence: Bool { lowConfidence == true }
+
+    /// The wire object, with unmeasured fields left out rather than sent as
+    /// null. Empty when there is nothing to say, which is what callers use to
+    /// decide not to attach it at all.
+    var jsonObject: [String: Any] {
+        var object: [String: Any] = [:]
+        if let avgLogprob { object["avg_logprob"] = avgLogprob }
+        if let minLogprob { object["min_logprob"] = minLogprob }
+        if let lowConfidence { object["low_confidence"] = lowConfidence }
+        return object
+    }
+}
+
+extension STTConfidence: Codable {
+    enum CodingKeys: String, CodingKey {
+        case avgLogprob = "avg_logprob"
+        case minLogprob = "min_logprob"
+        case lowConfidence = "low_confidence"
+    }
+}
+
+/// A finished transcript and whatever the server was able to say about it.
+///
+/// `confidence` is nil on every path that did not come from the server's own
+/// recogniser - Apple's reports nothing of the kind, and a turn it answered
+/// must not arrive looking measured.
+struct Transcription: Equatable, Sendable {
+    let text: String
+    let confidence: STTConfidence?
+
+    init(text: String, confidence: STTConfidence? = nil) {
+        self.text = text
+        self.confidence = confidence
+    }
+}
+
 /// Transcription on ATARU's own hardware, biased toward the names it knows.
 ///
 /// ## Why the model moved off the phone
@@ -36,7 +98,7 @@ enum RemoteTranscriber {
     /// a transcription path that can fail loudly on a call is worse than one
     /// that quietly hands back.
     static func transcribe(samples: [Float], endpoints: EndpointBuilder,
-                           token: String?, timeout: Double = 12) async -> String? {
+                           token: String?, timeout: Double = 12) async -> Transcription? {
         guard samples.count > 1_600, let url = endpoints.transcribe else {
             return nil          // under 0.1s of audio, or no server configured
         }
@@ -57,7 +119,7 @@ enum RemoteTranscriber {
                   let payload = try? JSONDecoder().decode(Payload.self, from: data)
             else { return nil }
             let text = payload.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !text.isEmpty { return text }
+            if !text.isEmpty { return Transcription(text: text, confidence: payload.stt) }
             // An empty transcript used to mean "ask someone else", so the turn
             // fell through to Apple's UNBIASED recogniser - in exactly the two
             // cases where that is the wrong move. If the server heard silence,
@@ -68,7 +130,8 @@ enum RemoteTranscriber {
                 if let reason = payload.rejected {
                     sttLog.notice("server rejected the transcript (\(reason, privacy: .public)); not falling back")
                 }
-                return ""      // decided empty, distinct from nil = "no answer"
+                // Decided empty, distinct from nil = "no answer".
+                return Transcription(text: "", confidence: payload.stt)
             }
             return nil
         } catch {
@@ -76,7 +139,9 @@ enum RemoteTranscriber {
         }
     }
 
-    private struct Payload: Decodable {
+    /// Internal rather than private so the wire contract can be pinned by a
+    /// test - the shape is the Python side's, and it is what breaks silently.
+    struct Payload: Decodable {
         let text: String
         let engine: String?
         let biased: Bool?
@@ -87,6 +152,10 @@ enum RemoteTranscriber {
         /// a repetition loop. Distinct from silence, and the distinction is
         /// what stops the phone reaching for a worse recogniser.
         let rejected: String?
+        /// How sure the decode was, when this server measures it. Absent on
+        /// every server that does not, which is why it is optional all the
+        /// way down - see `STTConfidence`.
+        let stt: STTConfidence?
     }
 
     /// A 16 kHz mono PCM16 WAV around the captured samples.

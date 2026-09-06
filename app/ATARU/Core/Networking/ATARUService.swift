@@ -32,6 +32,15 @@ protocol ATARUService: AnyObject, Sendable {
     /// to on-device speech.
     func ask(question: String) async throws -> SpokenAnswer
 
+    /// The same question, carrying what the recogniser thought of its own
+    /// transcript.
+    ///
+    /// Only the spoken paths have anything to put here: a typed question was
+    /// not heard by anything. When it is set the server may come back asking
+    /// "did you say X?" rather than answering a word it is not sure of - so
+    /// this is a hint attached to the question, never a change to it.
+    func ask(question: String, stt: STTConfidence?) async throws -> SpokenAnswer
+
     /// Opens a streaming voice session, or nil when the backend has none.
     ///
     /// Streaming is how a call answers fast: sentence audio plays while the
@@ -50,7 +59,10 @@ protocol ATARUService: AnyObject, Sendable {
     /// Returns nil rather than throwing: every caller has a working local
     /// fallback behind this, and a transcription path that can fail loudly
     /// mid-call is worse than one that quietly hands back.
-    func transcribe(samples: [Float]) async -> String?
+    ///
+    /// The result carries the server's own confidence when it reports one -
+    /// nil means it does not, which is not the same as "it was confident".
+    func transcribe(samples: [Float]) async -> Transcription?
 
     /// The call's opening line, ideally in the server's voice.
     ///
@@ -160,6 +172,13 @@ extension ATARUService {
     func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan { .empty() }
     func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan { .empty() }
     func planRemove(section: String, index: Int) async throws -> DailyPlan { .empty() }
+
+    /// A backend that has no use for the confidence hint answers the question
+    /// exactly as it always did. The hint is additive by construction: nothing
+    /// downstream may depend on it having been sent.
+    func ask(question: String, stt: STTConfidence?) async throws -> SpokenAnswer {
+        try await ask(question: question)
+    }
 
     /// Backends without a voice engine greet in the phone's voice.
     func greeting() async throws -> SpokenAnswer {

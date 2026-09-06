@@ -74,13 +74,17 @@ final class VoiceStreamSession: @unchecked Sendable {
     /// The stream throws on transport failure or protocol violation, at which
     /// point the socket is dead — the caller should fall back to the blocking
     /// path for this question and let the next question reconnect.
-    func ask(_ question: String) -> AsyncThrowingStream<VoiceStreamEvent, Error> {
+    /// `stt` is what the recogniser thought of the transcript, when there is
+    /// a measurement to pass on. It rides along with the question and changes
+    /// nothing about it: a server that ignores the field answers exactly as
+    /// before, and one that reads it may come back asking "did you say X?".
+    func ask(_ question: String, stt: STTConfidence? = nil) -> AsyncThrowingStream<VoiceStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     let socket = try self.connectIfNeeded()
                     let payload = try JSONSerialization.data(
-                        withJSONObject: ["type": "ask", "q": question])
+                        withJSONObject: Self.askFrame(question: question, stt: stt))
                     try await socket.send(.string(String(decoding: payload, as: UTF8.self)))
 
                     var sawFirstEvent = false
@@ -112,6 +116,20 @@ final class VoiceStreamSession: @unchecked Sendable {
 
     func close() {
         invalidate()
+    }
+
+    /// The `ask` frame, built where a test can look at it.
+    ///
+    /// `stt` is omitted entirely rather than sent empty or null: the server
+    /// distinguishes "no measurement" from a measurement, and an empty object
+    /// on the wire is a third thing neither side has a meaning for.
+    static func askFrame(question: String, stt: STTConfidence?) -> [String: Any] {
+        var frame: [String: Any] = ["type": "ask", "q": question]
+        if let stt {
+            let object = stt.jsonObject
+            if !object.isEmpty { frame["stt"] = object }
+        }
+        return frame
     }
 
     // MARK: - Internals

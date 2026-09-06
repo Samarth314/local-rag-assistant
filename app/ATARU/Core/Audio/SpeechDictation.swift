@@ -40,6 +40,14 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// Rough input level, 0...1, for the orb.
     @Published private(set) var level: Double = 0
 
+    /// What the SERVER said about the transcript `finish()` just returned.
+    ///
+    /// Set only on the Whisper path, and cleared at the start of every turn.
+    /// Apple's recogniser reports nothing of the kind, so a turn it answered
+    /// leaves this nil rather than inventing a confidence for it - which is
+    /// the difference between "the server is unsure" and "nobody measured".
+    @Published private(set) var lastConfidence: STTConfidence?
+
     /// 16 kHz mono copy of this turn's audio, for the server's recogniser.
     ///
     /// Deliberately NOT main-actor state. Appending each ~23 ms buffer through
@@ -562,6 +570,9 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// ceiling, with Apple's transcript already in hand behind it.
     func finish() async -> String {
         let turnEnded = ContinuousClock.now
+        // Last turn's reading is not this turn's. Cleared up front so every
+        // path out of here that is not Whisper's leaves it nil.
+        lastConfidence = nil
 
         // Closing the microphone is what makes the capture complete: the tap
         // is removed and the engine stopped, so nothing more can be appended
@@ -575,7 +586,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         // carry, with the same name biasing, except it is already loaded and
         // the roster is attached at the server - so there is no cold start to
         // wait out and no 632MB to hold. See RemoteTranscriber.
-        var remoteTask: Task<String?, Never>?
+        var remoteTask: Task<Transcription?, Never>?
         if let service = Self.sharedService {
             remoteTask = Task { await service.transcribe(samples: samples) }
         }
@@ -604,7 +615,7 @@ final class SpeechDictation: NSObject, ObservableObject {
             // engine is not the same as throwing away the text the recogniser
             // already produced while the audio was being recorded. If Apple
             // heard words, those words are the answer.
-            let decided = remote.trimmingCharacters(in: .whitespacesAndNewlines)
+            let decided = remote.text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !decided.isEmpty {
                 // Apple has nothing left to add, so release its waiter rather
                 // than leaving a suspended continuation and a pending
@@ -615,6 +626,9 @@ final class SpeechDictation: NSObject, ObservableObject {
                 deliverFinal()
                 _ = await appleTask.value
                 transcript = decided
+                // Whisper's transcript, so Whisper's reading of it travels
+                // with it. This is the one path that sets it.
+                lastConfidence = remote.confidence
                 Self.logTranscriptReady(since: turnEnded, engine: "whisper")
                 return decided
             }
@@ -669,6 +683,7 @@ final class SpeechDictation: NSObject, ObservableObject {
         _ = stop()
         captured.reset()
         transcript = ""
+        lastConfidence = nil
     }
 
     private func cleanUp() {

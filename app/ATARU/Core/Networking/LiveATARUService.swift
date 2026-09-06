@@ -80,6 +80,10 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
     // MARK: - Voice
 
     func ask(question: String) async throws -> SpokenAnswer {
+        try await ask(question: question, stt: nil)
+    }
+
+    func ask(question: String, stt: STTConfidence?) async throws -> SpokenAnswer {
         guard let url = endpoints.speak(question) else { throw APIError.invalidURL }
         do {
             let (data, response) = try await perform(request(for: url))
@@ -94,7 +98,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
             // 503 from /voice/speak means the answer is fine but the server
             // has no TTS engine. Falling back to the text route lets the phone
             // speak it locally rather than failing the whole question.
-            return try await askForText(question)
+            return try await askForText(question, stt: stt)
         }
     }
 
@@ -109,7 +113,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(Roster.self, from: data).names
     }
 
-    func transcribe(samples: [Float]) async -> String? {
+    func transcribe(samples: [Float]) async -> Transcription? {
         await RemoteTranscriber.transcribe(samples: samples, endpoints: endpoints,
                                            token: tokenProvider())
     }
@@ -138,9 +142,23 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         )
     }
 
-    private func askForText(_ question: String) async throws -> SpokenAnswer {
+    private func askForText(_ question: String, stt: STTConfidence? = nil) async throws -> SpokenAnswer {
         guard let url = endpoints.answer(question) else { throw APIError.invalidURL }
-        let (data, _) = try await perform(request(for: url))
+        var request = self.request(for: url)
+        // A confidence object has to travel in a body, and a body means POST.
+        // Only when there is something to send, though: with nothing measured
+        // this stays the GET it has always been, so no existing call and no
+        // older server changes behaviour over a field that is not there.
+        if let stt, case let object = stt.jsonObject, !object.isEmpty,
+           // The server's POST form reads `q` from the JSON body, not the
+           // query string (appapi voice_answer_post), so the question rides
+           // in the body too.
+           let body = try? JSONSerialization.data(withJSONObject: ["q": question, "stt": object]) {
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = body
+        }
+        let (data, _) = try await perform(request)
         let answer = try decode(DTO.VoiceAnswer.self, from: data)
         return SpokenAnswer(text: answer.text, source: answer.source, audioURL: nil)
     }

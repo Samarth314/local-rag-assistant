@@ -77,7 +77,7 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
 
     /// Demo has no server to transcribe on, so the caller keeps whatever the
     /// phone heard by itself.
-    func transcribe(samples: [Float]) async -> String? { nil }
+    func transcribe(samples: [Float]) async -> Transcription? { nil }
 
     func registerVoIPToken(_ token: String, environment: String) async throws {}
 
