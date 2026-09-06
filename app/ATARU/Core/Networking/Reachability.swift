@@ -39,6 +39,13 @@ final class Reachability: ObservableObject {
     /// every unrelated path update (a Wi-Fi roam, a VPN interface appearing).
     var onPathRestored: (() -> Void)?
 
+    /// The other transition. Worth its own callback because the two states
+    /// need DIFFERENT COPY: with no path at all, telling someone to turn
+    /// Tailscale on is advice that cannot work, and the banner has to say "no
+    /// network" instead. Without this the app could only ever infer the
+    /// difference after a probe had already failed for the wrong reason.
+    var onPathLost: (() -> Void)?
+
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "com.ataru.client.reachability")
     private var started = false
@@ -58,7 +65,7 @@ final class Reachability: ObservableObject {
         guard satisfied != wasSatisfied else { return }
         isSatisfied = satisfied
         netLog.notice("network path \(satisfied ? "satisfied" : "unsatisfied", privacy: .public)")
-        if satisfied { onPathRestored?() }
+        if satisfied { onPathRestored?() } else { onPathLost?() }
     }
 
     deinit { monitor.cancel() }

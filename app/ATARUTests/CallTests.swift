@@ -9,6 +9,9 @@ private final class CallStubService: ATARUService, @unchecked Sendable {
     /// or report whether the server recorded it.
     var confirmError: Error?
     var confirmRecorded = true
+    /// What `/api/morning/state` says. Default is the protocol's own
+    /// `.inactive`, which is also what a server without the endpoint reports.
+    var morningState: MorningCallState = .inactive
 
     func checkStatus() async throws -> String? { "ok" }
 
@@ -35,6 +38,8 @@ private final class CallStubService: ATARUService, @unchecked Sendable {
         if let confirmError { throw confirmError }
         return confirmRecorded
     }
+
+    func morningCallState() async throws -> MorningCallState { morningState }
 }
 
 /// Covers the parts of the call feature that are pure logic.
@@ -291,6 +296,94 @@ final class MorningConfirmTests: XCTestCase {
         XCTAssertTrue(model.isDone)
         XCTAssertNil(model.failureMessage)
         XCTAssertFalse(model.isActionable, "confirmed is the one state with nothing left to do")
+    }
+
+    /// THE BUTTON'S GATE IS THE SERVER'S `can_confirm`, NOT THE CALL.
+    ///
+    /// The call screen used to draw it on `call.isMorningCall` alone, which is
+    /// true for the whole call including after he has already spoken - so the
+    /// control offered to end a ladder that had already stood down, and then
+    /// sat in the header once the call was over.
+    func testAConfirmedCallOffersNothing() async {
+        let service = CallStubService()
+        service.morningState = MorningCallState(inCallWindow: true,
+                                                canConfirm: true, confirmed: true)
+        let model = MorningConfirmModel()
+        model.update(service: service)
+
+        await model.refresh()
+
+        XCTAssertFalse(model.isOffered)
+        XCTAssertFalse(model.isPresented,
+                       "a confirmed call must not leave a control anywhere")
+    }
+
+    func testAnOpenCallWindowWithNothingToConfirmOffersNothing() async {
+        let service = CallStubService()
+        // The window is open - the ladder may still be running - but the
+        // server says there is nothing this thumb can settle.
+        service.morningState = MorningCallState(inCallWindow: true,
+                                                canConfirm: false, confirmed: false)
+        let model = MorningConfirmModel()
+        model.update(service: service)
+
+        await model.refresh()
+
+        XCTAssertFalse(model.isPresented)
+    }
+
+    func testAnOutstandingConfirmationIsOffered() async {
+        let service = CallStubService()
+        service.morningState = MorningCallState(inCallWindow: true,
+                                                canConfirm: true, confirmed: false)
+        let model = MorningConfirmModel()
+        model.update(service: service)
+
+        await model.refresh()
+
+        XCTAssertTrue(model.isOffered)
+        XCTAssertTrue(model.isPresented)
+        XCTAssertTrue(model.isActionable)
+    }
+
+    /// ONE MODEL, SO ONE ANSWER. Two `@StateObject`s - one in VoiceView, one
+    /// in CallSessionView - is what left the Ask page still offering to
+    /// confirm a call the call screen had already confirmed. There is nothing
+    /// to assert about "the other surface" any more: there is no other
+    /// surface, and this pins the property that replaced it.
+    func testConfirmingRetractsTheOfferEverywhereImmediately() async {
+        let service = CallStubService()
+        service.morningState = MorningCallState(inCallWindow: true,
+                                                canConfirm: true, confirmed: false)
+        let model = MorningConfirmModel()
+        model.update(service: service)
+        await model.refresh()
+        XCTAssertTrue(model.isActionable)
+
+        await model.confirm()
+
+        XCTAssertTrue(model.isSettledLocally)
+        XCTAssertFalse(model.isActionable,
+                       "no surface may still invite a tap once one has landed")
+        XCTAssertEqual(model.phase, .confirmed)
+    }
+
+    /// The optimistic hide is reverted by exactly one outcome, because it is
+    /// the only one where the calls really do keep coming.
+    func testAFailedConfirmPutsTheOfferBack() async {
+        let service = CallStubService()
+        service.morningState = MorningCallState(inCallWindow: true,
+                                                canConfirm: true, confirmed: false)
+        service.confirmError = APIError.notFound
+        let model = MorningConfirmModel()
+        model.update(service: service)
+        await model.refresh()
+
+        await model.confirm()
+
+        XCTAssertFalse(model.isSettledLocally)
+        XCTAssertTrue(model.isPresented)
+        XCTAssertTrue(model.isActionable)
     }
 
     /// "The server had no call in flight" is a settled answer, not a failure,

@@ -78,7 +78,10 @@ struct MorningCallScreen: View {
         .navigationTitle("Morning call")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task { await load() }
+        // Keyed on `onlineGeneration`, like every other data screen: this page
+        // is one of the likeliest to be open while the tunnel is coming up,
+        // and it used to need closing and reopening to try again.
+        .task(id: state.onlineGeneration) { await load() }
     }
 
     // MARK: - Cards

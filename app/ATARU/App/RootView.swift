@@ -230,6 +230,13 @@ struct RootView: View {
         // hide the next call behind a bar the user has to notice and tap.
         .onChange(of: call.state.isLive) { _, isLive in
             if !isLive { isCallMinimized = false }
+            // BOTH EDGES. A morning call starting is when a confirmation
+            // becomes possible; a call ending is when it may already have
+            // happened - he spoke, and the server knows before this app does.
+            // Without the second one the "I'm up" control sat in the header
+            // above the orb after the call was over, still offering to end a
+            // ladder that had already stood down.
+            Task { await state.morning.refresh() }
         }
         // The entry point for calling ATARU is a contact card, the Phone app or
         // Siri — not a button in here. This is where that request lands.
@@ -279,6 +286,23 @@ struct RootView: View {
             if let names = try? await state.service.vocabulary(), !names.isEmpty {
                 SpeechDictation.sharedVocabulary = names
             }
+        }
+        // The roster is fetched from the server, so a launch that happened
+        // while the tunnel was down got nothing and kept nothing. Warmed again
+        // on reconnection - the next question is transcribed better for it,
+        // and waiting here still costs nothing.
+        .task(id: state.onlineGeneration) {
+            guard state.onlineGeneration > 0 else { return }
+            if let names = try? await state.service.vocabulary(), !names.isEmpty {
+                SpeechDictation.sharedVocabulary = names
+            }
+        }
+        // The call's socket, dropped from here rather than from the call
+        // screen: a minimised call has no CallSessionView mounted, and it is
+        // exactly the call still running through an outage whose next turn
+        // must not be spent on a dead socket.
+        .onReceive(NotificationCenter.default.publisher(for: .ataruConnectionRestored)) { _ in
+            session.dropStream()
         }
         .environmentObject(call)
         // Lets a navigation bar anywhere in the app route without being handed

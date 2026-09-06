@@ -45,6 +45,13 @@ struct DocumentsView: View {
             model.update(service: state.service)
             if model.state == .idle { model.load() }
         }
+        // A library that failed to load during an outage reloads itself when
+        // the tunnel comes back, rather than waiting to be closed and
+        // reopened. See `AppState.onlineGeneration`.
+        .task(id: state.onlineGeneration) {
+            guard state.onlineGeneration > 0 else { return }
+            await model.refresh()
+        }
     }
 
     @ViewBuilder

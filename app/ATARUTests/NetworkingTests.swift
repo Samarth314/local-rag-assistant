@@ -180,3 +180,54 @@ final class DownloadNamingTests: XCTestCase {
         XCTAssertEqual(LiveATARUService.filename(from: response), "Lab Panel.pdf")
     }
 }
+
+// MARK: - What the app says when it cannot reach the server
+
+/// The banner is the whole of the app's connectivity story, so its copy is
+/// worth pinning.
+///
+/// THE TWO OFFLINE STATES ARE NOT THE SAME STATE. The backend lives on the
+/// tailnet and nowhere else: a phone with perfectly good Wi-Fi that cannot
+/// reach ATARU is, almost always, a phone with Tailscale switched off - and
+/// that is something the user can fix in ten seconds if anything tells them
+/// to. A phone in airplane mode cannot be helped by that advice, and offering
+/// it is worse than saying nothing. The app used to render both as "Offline",
+/// which is wrong about the first and unhelpful about the second.
+final class FreshnessCopyTests: XCTestCase {
+
+    func testAReachablePhoneWithAnUnreachableServerIsToldAboutTailscale() {
+        let message = DataFreshness.unreachable(nil).bannerMessage
+        XCTAssertEqual(message,
+                       "Can't reach ATARU. Away from home? "
+                       + "Turn on Tailscale - I'll reconnect automatically.")
+    }
+
+    func testTheLastSuccessfulSyncIsShownWhenThereIsOne() {
+        let message = DataFreshness.unreachable(Date(timeIntervalSinceNow: -3600)).bannerMessage
+        XCTAssertNotNil(message)
+        XCTAssertTrue(message!.contains("Last synced"),
+                      "stale content has to say how stale")
+    }
+
+    /// No path at all: nothing about Tailscale would help, so it is not
+    /// mentioned.
+    func testNoNetworkPathSaysSoAndNothingElse() {
+        let message = DataFreshness.noNetwork.bannerMessage
+        XCTAssertEqual(message, "No network connection.")
+        XCTAssertFalse(message!.contains("Tailscale"))
+    }
+
+    func testLiveDrawsNoBannerAtAll() {
+        XCTAssertNil(DataFreshness.live.bannerMessage)
+        XCTAssertFalse(DataFreshness.live.isOffline)
+    }
+
+    func testEveryOfflineStateReportsItselfAsOffline() {
+        XCTAssertTrue(DataFreshness.unreachable(nil).isOffline)
+        XCTAssertTrue(DataFreshness.noNetwork.isOffline)
+        XCTAssertTrue(DataFreshness.offline(nil).isOffline)
+        // Cached content over a working connection is not an outage.
+        XCTAssertFalse(DataFreshness.stale(Date()).isOffline)
+        XCTAssertFalse(DataFreshness.demo.isOffline)
+    }
+}

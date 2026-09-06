@@ -28,10 +28,12 @@ struct VoiceView: View {
     /// user is typing - the dial used to float on top of the composer.
     @Binding private var composerActive: Bool
     @Environment(\.scenePhase) private var scenePhase
-    /// "I'm up" - see MorningConfirm. Lives here as well as on the call screen
-    /// because a call he half-answered may already be hung up, and the app is
-    /// the other place a half-awake hand goes.
-    @StateObject private var morning = MorningConfirmModel()
+    /// "I'm up" - see MorningConfirm.
+    ///
+    /// Read from AppState, NOT owned here. This view used to hold its own
+    /// `@StateObject` and the call screen held a second one, so a tap on one
+    /// surface left the other still offering to confirm the same call.
+    private var morning: MorningConfirmModel { state.morning }
     /// The user's text size, as a multiplier. Everything on this screen that
     /// has a fixed height has to grow with it or it clips its own contents at
     /// the accessibility sizes.
@@ -166,8 +168,22 @@ struct VoiceView: View {
         }
         .task(id: state.serviceGeneration) {
             model.update(service: state.service)
-            morning.update(service: state.service)
+            // `morning` follows the backend from AppState itself now (see
+            // `rebuildService`), so only the poll belongs here.
             await morning.refresh()
+        }
+        // The tunnel coming back is exactly as much of a reason to re-ask as a
+        // foreground is: the answer may have changed while the app was sitting
+        // in front of a server it could not reach.
+        .task(id: state.onlineGeneration) {
+            guard state.onlineGeneration > 0 else { return }
+            await morning.refresh()
+        }
+        // A socket opened before an outage is dead however healthy it looks.
+        // Dropped here so the next question reconnects instead of spending its
+        // whole receive window discovering that.
+        .onReceive(NotificationCenter.default.publisher(for: .ataruConnectionRestored)) { _ in
+            model.dropStream()
         }
         // The window opens and closes while the app is closed, so coming back
         // is exactly when the answer may have changed.

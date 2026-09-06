@@ -269,7 +269,15 @@ struct FinanceScreen: View {
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
-        .task {
+        //
+        // KEYED ON `onlineGeneration`, which is what makes this page recover
+        // on its own. It used to be a bare `.task`: one fetch when the page
+        // appeared, and then nothing, ever. Turning Tailscale on with Finance
+        // already open left "couldn't refresh" on screen until the page was
+        // closed and reopened by hand. The id changes on every
+        // unreachable -> reachable transition, so the reload is structural -
+        // no timer, and nothing for a screen to forget to subscribe to.
+        .task(id: state.onlineGeneration) {
             await restore()
             await load()
         }
@@ -500,7 +508,8 @@ struct HealthScreen: View {
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
-        .task {
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) {
             await restore()
             await load()
         }
@@ -759,7 +768,10 @@ struct HomeScreen: View {
         .navigationTitle("Home")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
-        .task {
+        // Keyed on `onlineGeneration` for the same reason as every other tile
+        // screen: a page that is open when the tunnel comes back reloads
+        // itself. See FinanceScreen.
+        .task(id: state.onlineGeneration) {
             // Draw the last known state first, then go and check it. The page
             // used to sit completely blank for the whole round trip - nothing
             // renders until `payload` is non-nil - which on a tailnet round
@@ -1314,7 +1326,8 @@ struct StatusScreen: View {
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
-        .task {
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) {
             await restore()
             await load()
         }
@@ -1475,7 +1488,8 @@ struct JournalScreen: View {
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
-        .task {
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) {
             await restore()
             await load()
         }
@@ -1551,7 +1565,8 @@ private struct JournalEntryScreen: View {
         .ataruBackdrop()
         .navigationTitle(detail?.title ?? "Entry")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) { await load() }
     }
 
     private func load() async {
@@ -1797,7 +1812,8 @@ struct WorkspacesScreen: View {
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
-        .task {
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) {
             await restore()
             await load()
         }
@@ -1965,7 +1981,8 @@ private struct WorkspaceDetailScreen: View {
         .ataruBackdrop()
         .navigationTitle(detail?.name ?? slug)
         .navigationBarTitleDisplayMode(.inline)
-        .task { await load() }
+        // Keyed on `onlineGeneration` - see FinanceScreen for why.
+        .task(id: state.onlineGeneration) { await load() }
     }
 
     /// The field is cleared by the SERVER accepting the task, not by the tap.

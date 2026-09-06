@@ -80,6 +80,15 @@ final class CallSessionModel: ObservableObject {
 
     func update(service: ATARUService) {
         self.service = service
+        dropStream()
+    }
+
+    /// Lets go of the streaming socket without ending the call.
+    ///
+    /// Same reason as `VoiceViewModel.dropStream`: a socket that was open
+    /// across an outage looks healthy and is not, and on a call the cost of
+    /// finding that out lazily is fifteen silent seconds mid-conversation.
+    func dropStream() {
         stream?.close()
         stream = nil
     }

@@ -98,6 +98,21 @@ final class VoiceViewModel: ObservableObject {
     /// Called when the environment's service changes (Demo ⇄ Live).
     func update(service: ATARUService) {
         self.service = service
+        // A socket to the OLD backend is not a socket to this one.
+        dropStream()
+    }
+
+    /// Lets go of the streaming socket without touching the turn in progress.
+    ///
+    /// Called when the app comes back online after an outage. A WebSocket that
+    /// was open when the tunnel went down does not report anything: it sits
+    /// there looking healthy and the next question spends its whole 15s
+    /// receive window discovering otherwise before the blocking path takes
+    /// over. Reconnecting costs one handshake; not reconnecting costs fifteen
+    /// seconds of an orb thinking about nothing.
+    func dropStream() {
+        stream?.close()
+        stream = nil
     }
 
     var canRecord: Bool { phase.allowsNewQuestion }

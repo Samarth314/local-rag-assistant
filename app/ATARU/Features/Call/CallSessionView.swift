@@ -23,8 +23,15 @@ struct CallSessionView: View {
     @EnvironmentObject private var state: AppState
     @ObservedObject var call: CallService
     @ObservedObject var session: CallSessionModel
-    /// "I'm up", offered only on the morning call. See MorningConfirm.
-    @StateObject private var morning = MorningConfirmModel()
+    /// "I'm up", offered only when the SERVER says there is something to
+    /// confirm. See MorningConfirm.
+    ///
+    /// Read from AppState, not owned here. This screen used to hold its own
+    /// `@StateObject`, never call `refresh()` on it, and draw the button on
+    /// `call.isMorningCall` alone - a different question from the one the
+    /// server answers, which is why the button survived the call it belonged
+    /// to and why tapping it left the Ask page's banner untouched.
+    private var morning: MorningConfirmModel { state.morning }
     /// Owned by the parent, because a minimised call still exists — the state
     /// has to outlive this view being torn down.
     @Binding var isMinimized: Bool
@@ -57,7 +64,22 @@ struct CallSessionView: View {
             down: { setMinimized(true) }
         )
         .accessibilityElement(children: .contain)
-        .task(id: state.serviceGeneration) { morning.update(service: state.service) }
+        // The service follows the backend from AppState itself now. What was
+        // missing here was the POLL: this screen never asked the server
+        // whether the button was warranted, so it drew one whenever the call
+        // was a morning call.
+        .task(id: state.serviceGeneration) { await morning.refresh() }
+        .task(id: state.onlineGeneration) {
+            guard state.onlineGeneration > 0 else { return }
+            await morning.refresh()
+        }
+        // A socket that was open when the tunnel dropped is dead and does not
+        // know it. Dropped on the way out AND on the way back in, so the next
+        // turn either falls back straight away or reconnects cleanly, rather
+        // than spending its receive window finding out.
+        // Coming back is handled in RootView, which is mounted even while the
+        // call is minimised and this view is not.
+        .onChange(of: state.isOffline) { _, _ in session.dropStream() }
     }
 
     /// The original stacked screen.
@@ -84,9 +106,10 @@ struct CallSessionView: View {
                 session?.orbLevel ?? 0
             }
 
-            if call.isMorningCall {
-                MorningConfirmButton(model: morning)
-            }
+            // No `if call.isMorningCall` any more. The button gates itself on
+            // the server's own can_confirm, which is the only thing that knows
+            // whether a confirmation is still outstanding.
+            MorningConfirmButton(model: morning)
 
             transcript
                 .frame(minHeight: 132, maxHeight: .infinity)
@@ -117,9 +140,7 @@ struct CallSessionView: View {
             VStack(spacing: Ataru.Space.md) {
                 transcript
                     .frame(minHeight: 80, maxHeight: .infinity)
-                if call.isMorningCall {
-                    MorningConfirmButton(model: morning)
-                }
+                MorningConfirmButton(model: morning)
                 controls
             }
             .padding(.top, Ataru.Space.md)
@@ -164,6 +185,19 @@ struct CallSessionView: View {
                 .foregroundStyle(Theme.textPrimary)
                 .contentTransition(.opacity)
                 .animation(.easeInOut(duration: Ataru.Motion.micro), value: stateLabel)
+
+            // THE OUTAGE HAS TO BE VISIBLE HERE TOO.
+            //
+            // A call whose server has gone away looks exactly like a call
+            // whose server is thinking: the orb keeps moving, the label says
+            // "Thinking", and the only thing that eventually happens is the
+            // socket's 15s receive window expiring in silence. The banner is
+            // the same one the rest of the app shows, so the phone gives one
+            // explanation of one problem rather than two.
+            if state.isOffline {
+                FreshnessBanner(state: state.freshness)
+                    .padding(.horizontal, Ataru.Space.sm)
+            }
 
             if case .active(let connectedAt) = call.state {
                 TimelineView(.periodic(from: connectedAt, by: 1)) { context in

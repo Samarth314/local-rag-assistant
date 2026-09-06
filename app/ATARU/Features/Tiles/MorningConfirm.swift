@@ -21,8 +21,25 @@ import SwiftUI
 ///
 /// Whether to offer it at all (the server decides, see `MorningCallState`),
 /// the in-flight state of one tap, and the brief acknowledgement afterwards.
-/// Shared by both places it appears - the call screen and the Ask page - so
-/// the two cannot drift into behaving differently.
+///
+/// ## ONE INSTANCE, OWNED BY AppState
+///
+/// It was written to be shared and then was not: `VoiceView` and
+/// `CallSessionView` each held their own `@StateObject`, so there were two
+/// copies of "has he confirmed" and neither could see the other. Three things
+/// followed, all of them reported:
+///
+/// 1. Tapping "I'm up" on the call screen did not retract the Ask page's
+///    banner, which went on offering to confirm a call already confirmed.
+/// 2. The call screen never called `refresh()` at all - it drew its button
+///    whenever the call was a morning call, ignoring `isOffered` entirely -
+///    so the button appeared for a morning call he had already answered by
+///    speaking.
+/// 3. That same unguarded button stayed in the header after the call ended.
+///
+/// The model now lives on `AppState` and every surface asks it the same
+/// question, `isPresented`. A tap anywhere settles it for all of them in the
+/// same run loop, because there is only one of them.
 @MainActor
 final class MorningConfirmModel: ObservableObject {
 
@@ -39,16 +56,44 @@ final class MorningConfirmModel: ObservableObject {
     }
 
     @Published private(set) var phase: Phase = .idle
-    /// Whether the Ask page should be showing the banner at all. The server's
-    /// answer, never inferred from a clock on this device - the phone does not
-    /// know the wake schedule, whether the call actually rang, or whether he
-    /// already spoke.
+    /// Whether the server says there is a call this thumb can end.
+    ///
+    /// `can_confirm && !confirmed`, and nothing else - never inferred from a
+    /// clock on this device, which knows neither the wake schedule, nor
+    /// whether the call actually rang, nor whether he already spoke. It used
+    /// to be `in_call_window`, which is a wider claim: the window is open for
+    /// the whole ladder, including after a confirmation has landed.
     @Published private(set) var isOffered = false
+
+    /// Set the instant a tap lands, before the POST has answered.
+    ///
+    /// THIS IS WHAT MAKES EVERY SURFACE RETRACT TOGETHER. Waiting for the
+    /// round trip would leave the banner he did not tap sitting there for as
+    /// long as a 7am tailnet takes to answer, which is exactly when it is
+    /// slowest. Reverted on failure - and only on failure, which is the one
+    /// outcome where the calls really will keep coming.
+    @Published private(set) var isSettledLocally = false
 
     private var service: ATARUService?
 
     func update(service: ATARUService) {
         self.service = service
+    }
+
+    /// The one question every surface asks.
+    ///
+    /// A button or banner exists when the server says there is something to
+    /// confirm and nothing has settled it yet, or when there is something to
+    /// SAY about a tap that just happened. Nothing else may draw one - in
+    /// particular, "this is a morning call" is not a reason.
+    /// `.sending` is included on purpose. The offer is already withdrawn by
+    /// then - `isActionable` is false and both surfaces disable the control -
+    /// so nothing invites a second tap; keeping the ROW means the tap does not
+    /// vanish and then reappear a round trip later as an acknowledgement,
+    /// which reads as a glitch rather than as progress.
+    var isPresented: Bool {
+        (isOffered && !isSettledLocally) || phase == .sending
+            || acknowledgement != nil || failureMessage != nil
     }
 
     /// Ask the server whether the button is worth showing.
@@ -60,16 +105,39 @@ final class MorningConfirmModel: ObservableObject {
         guard let service else { return }
         let state = (try? await service.morningCallState()) ?? .inactive
         withAnimation(Theme.spring) {
-            isOffered = state.inCallWindow
+            isOffered = state.canConfirm && !state.confirmed
+            if state.confirmed {
+                // A confirmation the server already knows about - he spoke, he
+                // tapped on the other surface, he tapped yesterday and the
+                // window is still open - retires EVERYTHING, the
+                // acknowledgement included.
+                //
+                // The acknowledgement is feedback for a tap that just
+                // happened, not a fact about the day. Reconstructing it from a
+                // poll is what left "Good morning. No more calls." sitting in
+                // the header above the orb long after the call was over, which
+                // is the bug this whole file was rewritten for. Server truth
+                // means nothing to show, not something nice to show.
+                isSettledLocally = true
+                if phase != .sending { phase = .idle }
+            } else if !state.inCallWindow {
+                // The window closed with nothing outstanding. Back to nothing
+                // on screen at all, which is the resting state of this whole
+                // feature.
+                isSettledLocally = false
+                if phase != .sending { phase = .idle }
+            }
         }
-        // A confirmation that arrived some other way - he spoke - retires the
-        // acknowledgement too, so the page does not keep congratulating him.
-        if state.confirmed, phase == .idle { phase = .confirmed }
     }
 
     func confirm() async {
         guard let service, phase != .sending else { return }
-        phase = .sending
+        // Optimistic, and deliberately before the await. Every surface reads
+        // `isPresented`, so all of them stop offering in this run loop.
+        withAnimation(Theme.spring) {
+            isSettledLocally = true
+            phase = .sending
+        }
         Haptics.fire(.tap)
         do {
             let recorded = try await service.confirmMorningCall()
@@ -79,7 +147,12 @@ final class MorningConfirmModel: ObservableObject {
             }
             Haptics.fire(recorded ? .success : .warning)
         } catch {
-            withAnimation(Theme.spring) { phase = .failed }
+            // The one path back. Nothing was recorded, the ladder is still
+            // ringing, so the offer has to come back everywhere it went away.
+            withAnimation(Theme.spring) {
+                phase = .failed
+                isSettledLocally = false
+            }
             Haptics.fire(.failure)
         }
     }
@@ -115,7 +188,12 @@ final class MorningConfirmModel: ObservableObject {
     /// Whether a tap is still worth offering. Re-attemptable indefinitely on
     /// failure: the ladder is still ringing, so there is still something to
     /// confirm, however many times the network has refused.
-    var isActionable: Bool { acknowledgement == nil }
+    ///
+    /// Not while one is in flight. That used to be enforced only by each
+    /// surface's own `.disabled(phase == .sending)`, which was true of both
+    /// buttons independently and of neither of them together - two models, two
+    /// phases. One model makes it one answer.
+    var isActionable: Bool { acknowledgement == nil && phase != .sending }
 
     var isDone: Bool { phase == .confirmed }
 }
@@ -127,10 +205,23 @@ final class MorningConfirmModel: ObservableObject {
 /// Deliberately large and deliberately alone in its row: this is the one
 /// control on that screen that has to be findable by someone who is not
 /// properly awake, and a half-asleep thumb does not aim.
+///
+/// SELF-GATING. The call screen used to decide for itself whether to draw
+/// this - `if call.isMorningCall` and nothing else - which is a different
+/// question from the one the server answers, and is why the button outlived
+/// the thing it confirms. The gate lives here now, so every caller gets the
+/// same rule and none of them can get it wrong.
 struct MorningConfirmButton: View {
     @ObservedObject var model: MorningConfirmModel
 
     var body: some View {
+        Group {
+            if model.isPresented { content }
+        }
+        .animation(Theme.spring, value: model.isPresented)
+    }
+
+    private var content: some View {
         VStack(spacing: Theme.Space.xs) {
             // Above the button, not in place of it. The tap is still available
             // and still means the same thing.
@@ -194,8 +285,10 @@ struct MorningConfirmBanner: View {
         Group {
             // A failed attempt keeps the banner up even if the offer poll has
             // gone quiet: the ladder is still ringing and the tap still needs
-            // somewhere to live.
-            if model.isOffered || model.acknowledgement != nil || model.failureMessage != nil {
+            // somewhere to live. That is folded into `isPresented`, which is
+            // now the one rule - the call screen asks the same question, so a
+            // tap there takes this away in the same run loop.
+            if model.isPresented {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: model.isDone ? "checkmark.circle.fill"
                           : (model.failureMessage != nil ? "exclamationmark.circle"
@@ -234,7 +327,7 @@ struct MorningConfirmBanner: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .animation(Theme.spring, value: model.isOffered)
+        .animation(Theme.spring, value: model.isPresented)
         .animation(Theme.spring, value: model.phase)
     }
 }

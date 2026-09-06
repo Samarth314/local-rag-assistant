@@ -12,6 +12,21 @@ enum DataFreshness: Equatable {
     case demo
     case stale(Date)
     case offline(Date?)
+    /// The OS believes it has a usable network path, and the server still does
+    /// not answer.
+    ///
+    /// ALMOST ALWAYS ONE THING. The backend lives on the tailnet and nowhere
+    /// else, so a phone with working Wi-Fi that cannot reach ATARU is a phone
+    /// with Tailscale switched off - the single most likely cause, and the one
+    /// the user can actually fix. The old copy for this state was "Offline",
+    /// which is both wrong (the phone is online) and unactionable.
+    ///
+    /// The date is the last moment this app got a real answer, when it has
+    /// one, so the message can say how stale what is on screen actually is.
+    case unreachable(Date?)
+    /// No path at all: airplane mode, no Wi-Fi, no cell. Nothing about
+    /// Tailscale would help, so the message does not mention it.
+    case noNetwork
 
     var bannerMessage: String? {
         switch self {
@@ -22,6 +37,13 @@ enum DataFreshness: Equatable {
         case .offline(let date):
             guard let date else { return "Offline. No cached copy available." }
             return "Offline — last synced \(RelativeTime.string(for: date))."
+        case .unreachable(let date):
+            let advice = "Can't reach ATARU. Away from home? "
+                + "Turn on Tailscale - I'll reconnect automatically."
+            guard let date else { return advice }
+            return advice + " Last synced \(RelativeTime.string(for: date))."
+        case .noNetwork:
+            return "No network connection."
         }
     }
 
@@ -30,7 +52,8 @@ enum DataFreshness: Equatable {
         case .live: return "dot.radiowaves.left.and.right"
         case .demo: return "flask"
         case .stale: return "clock.arrow.circlepath"
-        case .offline: return "wifi.slash"
+        case .offline, .noNetwork: return "wifi.slash"
+        case .unreachable: return "wifi.exclamationmark"
         }
     }
 
@@ -38,7 +61,17 @@ enum DataFreshness: Equatable {
         switch self {
         case .live: return .green
         case .demo: return .cyan
-        case .stale, .offline: return .amber
+        case .stale, .offline, .unreachable, .noNetwork: return .amber
+        }
+    }
+
+    /// True when the app currently has no working route to the server, for
+    /// whatever reason. Screens that need one control to say so use this
+    /// rather than matching two cases each time.
+    var isOffline: Bool {
+        switch self {
+        case .unreachable, .noNetwork, .offline: return true
+        case .live, .demo, .stale: return false
         }
     }
 

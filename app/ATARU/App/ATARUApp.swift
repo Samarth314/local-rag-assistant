@@ -49,8 +49,16 @@ struct ATARUApp: App {
             // phone may have changed network, slept through the tunnel
             // dropping, or been away for a day. A connection verdict from
             // whenever it was last in front is not evidence about now.
+            //
+            // `sceneBecameActive` rather than `probeConnection` directly: the
+            // probe no longer stops after one ladder, so it also has to be
+            // told when it is allowed to keep running. A retry loop that
+            // survived into the background would poll a server whose answer
+            // the app cannot draw.
             if phase == .active {
-                state.probeConnection(reason: "foreground")
+                state.sceneBecameActive()
+            } else {
+                state.sceneResignedActive()
             }
         }
     }

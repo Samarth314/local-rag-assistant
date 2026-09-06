@@ -361,6 +361,7 @@ enum TileCache {
 /// The opaque backdrop is what makes it a screen rather than an overlay —
 /// nothing behind shows through, and nothing behind takes a touch.
 struct TileScreenHost: View {
+    @EnvironmentObject private var state: AppState
     let tile: HomeTile
     let onClose: () -> Void
 
@@ -376,13 +377,39 @@ struct TileScreenHost: View {
                 // underneath it. That was half the jitter. What the threshold
                 // feels like is now carried by the page dissolving under the
                 // thumb and by one haptic, which is better feedback anyway.
-                .safeAreaInset(edge: .top, spacing: 0) { grabBar }
+                .safeAreaInset(edge: .top, spacing: 0) { chrome }
         }
         // The gesture, the offset and the dissolve all live in a MODIFIER, and
         // that is load-bearing rather than tidy - see TileDismissal.
         .tileDismissal(onClose: onClose)
         .background(AtaruBackdrop(surface: "tile.\(tile.rawValue)"))
         .preferredColorScheme(.dark)
+    }
+
+    /// The grab bar, plus the one line every page owes the user when the app
+    /// cannot reach the server.
+    ///
+    /// HERE RATHER THAN ON EACH SCREEN. Every tile page had its own failure
+    /// copy - "Couldn't refresh", "these are the entries ATARU last saw" -
+    /// and not one of them said the thing the user can act on, which is that
+    /// the backend lives on the tailnet and the tunnel is off. Putting it in
+    /// the host means a page added tomorrow inherits it, and there is one
+    /// place to change the wording.
+    ///
+    /// Safe to sit in the inset: it changes when the connection changes, which
+    /// is not sixty times a second. See TileDismissal for what is NOT safe
+    /// here.
+    @ViewBuilder
+    private var chrome: some View {
+        VStack(spacing: 0) {
+            grabBar
+            if state.isOffline {
+                FreshnessBanner(state: state.freshness)
+                    .padding(.horizontal, Theme.Space.screen)
+                    .padding(.bottom, Theme.Space.xs)
+            }
+        }
+        .animation(Theme.quick, value: state.isOffline)
     }
 
     private var grabBar: some View {

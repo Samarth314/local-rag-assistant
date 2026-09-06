@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -30,6 +31,47 @@ final class AppState: ObservableObject {
     /// sitting under "save the token and push re-registers", so nothing keys
     /// on identity any more.
     @Published private(set) var serviceGeneration = 0
+
+    /// Bumped on every unreachable → reachable transition, and never
+    /// otherwise.
+    ///
+    /// THE ONE SIGNAL EVERY DATA SCREEN LISTENS TO. Before this, each tile
+    /// screen fetched once in its own `.task` and then sat there: turning
+    /// Tailscale on with Finance already open left the page showing "couldn't
+    /// refresh" until it was closed and reopened, because nothing in the app
+    /// told it the world had changed. Keying `.task(id:)` on this makes the
+    /// reload structural - a screen that is on screen when the tunnel comes up
+    /// reloads itself, and one that is not simply loads fresh when it opens.
+    ///
+    /// A counter rather than a boolean on purpose: two outages in one session
+    /// have to be two distinct ids, or the second reconnection is a no-op.
+    /// Monotonic, so it can never be mistaken for a level.
+    @Published private(set) var onlineGeneration = 0
+
+    /// Whether the OS believes this device has any usable network path.
+    ///
+    /// Separate from `connection` because they fail differently and the user
+    /// can only act on one of them. No path is airplane mode; a path with no
+    /// server is, on this app's topology, almost always Tailscale being off.
+    @Published private(set) var hasNetworkPath = true
+
+    /// When the app last got a real answer out of the server. Drives the
+    /// "last synced" half of the offline banner; nil until the first success
+    /// of the process.
+    @Published private(set) var lastConnectedAt: Date?
+
+    /// "I'm up", shared by every surface that offers it.
+    ///
+    /// ONE MODEL, DELIBERATELY. It used to be a `@StateObject` in VoiceView
+    /// AND another in CallSessionView, which is two independent copies of one
+    /// fact: tapping the button on the call screen left the Ask page's banner
+    /// sitting there offering to confirm a call that had already been
+    /// confirmed, and the call screen's own copy never called `refresh()` at
+    /// all, so it drew its button whenever the call was a morning call
+    /// regardless of what the server said. Owning it here is what makes a tap
+    /// anywhere retract it everywhere, in the same run loop.
+    let morning = MorningConfirmModel()
+
     @Published var configuration: AppConfiguration {
         didSet {
             guard configuration != oldValue else { return }
@@ -53,6 +95,17 @@ final class AppState: ObservableObject {
     /// The launch/foreground probe, so a second one cancels the first rather
     /// than racing it to publish a verdict.
     private var probe: Task<Void, Never>?
+
+    /// Re-publishes the shared morning model's changes as this object's own.
+    ///
+    /// A nested `ObservableObject` does NOT notify the parent's observers, so
+    /// without this every view reading `state.morning` would draw the value it
+    /// happened to see first and never update - which is the same class of
+    /// silent staleness the two-copies bug was. Forwarding here means any view
+    /// already holding `@EnvironmentObject var state: AppState` sees it, and
+    /// nothing has to add a second environment object it can crash for
+    /// forgetting.
+    private var morningObserver: AnyCancellable?
     private let reachability = Reachability()
 
     /// How long to wait before each retry, in seconds. Five attempts over
@@ -64,6 +117,33 @@ final class AppState: ObservableObject {
     /// cold launch, before the Tailscale path exists - costs a retry rather
     /// than a banner that then sticks.
     private static let retryDelays: [Double] = [1, 2, 4, 8]
+
+    /// What happens AFTER the verdict, which is the other half of the same
+    /// bug.
+    ///
+    /// The ladder above only ever decided whether to publish a failure. Once
+    /// it had, the app went completely quiet: nothing probed again until the
+    /// next foreground or an OS path change, so switching Tailscale on with
+    /// the app open in front of you changed nothing at all - the phone was
+    /// reachable and the app went on saying it was not, indefinitely, because
+    /// no path event fires when a VPN tunnel comes up inside an interface the
+    /// OS already considered satisfied.
+    ///
+    /// So the probe never stops while the app is in front. Capped at 30s: past
+    /// that the reconnect stops feeling automatic, and below it the cost is a
+    /// two-byte round trip to a machine on the same tailnet.
+    private static let sustainedDelays: [Double] = [2, 4, 8, 15, 30]
+
+    /// Whether the app is in the foreground. The sustained ladder is a
+    /// foreground behaviour ONLY - polling a server from the background is
+    /// both useless (the app cannot draw the result) and rude to the battery.
+    private var isActive = true
+
+    /// True once the app has told the user it cannot reach the server, and
+    /// until it can again. This, not `connection`, is what defines the
+    /// transition `onlineGeneration` counts: a single failed attempt inside
+    /// the launch ladder is not an outage, because nothing was ever shown.
+    private var isUnreachable = false
 
     init(defaults: UserDefaults? = nil, tokenStore: TokenStoring? = nil) {
         // UI tests get a throwaway defaults suite and an in-memory token, so a
@@ -92,16 +172,43 @@ final class AppState: ObservableObject {
         // A path that comes up mid-backoff gets a probe immediately, rather
         // than waiting out whatever rung the ladder is on.
         reachability.onPathRestored = { [weak self] in
+            self?.hasNetworkPath = true
             self?.probeConnection(reason: "the network path came back")
         }
+        // Recorded, not acted on. Losing the path is not itself a reason to
+        // probe - there is nothing to probe over - but it IS what decides
+        // which of the two offline messages the banner shows.
+        reachability.onPathLost = { [weak self] in
+            self?.hasNetworkPath = false
+            // Counts as an outage even though no probe has failed yet. The
+            // banner is already saying "no network", so the app HAS told the
+            // user it is offline - and without this, airplane mode on and off
+            // again would restore the connection without ever bumping
+            // `onlineGeneration`, leaving every open screen on the data it had
+            // before the flight.
+            self?.isUnreachable = true
+        }
         reachability.start()
+        morningObserver = morning.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     var freshness: DataFreshness {
         if isDemo { return .demo }
-        if case .failed = connection { return .offline(nil) }
+        // Order matters. "No network" outranks "cannot reach the server",
+        // because with no path the Tailscale advice is advice that cannot
+        // work, and sending someone to a settings screen that will not help
+        // is worse than saying nothing.
+        if !hasNetworkPath { return .noNetwork }
+        if case .failed = connection { return .unreachable(lastConnectedAt) }
         return .live
     }
+
+    /// True while the app has no working route to the server - either reason.
+    /// The screens that hide a control during an outage ask this rather than
+    /// re-deriving it.
+    var isOffline: Bool { !isDemo && freshness.isOffline }
 
     /// The bearer token, if one is set. Read from the Keychain each time
     /// rather than cached in memory.
@@ -148,9 +255,14 @@ final class AppState: ObservableObject {
         connection = .checking
         do {
             let detail = try await service.checkStatus()
-            connection = .connected(detail)
+            markReachable(detail: detail)
         } catch {
-            connection = .failed(Self.message(for: error))
+            markUnreachable(Self.message(for: error))
+            // The answer stands, and the app keeps trying underneath it. A
+            // "Save and test" that failed because the tunnel was not up yet
+            // used to end the story: the verdict was final and nothing
+            // re-probed until the next foreground.
+            resumeProbing(reason: "after a failed connection test")
         }
     }
 
@@ -177,22 +289,80 @@ final class AppState: ObservableObject {
             connection = .connected("demo")
             return
         }
-        probe = Task { [weak self] in await self?.runProbe(reason: reason) }
+        probe = Task { [weak self] in
+            await self?.runProbe(reason: reason, graceAttempts: Self.retryDelays.count + 1)
+        }
     }
 
-    private func runProbe(reason: String) async {
+    /// Keeps probing when a verdict is already on screen.
+    ///
+    /// Same loop, no grace: the failure has already been published, so there
+    /// is nothing to withhold and nothing to downgrade. This is what runs for
+    /// as long as the app is unreachable and in front.
+    private func resumeProbing(reason: String) {
+        probe?.cancel()
+        guard !isDemo else { return }
+        probe = Task { [weak self] in
+            await self?.runProbe(reason: reason, graceAttempts: 0)
+        }
+    }
+
+    /// The app came back to the foreground.
+    ///
+    /// Both halves matter: re-probe now (a verdict from whenever the app was
+    /// last in front is not evidence about now), and let the sustained ladder
+    /// run again.
+    func sceneBecameActive() {
+        isActive = true
+        probeConnection(reason: "foreground")
+    }
+
+    /// The app left the foreground. The ladder stops here rather than running
+    /// on into the background against a server it could not draw an answer
+    /// from anyway.
+    func sceneResignedActive() {
+        isActive = false
+        probe?.cancel()
+        probe = nil
+    }
+
+    /// One probe loop, with two callers and one difference between them.
+    ///
+    /// `graceAttempts` is how many failures may pass before the app is willing
+    /// to SAY it cannot connect. At launch that is the whole first ladder - a
+    /// negative from second one is the common case on a cold start, before the
+    /// Tailscale path exists, and publishing it produces a banner that then
+    /// sticks. Once a failure is on screen the grace is zero, because the
+    /// thing it protects against has already happened.
+    ///
+    /// The loop itself does not end on failure. It ends on success, on
+    /// cancellation, or when the app stops being in the foreground.
+    private func runProbe(reason: String, graceAttempts: Int) async {
         // Never a downgrade on the way in. A working connection that is being
         // re-checked in the background is still a working connection, and
-        // flashing "Testing…" over it on every foreground is noise.
-        if !connection.isConnected { connection = .checking }
+        // flashing "Testing…" over it on every foreground is noise - and a
+        // failure already on screen must not flicker back to "Testing…" on
+        // every rung of a ladder that may run for minutes.
+        if !connection.isConnected, graceAttempts > 0 { connection = .checking }
         var lastMessage = APIError.notConfigured.localizedDescription
+        var attempt = 0
+        var sustained = 0
 
-        for attempt in 0...Self.retryDelays.count {
+        while !Task.isCancelled {
             if attempt > 0 {
-                let delay = Self.retryDelays[attempt - 1]
+                let delay: Double
+                if attempt <= Self.retryDelays.count, graceAttempts > 0 {
+                    delay = Self.retryDelays[attempt - 1]
+                } else {
+                    delay = Self.sustainedDelays[min(sustained,
+                                                     Self.sustainedDelays.count - 1)]
+                    sustained += 1
+                }
                 try? await Task.sleep(for: .seconds(delay))
                 if Task.isCancelled { return }
             }
+            attempt += 1
+
             // Re-read every time: Settings can replace the service mid-ladder,
             // and the probe should follow the app rather than the instance it
             // started with.
@@ -200,26 +370,74 @@ final class AppState: ObservableObject {
                 connection = .connected("demo")
                 return
             }
+            // Backgrounded mid-ladder. Stop rather than spin; `sceneBecameActive`
+            // starts a fresh one on the way back in, which is also when its
+            // answer first becomes worth having.
+            guard isActive else { return }
+
             do {
                 let detail = try await service.checkStatus()
                 if Task.isCancelled { return }
                 netLog.notice("""
-                    connected on attempt \(attempt + 1, privacy: .public) \
+                    connected on attempt \(attempt, privacy: .public) \
                     (\(reason, privacy: .public))
                     """)
-                connection = .connected(detail)
+                markReachable(detail: detail)
                 return
             } catch {
                 if Task.isCancelled { return }
                 lastMessage = Self.message(for: error)
                 netLog.notice("""
-                    probe attempt \(attempt + 1, privacy: .public) failed: \
+                    probe attempt \(attempt, privacy: .public) failed: \
                     \(lastMessage, privacy: .public)
                     """)
+                if attempt >= max(graceAttempts, 1) {
+                    markUnreachable(lastMessage)
+                }
             }
         }
-        guard !Task.isCancelled else { return }
-        connection = .failed(lastMessage)
+    }
+
+    /// The server answered.
+    ///
+    /// The generation bump is here and nowhere else, and it is conditional on
+    /// the app having actually been unreachable - a launch that connects on
+    /// the second rung never told the user anything, so it is not a
+    /// reconnection and must not make every mounted screen refetch.
+    private func markReachable(detail: String?) {
+        let wasUnreachable = isUnreachable
+        isUnreachable = false
+        connection = .connected(detail)
+        lastConnectedAt = Date()
+        guard wasUnreachable else { return }
+        onlineGeneration += 1
+        netLog.notice("""
+            back online, generation \(self.onlineGeneration, privacy: .public)
+            """)
+        // A socket opened before the outage is dead whatever it thinks. Left
+        // in place, the next question spends its whole 15s receive window
+        // finding that out before falling back - which on the call screen is
+        // fifteen seconds of an orb thinking about nothing.
+        droppedStaleStreams()
+    }
+
+    private func markUnreachable(_ message: String) {
+        isUnreachable = true
+        // Only when it actually changes. The sustained ladder re-publishes the
+        // same failure every few seconds otherwise, and every one of those is
+        // an `objectWillChange` that redraws the whole app for no new
+        // information.
+        guard connection != .failed(message) else { return }
+        connection = .failed(message)
+    }
+
+    /// Whoever holds a WebSocket is told to let go of it.
+    ///
+    /// Done by notification rather than by reaching into the two models: the
+    /// call session is owned by `CallStack` and the Ask model by its view, and
+    /// AppState has no business knowing either. Both listen.
+    private func droppedStaleStreams() {
+        NotificationCenter.default.post(name: .ataruConnectionRestored, object: nil)
     }
 
     private static func message(for error: Error) -> String {
@@ -280,6 +498,11 @@ final class AppState: ObservableObject {
             connection = .connected("demo")
         }
         serviceGeneration += 1
+        // The shared "I'm up" model follows the backend here rather than in
+        // each of the three views that draw it - two of which used to point
+        // their own private copy at a different service on a different
+        // schedule.
+        morning.update(service: service)
         // PUSH FOLLOWS THE CREDENTIAL, IMMEDIATELY.
         //
         // Saving a new token in Settings used to change nothing about push
@@ -306,6 +529,12 @@ final class AppState: ObservableObject {
         guard let data = defaults.data(forKey: configurationKey) else { return nil }
         return try? JSONDecoder().decode(AppConfiguration.self, from: data)
     }
+}
+
+extension Notification.Name {
+    /// Posted the moment a probe succeeds after the app has told the user it
+    /// could not connect. Anything holding a long-lived socket drops it here.
+    static let ataruConnectionRestored = Notification.Name("com.ataru.client.connectionRestored")
 }
 
 /// Indirection over the Keychain so tests don't touch the real one.

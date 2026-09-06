@@ -134,6 +134,12 @@ struct PlanView: View {
             model.update(service: state.service)
             await model.refresh()
         }
+        // And again whenever the app gets back to the server. See
+        // `AppState.onlineGeneration`.
+        .task(id: state.onlineGeneration) {
+            guard state.onlineGeneration > 0 else { return }
+            await model.refresh()
+        }
     }
 
     @ViewBuilder
