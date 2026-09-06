@@ -38,6 +38,16 @@ struct AppConfiguration: Equatable, Codable {
     var requestTimeout: TimeInterval
     var persistsChatHistory: Bool
     var hapticsEnabled: Bool
+    /// Whether the caller may talk over ATARU on a call and have it stop.
+    ///
+    /// A kill switch rather than a feature flag. Barge-in keeps the microphone
+    /// open while the answer plays, and the one way it can misbehave is by
+    /// hearing something that is not the caller - ATARU's own voice past the
+    /// echo canceller, a television, someone else in the room - and cutting
+    /// the answer off for it. On by default because the alternative is waiting
+    /// out an answer you already have; off is one switch away when a room
+    /// makes it misfire.
+    var bargeIn: Bool
 
     static let `default` = AppConfiguration(
         baseURLString: Bundle.main.object(forInfoDictionaryKey: "ATARUDefaultBaseURL") as? String ?? "",
@@ -47,7 +57,8 @@ struct AppConfiguration: Equatable, Codable {
         // before the first byte. 30s was timing out legitimate answers.
         requestTimeout: 60,
         persistsChatHistory: true,
-        hapticsEnabled: true
+        hapticsEnabled: true,
+        bargeIn: true
     )
 
     var baseURL: URL? {
@@ -116,6 +127,42 @@ struct AppConfiguration: Equatable, Codable {
         case (100, 64...127): return true   // CGNAT range used by Tailscale
         default: return false
         }
+    }
+}
+
+/// Decoding that survives a key this build has and the saved blob does not.
+///
+/// **This is in an extension on purpose**, twice over. Declaring
+/// `init(from:)` inside the struct would suppress the memberwise initialiser
+/// that `.default` is built with; and the synthesised decoder calls plain
+/// `decode` for every non-optional property, which THROWS when a key is
+/// missing. `stored()` answers a throw with `.default` - so the day `bargeIn`
+/// was added, every phone with a saved configuration would have silently
+/// forgotten its server address and its token pairing on the next launch.
+/// Adding a field must never be able to do that, so every field is read with
+/// `decodeIfPresent` and falls back to the built-in default.
+extension AppConfiguration {
+
+    private enum CodingKeys: String, CodingKey {
+        case baseURLString, apiVersion, requestTimeout, persistsChatHistory
+        case hapticsEnabled, bargeIn
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fallback = AppConfiguration.default
+        baseURLString = try container.decodeIfPresent(String.self, forKey: .baseURLString)
+            ?? fallback.baseURLString
+        apiVersion = try container.decodeIfPresent(String.self, forKey: .apiVersion)
+            ?? fallback.apiVersion
+        requestTimeout = try container.decodeIfPresent(TimeInterval.self, forKey: .requestTimeout)
+            ?? fallback.requestTimeout
+        persistsChatHistory = try container.decodeIfPresent(Bool.self, forKey: .persistsChatHistory)
+            ?? fallback.persistsChatHistory
+        hapticsEnabled = try container.decodeIfPresent(Bool.self, forKey: .hapticsEnabled)
+            ?? fallback.hapticsEnabled
+        bargeIn = try container.decodeIfPresent(Bool.self, forKey: .bargeIn)
+            ?? fallback.bargeIn
     }
 }
 

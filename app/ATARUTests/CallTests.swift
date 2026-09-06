@@ -402,3 +402,222 @@ final class MorningConfirmTests: XCTestCase {
         XCTAssertFalse(model.isDone)
     }
 }
+
+/// The end-of-turn decision, which is the difference between a call that
+/// answers when you stop talking and one that sits there for twenty seconds.
+///
+/// Pure on purpose: `EndOfTurn.decide` takes the clock as an argument, so
+/// every one of these cases is exact and none of them waits.
+final class EndOfTurnTests: XCTestCase {
+
+    private let start = ContinuousClock.now
+    private var deadline: ContinuousClock.Instant {
+        start + CallSessionModel.turnDeadline
+    }
+
+    private func decide(after elapsed: Duration,
+                        lastVoiceAt: Duration? = nil,
+                        transcript: String = "",
+                        settledAt: Duration? = nil) -> TurnEnd {
+        EndOfTurn.decide(now: start + elapsed,
+                         deadline: deadline,
+                         lastVoiceAt: lastVoiceAt.map { start + $0 },
+                         transcript: transcript,
+                         transcriptSettledAt: settledAt.map { start + $0 })
+    }
+
+    // MARK: - The level gate, unchanged
+
+    func testNothingDecidesWhileTheCallerIsStillTalking() {
+        XCTAssertEqual(decide(after: .seconds(3), lastVoiceAt: .seconds(3)),
+                       .keepListening)
+    }
+
+    func testAQuietMicrophoneEndsTheTurnAfterTheGrace() {
+        // 1.5s of silence is inside the pause in the middle of a sentence.
+        XCTAssertEqual(decide(after: .milliseconds(4_500), lastVoiceAt: .seconds(3)),
+                       .keepListening)
+        XCTAssertEqual(decide(after: .milliseconds(4_700), lastVoiceAt: .seconds(3)),
+                       .quiet)
+    }
+
+    // MARK: - The second signal
+
+    /// The bug this gate was added for: a caller whose voice never crosses the
+    /// level threshold used to run the full twenty seconds with the whole
+    /// question already transcribed.
+    func testASoftSpeakerEndsOnASettledTranscript() {
+        XCTAssertEqual(decide(after: .milliseconds(2_500),
+                              lastVoiceAt: nil,
+                              transcript: "what time is it in india",
+                              settledAt: .milliseconds(1_500)),
+                       .settled)
+    }
+
+    func testASettledTranscriptEndsSoonerThanTheLevelGateEverCould() {
+        // 900ms of stability beats the 1600ms silence grace, which is the
+        // whole point of having a second signal.
+        let settled = decide(after: .milliseconds(1_000),
+                             transcript: "check my calendar",
+                             settledAt: .milliseconds(0))
+        XCTAssertEqual(settled, .settled)
+    }
+
+    func testStabilityAloneIsNotEnoughBeforeAWordLands() {
+        XCTAssertEqual(decide(after: .seconds(5),
+                              transcript: "",
+                              settledAt: .milliseconds(100)),
+                       .keepListening)
+        XCTAssertEqual(decide(after: .seconds(5),
+                              transcript: "   ",
+                              settledAt: .milliseconds(100)),
+                       .keepListening)
+    }
+
+    func testAFreshTranscriptIsNotASettledOne() {
+        XCTAssertEqual(decide(after: .milliseconds(1_000),
+                              transcript: "how much did i spend",
+                              settledAt: .milliseconds(600)),
+                       .keepListening)
+    }
+
+    /// The regression the old comment warns about: a recogniser that stalls
+    /// while the caller is still audibly speaking must NOT read as an ending.
+    /// The level gate is what proves somebody is still there.
+    func testAStalledRecogniserUnderALoudCallerKeepsListening() {
+        XCTAssertEqual(decide(after: .seconds(5),
+                              lastVoiceAt: .milliseconds(4_800),
+                              transcript: "when was the last time i got an email from",
+                              settledAt: .milliseconds(2_000)),
+                       .keepListening)
+    }
+
+    func testTheLevelGateWinsWhenBothWouldFire() {
+        XCTAssertEqual(decide(after: .seconds(6),
+                              lastVoiceAt: .seconds(3),
+                              transcript: "turn the lamp on",
+                              settledAt: .seconds(3)),
+                       .quiet)
+    }
+
+    // MARK: - The ceiling
+
+    func testTheHardDeadlineStillEndsASilentTurn() {
+        XCTAssertEqual(decide(after: .seconds(19)), .keepListening)
+        XCTAssertEqual(decide(after: CallSessionModel.turnDeadline), .deadline)
+        XCTAssertEqual(decide(after: .seconds(25)), .deadline)
+    }
+
+    func testEveryReasonHasItsOwnFixedWordForTheLog() {
+        let reasons = [TurnEnd.keepListening, .quiet, .settled, .deadline].map(\.reason)
+        XCTAssertEqual(Set(reasons).count, reasons.count)
+    }
+}
+
+/// The barge-in trigger: whether the microphone is hearing the caller cut in,
+/// or ATARU hearing itself.
+final class BargeInTests: XCTestCase {
+
+    private let loud = CallSessionModel.voiceLevel + 0.2
+    private let quiet = CallSessionModel.voiceLevel - 0.05
+
+    func testTwoWordsOverTheLevelGateIsAnInterruption() {
+        XCTAssertTrue(BargeIn.shouldInterrupt(partial: "no wait",
+                                              level: loud,
+                                              spokenSoFar: "Your next event is at four."))
+    }
+
+    func testOneWordIsNotEnough() {
+        XCTAssertFalse(BargeIn.shouldInterrupt(partial: "no",
+                                               level: loud,
+                                               spokenSoFar: "Your next event is at four."))
+    }
+
+    func testWordsUnderTheLevelGateAreNotAnInterruption() {
+        XCTAssertFalse(BargeIn.shouldInterrupt(partial: "no wait stop",
+                                               level: quiet,
+                                               spokenSoFar: "Your next event is at four."))
+    }
+
+    func testSilenceIsNotAnInterruption() {
+        XCTAssertFalse(BargeIn.shouldInterrupt(partial: "",
+                                               level: loud,
+                                               spokenSoFar: "Your next event is at four."))
+    }
+
+    /// The failure mode the whole predicate exists to avoid: the answer coming
+    /// back in through the microphone and stopping itself.
+    func testTheAnswerEchoingBackIsNotAnInterruption() {
+        XCTAssertFalse(BargeIn.shouldInterrupt(partial: "next event is",
+                                               level: loud,
+                                               spokenSoFar: "Your next event is at four."))
+        XCTAssertFalse(BargeIn.shouldInterrupt(partial: "Your next event",
+                                               level: loud,
+                                               spokenSoFar: "Your next event is at four."))
+    }
+
+    /// Echo detection is contiguity, not a bag of words - a caller who reuses
+    /// a word from the answer is still interrupting.
+    func testReusingAWordFromTheAnswerIsStillAnInterruption() {
+        XCTAssertTrue(BargeIn.shouldInterrupt(partial: "which event",
+                                              level: loud,
+                                              spokenSoFar: "Your next event is at four."))
+        XCTAssertTrue(BargeIn.shouldInterrupt(partial: "no the other one",
+                                              level: loud,
+                                              spokenSoFar: "Your next event is at four."))
+    }
+
+    func testEchoIgnoresCaseAndPunctuation() {
+        XCTAssertTrue(BargeIn.isEcho(BargeIn.words(in: "Next, event!"),
+                                     of: "your next event is at four"))
+    }
+
+    func testMoreWordsThanWereEverSpokenCannotBeAnEcho() {
+        XCTAssertFalse(BargeIn.isEcho(BargeIn.words(in: "one two three"), of: "one two"))
+    }
+
+    func testNothingHeardCountsAsEchoRatherThanSpeech() {
+        XCTAssertTrue(BargeIn.isEcho([], of: "anything"))
+    }
+
+    func testTheGreetingCanBeTalkedOverToo() {
+        XCTAssertTrue(BargeIn.shouldInterrupt(
+            partial: "what's on my calendar",
+            level: loud,
+            spokenSoFar: "ATARU here. What would you like to know?"))
+    }
+}
+
+/// The kill switch, and the migration hazard that comes with adding it.
+final class BargeInConfigurationTests: XCTestCase {
+
+    func testBargeInIsOnByDefault() {
+        XCTAssertTrue(AppConfiguration.default.bargeIn)
+    }
+
+    /// A saved blob from before the key existed must decode, keep its server
+    /// address, and default the switch on - NOT throw, which `stored()` would
+    /// answer by silently resetting the phone to the built-in configuration.
+    func testAConfigurationSavedBeforeTheSwitchExistedStillDecodes() throws {
+        let legacy = """
+        {"baseURLString":"https://ataru.example.ts.net","apiVersion":"",
+         "requestTimeout":45,"persistsChatHistory":true,"hapticsEnabled":false,
+         "mode":"live"}
+        """
+        let decoded = try JSONDecoder().decode(AppConfiguration.self,
+                                               from: Data(legacy.utf8))
+        XCTAssertEqual(decoded.baseURLString, "https://ataru.example.ts.net")
+        XCTAssertEqual(decoded.requestTimeout, 45)
+        XCTAssertFalse(decoded.hapticsEnabled)
+        XCTAssertTrue(decoded.bargeIn)
+    }
+
+    func testTurningItOffSurvivesARoundTrip() throws {
+        var configuration = AppConfiguration.default
+        configuration.bargeIn = false
+        let data = try JSONEncoder().encode(configuration)
+        let decoded = try JSONDecoder().decode(AppConfiguration.self, from: data)
+        XCTAssertFalse(decoded.bargeIn)
+        XCTAssertEqual(decoded, configuration)
+    }
+}

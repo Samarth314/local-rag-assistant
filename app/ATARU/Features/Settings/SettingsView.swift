@@ -76,6 +76,14 @@ struct SettingsView: View {
             }
 
             Section("Calls") {
+                Toggle("Let me interrupt", isOn: Binding(
+                    get: { state.configuration.bargeIn },
+                    set: { state.configuration.bargeIn = $0 }
+                ))
+                Text("Keeps the microphone open while ATARU is speaking, so talking over an answer stops it and starts your next question. Turn it off if a noisy room keeps cutting answers short.")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+
                 Button("Add ATARU to Contacts") {
                     addContact()
                 }

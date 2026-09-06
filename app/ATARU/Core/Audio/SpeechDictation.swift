@@ -471,6 +471,17 @@ final class SpeechDictation: NSObject, ObservableObject {
             return transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         closeMicrophone()
+        return await awaitFinalTranscript()
+    }
+
+    /// The waiting half of `endAudioAwaitingFinal`, with the microphone
+    /// already closed.
+    ///
+    /// Split out so `finish()` can close the microphone, take the samples, and
+    /// put them on the wire to Whisper *before* sitting down to wait for Apple
+    /// - the two used to happen strictly one after the other, and the wait was
+    /// pure dead time with the audio already in hand.
+    private func awaitFinalTranscript() async -> String {
         if !sawFinal {
             // Apple's final transcript is the answer now rather than a
             // fallback behind an on-device Whisper, so it is worth the longer
@@ -533,16 +544,51 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// old signature is synchronous. Callers that only need to abandon audio
     /// (mute mid-sentence) keep using `stop()`; callers that are about to ASK
     /// something use this, because this is where the proper nouns get fixed.
+    ///
+    /// ## The two engines run at the same time, and that is the point
+    ///
+    /// This used to be strictly serial: wait out Apple's final result (up to
+    /// two seconds), *then* post the captured samples to the Orin. The samples
+    /// were sitting in `captured` the whole time. Prod telemetry made the cost
+    /// plain - the server reported a routed answer at p50 0.59s while first
+    /// audio was heard at p50 4.06s, and this wait was a whole slice of the
+    /// gap between those two numbers.
+    ///
+    /// So the microphone closes, the audio goes on the wire, and Apple gets
+    /// its two seconds *alongside* the round trip rather than in front of it.
+    /// The preference order is unchanged - Whisper's name-biased read wins
+    /// when it answers - but when it answers, Apple's remaining budget is
+    /// simply not waited on. Worst case is what it always was: Whisper's 12s
+    /// ceiling, with Apple's transcript already in hand behind it.
     func finish() async -> String {
-        let apple = await endAudioAwaitingFinal()
+        let turnEnded = ContinuousClock.now
+
+        // Closing the microphone is what makes the capture complete: the tap
+        // is removed and the engine stopped, so nothing more can be appended
+        // and the samples can be drained and sent immediately.
+        let wasRecording = isRecording
+        if wasRecording { closeMicrophone() }
         let samples = captured.drain()
         if tracksAudioDetail { lastCapture = samples }
+
         // ATARU's own Whisper first. It is the same engine the phone used to
         // carry, with the same name biasing, except it is already loaded and
         // the roster is attached at the server - so there is no cold start to
         // wait out and no 632MB to hold. See RemoteTranscriber.
-        if let service = Self.sharedService,
-           let remote = await service.transcribe(samples: samples) {
+        var remoteTask: Task<String?, Never>?
+        if let service = Self.sharedService {
+            remoteTask = Task { await service.transcribe(samples: samples) }
+        }
+        // ... and Apple finishes its sentence next to it, not before it.
+        let appleTask = Task { @MainActor [weak self] in
+            guard let self else { return "" }
+            guard wasRecording else {
+                return self.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return await self.awaitFinalTranscript()
+        }
+
+        if let remoteTask, let remote = await remoteTask.value {
             // AN EMPTY REMOTE RESULT MUST NOT ERASE A TRANSCRIPT WE HAVE.
             //
             // `RemoteTranscriber` returns "" deliberately, to mean "the server
@@ -560,9 +606,21 @@ final class SpeechDictation: NSObject, ObservableObject {
             // heard words, those words are the answer.
             let decided = remote.trimmingCharacters(in: .whitespacesAndNewlines)
             if !decided.isEmpty {
+                // Apple has nothing left to add, so release its waiter rather
+                // than leaving a suspended continuation and a pending
+                // `cleanUp()` in flight behind the next turn - which, with
+                // barge-in, can reopen the microphone within milliseconds of
+                // this returning, and would then have its recognition task
+                // cancelled out from under it.
+                deliverFinal()
+                _ = await appleTask.value
                 transcript = decided
+                Self.logTranscriptReady(since: turnEnded, engine: "whisper")
                 return decided
             }
+            let apple = await appleTask.value
+            Self.logTranscriptReady(since: turnEnded,
+                                    engine: apple.isEmpty ? "none" : "apple")
             if !apple.isEmpty { return apple }
             return ""
         }
@@ -582,7 +640,28 @@ final class SpeechDictation: NSObject, ObservableObject {
         // names get mangled exactly as they did before WhisperKit arrived.
         // Restoring it means restoring the toggle, the package and this
         // branch together.
+        let apple = await appleTask.value
+        Self.logTranscriptReady(since: turnEnded,
+                                engine: apple.isEmpty ? "none" : "apple")
         return apple
+    }
+
+    /// One line per asked turn: how long the caller waited between stopping
+    /// talking and there being a question to ask.
+    ///
+    ///     log stream --device --predicate 'subsystem == "com.ataru.client" AND category == "stt"'
+    ///
+    /// This is the number item 1 exists to move, so it is measured rather than
+    /// argued about. `engine` says which recogniser the answer came from,
+    /// because "fast" and "fell back to Apple" are the same latency for very
+    /// different reasons.
+    private static func logTranscriptReady(since start: ContinuousClock.Instant,
+                                           engine: String) {
+        let elapsed = ContinuousClock.now - start
+        let millis = elapsed.components.seconds * 1_000
+            + elapsed.components.attoseconds / 1_000_000_000_000_000
+        sttLog.notice(
+            "end-of-turn -> transcript ready in \(millis, privacy: .public)ms via \(engine, privacy: .public)")
     }
 
     /// Abandons the current capture without producing a transcript.
