@@ -75,6 +75,15 @@ final class CallSessionModel: ObservableObject {
     /// next listening turn consumes it and keeps the open microphone instead
     /// of starting a new one.
     private var bargedIn = false
+
+    /// The barge-in constants in force for this call. Fetched from the server
+    /// alongside the name roster; `.default` is the app's own compiled
+    /// constants, which is also what an unconfigured server sends.
+    private var bargeTuning = BargeInTuning.default
+
+    /// What the last barge-in measured, waiting to ride out on the next
+    /// question. Cleared as it is read - one interruption, one report.
+    private var pendingBarge: (level: Double, afterMs: Int)?
     /// The poll that watches for an interruption while ATARU speaks.
     private var bargeMonitor: Task<Void, Never>?
 
@@ -167,9 +176,17 @@ final class CallSessionModel: ObservableObject {
         // Load the name roster once per call. It only makes dictation more
         // likely to hear a name correctly, so a failure here is silent -
         // an unbiased recogniser is exactly what we had before.
-        Task { [service] in
+        Task { [service, weak self] in
             if let names = try? await service.vocabulary(), !names.isEmpty {
                 SpeechDictation.sharedVocabulary = names
+            }
+            // The barge-in constants ride on the same endpoint, and it is
+            // asked SECOND on purpose: the roster call warms the server's
+            // hour-long cache, so this one costs a cache hit rather than a
+            // second harvest. Silent on failure like the roster - the compiled
+            // defaults are what the app has always used.
+            if let tuning = try? await service.bargeInTuning() {
+                await MainActor.run { self?.bargeTuning = tuning }
             }
         }
 
@@ -391,17 +408,48 @@ final class CallSessionModel: ObservableObject {
             // never take the answer down with it.
             do { try dictation.start() } catch { return }
         }
+        let tuning = bargeTuning
+        let opened = ContinuousClock.now
         bargeMonitor = Task { @MainActor [weak self] in
+            // When the level first crossed and has held since. Reset the
+            // moment it drops, so `sustainedMs` means a continuous hold rather
+            // than a total across the answer - a rattle that crosses the gate
+            // on alternate samples is the case it exists to reject.
+            var holdingSince: ContinuousClock.Instant?
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard let self, !Task.isCancelled else { return }
                 guard self.phase == .speaking, !self.isMuted, !self.isInterrupted else {
+                    holdingSince = nil
                     continue
                 }
+                let now = ContinuousClock.now
+                // THE COOLDOWN. The loudest part of an answer is its first
+                // syllable, and it is the part most likely to reach the
+                // microphone past the echo canceller. Zero by default, which
+                // is the behaviour this has always had.
+                if tuning.cooldownMs > 0,
+                   now - opened < .milliseconds(tuning.cooldownMs) { continue }
                 guard BargeIn.shouldInterrupt(partial: self.dictation.transcript,
                                               level: self.dictation.level,
-                                              spokenSoFar: self.answer) else { continue }
+                                              spokenSoFar: self.answer,
+                                              voiceLevel: tuning.level) else {
+                    holdingSince = nil
+                    continue
+                }
+                // THE SUSTAIN. Also zero by default - the predicate has always
+                // acted on the first sample that passed - and the knob for a
+                // room where the speaker echoes into the microphone in bursts.
+                let began = holdingSince ?? now
+                holdingSince = began
+                if tuning.sustainedMs > 0,
+                   now - began < .milliseconds(tuning.sustainedMs) { continue }
                 self.bargedIn = true
+                // COUNTED, so false triggers can be. Content-free: the level
+                // that tripped it and how far into the answer, nothing else.
+                // Read on the next question - see `answerQuestion`.
+                self.pendingBarge = (level: self.dictation.level,
+                                     afterMs: Int((now - opened) / .milliseconds(1)))
                 voiceLog.notice("barge-in: the caller cut in over the answer")
                 // Silence, now - and everything queued behind it goes too.
                 self.player.stop()
@@ -430,6 +478,10 @@ final class CallSessionModel: ObservableObject {
         bargeMonitor?.cancel()
         bargeMonitor = nil
         bargedIn = false
+        // The report goes with the words. A mute, an interruption or a hang-up
+        // discards the turn the interruption belonged to, and an unreported
+        // barge-in is better than one attached to some later call's question.
+        pendingBarge = nil
     }
 
     private func answerQuestion(_ question: String) async {
@@ -440,7 +492,17 @@ final class CallSessionModel: ObservableObject {
         // Barge-in reopens the microphone as soon as audio starts, and a
         // confidence read after that belongs to a turn that has not been
         // asked yet.
-        let stt = dictation.lastConfidence
+        var stt = dictation.lastConfidence
+        // A barge-in ended the PREVIOUS answer, and this is the first question
+        // since - so it rides out here, where the frame is already going. No
+        // new request, no new endpoint, and nothing outward-facing: the server
+        // writes one content-free line so a week of calls can say how many of
+        // these were the caller and how many were ATARU hearing itself.
+        if let report = pendingBarge {
+            pendingBarge = nil
+            stt = (stt ?? STTConfidence())
+                .reportingBargeIn(level: report.level, afterMs: report.afterMs)
+        }
 
         // Streaming first: sentence audio starts while the model is still
         // writing. Any failure before audio starts falls through to the
@@ -674,6 +736,59 @@ enum EndOfTurn {
 
     static func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace || $0.isNewline }).count
+    }
+}
+
+/// The three constants the barge-in predicate turns on, served by the server.
+///
+/// They were all chosen in a Simulator, which has no hardware echo
+/// cancellation and no speaker in a room - so the one number that decides
+/// whether ATARU stops for the caller or stops for itself has never been set
+/// against a real handset on speakerphone. Tuning it meant a TestFlight build.
+///
+/// The server sends these on `/voice/vocabulary`, the fetch the call already
+/// makes. `.default` is what the app compiled in, and it is also exactly what
+/// an unconfigured server sends, so nothing changes until somebody changes it.
+/// A server that has never heard of the field leaves these at `.default` too.
+struct BargeInTuning: Equatable, Sendable {
+    /// Mic level above this counts as someone speaking. Peak amplitude 0...1,
+    /// where room tone sits near zero.
+    let level: Double
+    /// How long the level must hold before the interruption is believed. Zero
+    /// is the historical behaviour: the monitor samples every 120ms and acts
+    /// on the first sample that passes.
+    let sustainedMs: Int
+    /// How long after the answer starts speaking before the window opens at
+    /// all. Zero is the historical behaviour. The leading edge of TTS is its
+    /// loudest part and the most likely to get past the echo canceller.
+    let cooldownMs: Int
+
+    static let `default` = BargeInTuning(
+        level: CallSessionModel.voiceLevel, sustainedMs: 0, cooldownMs: 0)
+
+    /// A server's answer, with anything missing or nonsensical falling back to
+    /// the compiled constant.
+    ///
+    /// Fail-closed on purpose, and in the same shape as the server's own
+    /// guard: a level of 0 would interrupt on silence and a level of 1 would
+    /// never fire, so neither is a tuning anyone means.
+    init(level: Double?, sustainedMs: Int?, cooldownMs: Int?) {
+        // `.default` is built through the private initialiser below, so
+        // reading it here cannot recurse.
+        let fallback = BargeInTuning.default
+        if let level, level > 0, level < 1 {
+            self.level = level
+        } else {
+            self.level = fallback.level
+        }
+        self.sustainedMs = max(0, sustainedMs ?? fallback.sustainedMs)
+        self.cooldownMs = max(0, cooldownMs ?? fallback.cooldownMs)
+    }
+
+    private init(level: Double, sustainedMs: Int, cooldownMs: Int) {
+        self.level = level
+        self.sustainedMs = sustainedMs
+        self.cooldownMs = cooldownMs
     }
 }
 

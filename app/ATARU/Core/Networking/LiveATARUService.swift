@@ -113,6 +113,26 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(Roster.self, from: data).names
     }
 
+    func bargeInTuning() async throws -> BargeInTuning {
+        guard let url = endpoints.vocabulary else { throw APIError.invalidURL }
+        let (data, _) = try await perform(request(for: url))
+        // Every field optional, exactly like MorningStateReply: a server that
+        // answers this path without the object, or with half of it, must leave
+        // the app on its compiled constants rather than on a partial tuning.
+        struct Reply: Decodable {
+            struct Barge: Decodable {
+                let level: Double?
+                let sustained_ms: Int?
+                let cooldown_ms: Int?
+            }
+            let barge_in: Barge?
+        }
+        let barge = try decode(Reply.self, from: data).barge_in
+        return BargeInTuning(level: barge?.level,
+                             sustainedMs: barge?.sustained_ms,
+                             cooldownMs: barge?.cooldown_ms)
+    }
+
     func transcribe(samples: [Float]) async -> Transcription? {
         await RemoteTranscriber.transcribe(samples: samples, endpoints: endpoints,
                                            token: tokenProvider())

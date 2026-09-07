@@ -18,14 +18,51 @@ struct STTConfidence: Equatable, Sendable {
     let minLogprob: Double?
     let lowConfidence: Bool?
 
-    init(avgLogprob: Double? = nil, minLogprob: Double? = nil, lowConfidence: Bool? = nil) {
+    /// The caller cut in over the PREVIOUS answer and this is the first
+    /// question since.
+    ///
+    /// Outbound only - the server never sends this back. Barge-in fires on a
+    /// microphone level, and on a real handset the loudest thing near that
+    /// microphone is the speaker playing the answer it is meant to interrupt.
+    /// Some of these are therefore ATARU stopping itself, and nobody could
+    /// count them, because the phone told nobody it had fired.
+    ///
+    /// A count, never a recording. There is deliberately no field beside
+    /// these that could carry what was heard, and there never should be: what
+    /// makes a false trigger interesting is the level and the timing, and both
+    /// are numbers about audio in exactly the sense the three fields above
+    /// already are.
+    let bargeIn: Bool?
+    /// The microphone level that tripped it, 0...1.
+    let bargeLevel: Double?
+    /// How far into the interrupted answer it fired, in milliseconds. A run of
+    /// these clustered near zero is the leading edge of TTS leaking back in,
+    /// which is what the post-TTS cooldown exists to cover.
+    let bargeAfterMs: Int?
+
+    init(avgLogprob: Double? = nil, minLogprob: Double? = nil, lowConfidence: Bool? = nil,
+         bargeIn: Bool? = nil, bargeLevel: Double? = nil, bargeAfterMs: Int? = nil) {
         self.avgLogprob = avgLogprob
         self.minLogprob = minLogprob
         self.lowConfidence = lowConfidence
+        self.bargeIn = bargeIn
+        self.bargeLevel = bargeLevel
+        self.bargeAfterMs = bargeAfterMs
     }
 
     /// True only when the server SAID so. See the note above.
     var isLowConfidence: Bool { lowConfidence == true }
+
+    /// This measurement, plus the note that a barge-in preceded it.
+    ///
+    /// A copy rather than a mutation: the confidence read belongs to the
+    /// recogniser and the barge-in belongs to the call, and the one place they
+    /// travel together is the wire.
+    func reportingBargeIn(level: Double, afterMs: Int) -> STTConfidence {
+        STTConfidence(avgLogprob: avgLogprob, minLogprob: minLogprob,
+                      lowConfidence: lowConfidence,
+                      bargeIn: true, bargeLevel: level, bargeAfterMs: afterMs)
+    }
 
     /// The wire object, with unmeasured fields left out rather than sent as
     /// null. Empty when there is nothing to say, which is what callers use to
@@ -35,6 +72,13 @@ struct STTConfidence: Equatable, Sendable {
         if let avgLogprob { object["avg_logprob"] = avgLogprob }
         if let minLogprob { object["min_logprob"] = minLogprob }
         if let lowConfidence { object["low_confidence"] = lowConfidence }
+        // Only ever sent as true. A false would be a claim about every turn
+        // that was not interrupted, which is not this field's job.
+        if bargeIn == true {
+            object["barge_in"] = true
+            if let bargeLevel { object["barge_level"] = bargeLevel }
+            if let bargeAfterMs { object["barge_after_ms"] = bargeAfterMs }
+        }
         return object
     }
 }
@@ -44,6 +88,9 @@ extension STTConfidence: Codable {
         case avgLogprob = "avg_logprob"
         case minLogprob = "min_logprob"
         case lowConfidence = "low_confidence"
+        case bargeIn = "barge_in"
+        case bargeLevel = "barge_level"
+        case bargeAfterMs = "barge_after_ms"
     }
 }
 

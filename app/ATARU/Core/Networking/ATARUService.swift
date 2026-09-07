@@ -54,6 +54,14 @@ protocol ATARUService: AnyObject, Sendable {
     /// unbiased transcription, which is where this started.
     func vocabulary() async throws -> [String]
 
+    /// The barge-in constants the server wants this call to use.
+    ///
+    /// Served on the same endpoint as the roster, so this is a second read of
+    /// a response the call already fetches rather than a new round trip. A
+    /// backend that says nothing about it gets `.default`, which is what the
+    /// app compiled in - see the extension below.
+    func bargeInTuning() async throws -> BargeInTuning
+
     /// A turn's audio, transcribed server-side against that same roster.
     ///
     /// Returns nil rather than throwing: every caller has a working local
@@ -164,6 +172,12 @@ protocol ATARUService: AnyObject, Sendable {
 extension ATARUService {
     /// Backends without streaming (Demo) inherit the blocking path.
     func voiceStream() -> VoiceStreamSession? { nil }
+
+    /// A backend that does not serve the constants leaves the app on the ones
+    /// it compiled in - which is also exactly what an unconfigured server
+    /// sends, so there is one behaviour here and not two. (Also keeps the
+    /// test stubs compiling without learning the vocabulary.)
+    func bargeInTuning() async throws -> BargeInTuning { .default }
 
     /// Backends without a plan store report an empty day rather than failing;
     /// the tile renders its empty state and the rest of the app is untouched.
