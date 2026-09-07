@@ -1,6 +1,17 @@
 import AVFoundation
 import Foundation
 
+/// What `StreamingAnswerPlayer.begin` refuses to play.
+enum StreamingAudioError: Error, Equatable {
+    /// The stream asked for a format that cannot describe audio at all.
+    /// Caught here rather than at the AVFAudio seam: `AVAudioFormat` does not
+    /// return nil for a zero sample rate, it raises an Objective-C exception,
+    /// which is not catchable from Swift and takes the process with it.
+    case invalidFormat(sampleRate: Double, channels: Int)
+    /// The combination was well-formed but AVFAudio still would not build it.
+    case unplayableFormat(sampleRate: Double, channels: Int)
+}
+
 /// Plays raw PCM audio as it arrives off the voice stream.
 ///
 /// `AnswerPlayer` needs a complete file before the first sample is heard;
@@ -49,9 +60,35 @@ final class StreamingAnswerPlayer {
 
     private(set) var isActive = false
 
+    /// How `begin` builds its playback format.
+    ///
+    /// A seam, for one reason: AVFAudio's failable initialiser is not failable
+    /// for every bad input. Given a sample rate of zero it raises an
+    /// Objective-C exception instead of returning nil, so the "AVFAudio said
+    /// no" branch cannot be provoked from a test with a bad argument without
+    /// killing the process. Tests substitute a factory that fails the way the
+    /// initialiser is documented to; production keeps the real one, behind the
+    /// argument check in `begin`.
+    var makeFormat: (Double, Int) -> AVAudioFormat? = { sampleRate, channels in
+        AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                      sampleRate: sampleRate,
+                      channels: AVAudioChannelCount(channels),
+                      interleaved: false)
+    }
+
     /// Prepares the engine for a stream in the given format. Safe to call per
     /// sentence; it only rebuilds when the format actually changes.
     func begin(sampleRate: Double, channels: Int) throws {
+        // Both numbers arrive off the wire, in the stream's `audioBegin`
+        // frame, so a malformed or truncated frame reaches AVFAudio directly.
+        // `AVAudioFormat` answers a zero sample rate with an Objective-C
+        // exception rather than nil, which no `catch` in this app can see - a
+        // bad frame would take the whole process down mid-call. Check first,
+        // and throw something Swift can handle.
+        guard sampleRate.isFinite, sampleRate > 0, channels > 0, channels <= 8 else {
+            throw StreamingAudioError.invalidFormat(sampleRate: sampleRate, channels: channels)
+        }
+
         if isActive, let format, format.sampleRate == sampleRate,
            format.channelCount == AVAudioChannelCount(channels) {
             return
@@ -86,11 +123,8 @@ final class StreamingAnswerPlayer {
             AudioSessionOwner.shared.markActive()
         }
 
-        guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: sampleRate,
-                                         channels: AVAudioChannelCount(channels),
-                                         interleaved: false) else {
-            throw VoiceStreamError.protocolViolation("unplayable format")
+        guard let format = makeFormat(sampleRate, channels) else {
+            throw StreamingAudioError.unplayableFormat(sampleRate: sampleRate, channels: channels)
         }
         self.format = format
 

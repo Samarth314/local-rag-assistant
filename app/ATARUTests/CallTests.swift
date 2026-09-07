@@ -193,10 +193,46 @@ final class AudioSessionHoldTests: XCTestCase {
         let player = StreamingAnswerPlayer()
         player.managesAudioSession = false
 
-        // An unbuildable format: the throw site just past the retain.
-        XCTAssertThrowsError(try player.begin(sampleRate: 0, channels: 0))
+        // The throw site just past the retain: AVFAudio declining to build the
+        // format. Provoked through the factory rather than by passing
+        // `sampleRate: 0`, which is how this test used to do it - AVFAudio
+        // answers a zero sample rate with an Objective-C exception, not nil,
+        // so the argument never reached this branch and the exception took the
+        // test process with it instead. A bad sample rate is now refused
+        // before AVFAudio sees it, and is covered by the test below.
+        player.makeFormat = { _, _ in nil }
+
+        XCTAssertThrowsError(try player.begin(sampleRate: 24_000, channels: 1)) { error in
+            XCTAssertEqual(error as? StreamingAudioError,
+                           .unplayableFormat(sampleRate: 24_000, channels: 1))
+        }
         XCTAssertFalse(AudioSessionOwner.shared.inUse,
                        "a begin that threw must not leave a holder behind")
+    }
+
+    /// The sample rate and channel count come straight off the wire, in the
+    /// stream's `audioBegin` frame. `AVAudioFormat` does not return nil for a
+    /// zero sample rate - it raises an Objective-C exception, uncatchable from
+    /// Swift - so a malformed frame used to be able to kill the app mid-call.
+    /// `begin` has to reject one before AVFAudio is handed it at all.
+    func testStreamingPlayerRefusesAnImpossibleFormatBeforeAVFAudioSeesIt() {
+        let player = StreamingAnswerPlayer()
+        player.managesAudioSession = false
+
+        var reachedAVFAudio = false
+        player.makeFormat = { _, _ in
+            reachedAVFAudio = true
+            return nil
+        }
+
+        XCTAssertThrowsError(try player.begin(sampleRate: 0, channels: 0)) { error in
+            XCTAssertEqual(error as? StreamingAudioError,
+                           .invalidFormat(sampleRate: 0, channels: 0))
+        }
+        XCTAssertFalse(reachedAVFAudio,
+                       "an impossible format must never reach AVAudioFormat")
+        XCTAssertFalse(AudioSessionOwner.shared.inUse,
+                       "and it must not leave a holder behind either")
     }
 
     /// The counting itself, since both fixes lean on it: only the drop to zero
