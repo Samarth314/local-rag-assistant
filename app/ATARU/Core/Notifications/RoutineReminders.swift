@@ -67,8 +67,17 @@ enum RoutineReminders {
         guard await hasPermission(center) else { return }
 
         let body = Self.body(for: routine)
+        // THE DAY BOUNDARY IS THE SERVER'S. The routine's check-off log is
+        // written against the vault machine's local day, and `tz` is that
+        // machine's zone as the server reports it - so "18:00" means 18:00
+        // there, not 18:00 wherever the phone happens to be. On a trip that is
+        // the difference between a nudge in the evening and one at 3am, and
+        // between a reminder about today's list and one about a day the server
+        // has already closed. An unknown or absent identifier falls back to
+        // the phone's own calendar, which is what this always did.
+        let scheduling = Self.calendar(for: routine, default: calendar)
         for time in routine.reminderTimes {
-            guard let fire = fireDate(time, on: now, calendar: calendar),
+            guard let fire = fireDate(time, on: now, calendar: scheduling),
                   fire > now else { continue }
             let content = UNMutableNotificationContent()
             // Generic title, the detail in the body - the same shape the
@@ -81,7 +90,7 @@ enum RoutineReminders {
                 identifier: "\(prefix)\(routine.date).\(time)",
                 content: content,
                 trigger: UNCalendarNotificationTrigger(
-                    dateMatching: calendar.dateComponents(
+                    dateMatching: scheduling.dateComponents(
                         [.year, .month, .day, .hour, .minute], from: fire),
                     repeats: false))
             try? await center.add(request)
@@ -105,13 +114,23 @@ enum RoutineReminders {
             + routine.remaining.map(\.label).joined(separator: ", ")
     }
 
-    /// "18:00" against today's date, in the PHONE's calendar.
+    /// The calendar the reminders are scheduled in: the server's zone when it
+    /// named one this phone recognises, the phone's own otherwise.
     ///
-    /// The routine's day boundary is the server's, and this is the one place
-    /// that cannot honour it: a local notification fires on this device's
-    /// clock and there is nowhere else to put the hour. It is a fallback for a
-    /// phone that is with him, so the two agree in every case that matters,
-    /// and the pushed version - which is the normal one - has no such gap.
+    /// `UNCalendarNotificationTrigger` reads the zone off the `DateComponents`
+    /// it is given, and `Calendar.dateComponents(_:from:)` stamps its own zone
+    /// onto what it returns - so setting it here is what carries the server's
+    /// day boundary all the way into the scheduled notification.
+    static func calendar(for routine: DailyRoutine,
+                         default fallback: Calendar) -> Calendar {
+        guard let zone = TimeZone(identifier: routine.tz) else { return fallback }
+        var calendar = fallback
+        calendar.timeZone = zone
+        return calendar
+    }
+
+    /// "18:00" against today's date, in the calendar it is handed - the
+    /// server's zone when it named one, this device's otherwise.
     private static func fireDate(_ time: String, on day: Date,
                                  calendar: Calendar) -> Date? {
         let parts = time.split(separator: ":")

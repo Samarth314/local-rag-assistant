@@ -39,15 +39,29 @@ struct STTConfidence: Equatable, Sendable {
     /// these clustered near zero is the leading edge of TTS leaking back in,
     /// which is what the post-TTS cooldown exists to cover.
     let bargeAfterMs: Int?
+    /// The echo floor `BargeInDetector` had measured when it fired, 0...1.
+    ///
+    /// The level alone stopped being interpretable the day the threshold
+    /// became adaptive: 0.31 over a floor of 0.28 is the room, and 0.31 over
+    /// a floor of 0.02 is a person. Without this the journal cannot tell
+    /// those apart, which is the whole question it was built to answer.
+    let bargeFloor: Double?
+    /// The margin the level had to clear the floor by, 0...1 - the server's
+    /// own tuning as the phone actually applied it, so a journal line stays
+    /// readable after somebody changes the environment variable.
+    let bargeMargin: Double?
 
     init(avgLogprob: Double? = nil, minLogprob: Double? = nil, lowConfidence: Bool? = nil,
-         bargeIn: Bool? = nil, bargeLevel: Double? = nil, bargeAfterMs: Int? = nil) {
+         bargeIn: Bool? = nil, bargeLevel: Double? = nil, bargeAfterMs: Int? = nil,
+         bargeFloor: Double? = nil, bargeMargin: Double? = nil) {
         self.avgLogprob = avgLogprob
         self.minLogprob = minLogprob
         self.lowConfidence = lowConfidence
         self.bargeIn = bargeIn
         self.bargeLevel = bargeLevel
         self.bargeAfterMs = bargeAfterMs
+        self.bargeFloor = bargeFloor
+        self.bargeMargin = bargeMargin
     }
 
     /// True only when the server SAID so. See the note above.
@@ -58,10 +72,12 @@ struct STTConfidence: Equatable, Sendable {
     /// A copy rather than a mutation: the confidence read belongs to the
     /// recogniser and the barge-in belongs to the call, and the one place they
     /// travel together is the wire.
-    func reportingBargeIn(level: Double, afterMs: Int) -> STTConfidence {
+    func reportingBargeIn(level: Double, afterMs: Int,
+                          floor: Double, margin: Double) -> STTConfidence {
         STTConfidence(avgLogprob: avgLogprob, minLogprob: minLogprob,
                       lowConfidence: lowConfidence,
-                      bargeIn: true, bargeLevel: level, bargeAfterMs: afterMs)
+                      bargeIn: true, bargeLevel: level, bargeAfterMs: afterMs,
+                      bargeFloor: floor, bargeMargin: margin)
     }
 
     /// The wire object, with unmeasured fields left out rather than sent as
@@ -78,6 +94,8 @@ struct STTConfidence: Equatable, Sendable {
             object["barge_in"] = true
             if let bargeLevel { object["barge_level"] = bargeLevel }
             if let bargeAfterMs { object["barge_after_ms"] = bargeAfterMs }
+            if let bargeFloor { object["barge_floor"] = bargeFloor }
+            if let bargeMargin { object["barge_margin"] = bargeMargin }
         }
         return object
     }
@@ -91,6 +109,8 @@ extension STTConfidence: Codable {
         case bargeIn = "barge_in"
         case bargeLevel = "barge_level"
         case bargeAfterMs = "barge_after_ms"
+        case bargeFloor = "barge_floor"
+        case bargeMargin = "barge_margin"
     }
 }
 

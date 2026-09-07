@@ -257,6 +257,27 @@ final class SpeechDictation: NSObject, ObservableObject {
     /// still reached for the session mid-call.
     var managesAudioSession = true
 
+    /// Whether the capture engine uses Apple's voice-processing input unit -
+    /// hardware echo cancellation, noise suppression, AGC off.
+    ///
+    /// TRUE ONLY DURING A CALL, and false everywhere else on purpose.
+    ///
+    /// A call is the one place in this app where the microphone is open while
+    /// the loudspeaker is playing, so it is the one place that needs an echo
+    /// canceller - and the one place that can afford what it costs. Voice
+    /// processing narrows the input (mono, band-limited, noise-suppressed),
+    /// which is right for a phone call and wrong for the Ask tab, where the
+    /// same capture is also the audio the Orin transcribes and nothing is
+    /// playing back to cancel.
+    ///
+    /// The session mode was already `.voiceChat`
+    /// (`CallService.configureAudioSession`) and the comments in this app said
+    /// that meant echo cancellation. It does not, for this capture path: an
+    /// `AVAudioEngine` input node is a plain RemoteIO until somebody asks for
+    /// the voice-processing one, which is what `openInput` now does. The mode
+    /// buys routing and tuning; the unit buys AEC.
+    var usesVoiceProcessing = false
+
     /// Asks for microphone and speech permission.
     ///
     /// Static so onboarding can ask before any dictation object exists; the
@@ -325,9 +346,55 @@ final class SpeechDictation: NSObject, ObservableObject {
         captured.reset()
         resampler.reset()
         try armRecognizer()
+        do {
+            try openInput(voiceProcessing: usesVoiceProcessing)
+        } catch {
+            // A phone that will not open a voice-processing input still has to
+            // be able to hear the caller. Falling back loses echo cancellation
+            // (the adaptive floor in `BargeInDetector` is what covers that);
+            // not falling back loses the call.
+            guard usesVoiceProcessing,
+                  (try? openInput(voiceProcessing: false)) != nil else {
+                cleanUp()
+                throw Failure.engine(error.localizedDescription)
+            }
+            voiceLog.notice("dictation: voice processing unavailable, plain input")
+        }
+        isRecording = true
+    }
+
+    /// Starts the capture engine, with or without Apple's voice-processing
+    /// input unit.
+    ///
+    /// ORDER MATTERS AND IS THE WHOLE POINT: voice processing changes the
+    /// input node's format (typically to mono at the hardware rate), so it is
+    /// switched on BEFORE `outputFormat(forBus:)` is read and the tap is
+    /// installed against whatever the node reports afterwards. A hardcoded
+    /// format here, or a format read before the switch, is a tap that throws
+    /// on the first buffer.
+    ///
+    /// Everything downstream already copes: `Resampler` rebuilds its converter
+    /// whenever the input format changes and targets 16 kHz mono regardless,
+    /// which is what the Orin is sent; `SFSpeechAudioBufferRecognitionRequest`
+    /// takes the buffers as they come; and `peakLevel` reads channel 0 of a
+    /// float buffer, which mono still is.
+    private func openInput(voiceProcessing: Bool) throws {
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
         input.removeTap(onBus: 0)
+        engine.stop()
+        if input.isVoiceProcessingEnabled != voiceProcessing {
+            try input.setVoiceProcessingEnabled(voiceProcessing)
+        }
+        if voiceProcessing {
+            // AEC and noise suppression yes, AUTOMATIC GAIN CONTROL no. AGC
+            // normalises the input, which would move the microphone level the
+            // barge-in floor is measured in - and worse, would quietly pull
+            // residual echo back UP toward speech during the quiet parts of an
+            // answer. The barge-in detector wants a level that means the same
+            // thing from one second to the next more than it wants a loud one.
+            input.isVoiceProcessingAGCEnabled = false
+        }
+        let format = input.outputFormat(forBus: 0)
         let resampler = self.resampler
         let captured = self.captured
         let requestBox = self.requestBox
@@ -337,15 +404,8 @@ final class SpeechDictation: NSObject, ObservableObject {
             let peak = Self.peakLevel(of: buffer)
             Task { @MainActor in self?.level = peak }
         }
-
         engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            cleanUp()
-            throw Failure.engine(error.localizedDescription)
-        }
-        isRecording = true
+        try engine.start()
     }
 
     /// Starts a recognition task over the audio being captured.

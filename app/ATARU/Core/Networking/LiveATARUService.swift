@@ -122,6 +122,12 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         struct Reply: Decodable {
             struct Barge: Decodable {
                 let level: Double?
+                /// How far over the measured echo floor a level has to be.
+                /// Optional like the rest, and a server that predates it
+                /// leaves the app on its compiled 0.10 rather than on zero -
+                /// zero would hand the whole decision back to `level`, which
+                /// is the guess this knob exists to stop relying on.
+                let margin: Double?
                 let sustained_ms: Int?
                 let cooldown_ms: Int?
             }
@@ -129,6 +135,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         }
         let barge = try decode(Reply.self, from: data).barge_in
         return BargeInTuning(level: barge?.level,
+                             margin: barge?.margin,
                              sustainedMs: barge?.sustained_ms,
                              cooldownMs: barge?.cooldown_ms)
     }

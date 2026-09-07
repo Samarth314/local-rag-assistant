@@ -32,6 +32,11 @@ final class CallSessionModel: ObservableObject {
     /// Mic level above this counts as someone speaking. `level` is a peak
     /// amplitude scaled to 0...1, where room tone sits near zero.
     static let voiceLevel: Double = 0.12
+    /// How far a level has to sit above the ECHO FLOOR that
+    /// `BargeInDetector` measures during an answer before it counts as
+    /// somebody cutting in. The absolute `voiceLevel` above is a lower bound
+    /// under this, not a replacement for it - see `BargeInDetector`.
+    static let bargeMargin: Double = 0.10
     /// The longest a single turn may run, whatever either gate thinks.
     static let turnDeadline: Duration = .seconds(20)
     /// Consecutive turns that may produce nothing before the call hangs up.
@@ -83,7 +88,14 @@ final class CallSessionModel: ObservableObject {
 
     /// What the last barge-in measured, waiting to ride out on the next
     /// question. Cleared as it is read - one interruption, one report.
-    private var pendingBarge: (level: Double, afterMs: Int)?
+    ///
+    /// `floor` and `margin` ride along with the level (2026-09-07) because the
+    /// level on its own stopped meaning anything the day the threshold became
+    /// adaptive: 0.31 is a false trigger over a floor of 0.28 and a plain
+    /// interruption over a floor of 0.02, and the journal cannot tell which
+    /// without being told what it was compared against.
+    private var pendingBarge: (level: Double, afterMs: Int,
+                               floor: Double, margin: Double)?
     /// The poll that watches for an interruption while ATARU speaks.
     private var bargeMonitor: Task<Void, Never>?
 
@@ -107,6 +119,15 @@ final class CallSessionModel: ObservableObject {
         // activated it - on the FIRST turn of every call. See
         // `SpeechDictation.managesAudioSession`.
         dictation.managesAudioSession = false
+        // AND the echo canceller, which is the other half of that story. The
+        // session was already in `.voiceChat` mode and the comments here said
+        // that was hardware AEC; it is not, for an `AVAudioEngine` input node,
+        // which is a plain RemoteIO until it is asked to be the
+        // voice-processing one. Barge-in keeps the microphone open through
+        // playback, so this call is the one place in the app where the
+        // loudspeaker's output is being recorded - and the one place that
+        // needs it. See `SpeechDictation.usesVoiceProcessing`.
+        dictation.usesVoiceProcessing = true
     }
 
     /// What drives the orb: the caller's voice while listening, ATARU's own
@@ -389,12 +410,20 @@ final class CallSessionModel: ObservableObject {
     /// "otherwise it hears itself and answers its own answer". Three things
     /// stand between us and that, in order of how much they are worth:
     ///
-    ///  1. `AVAudioSession` is in `.voiceChat` mode for the whole call
-    ///     (`CallService.configureAudioSession`), which is hardware echo
-    ///     cancellation. This is the one that actually does the work, and it
-    ///     is the one a Simulator does not have.
-    ///  2. The level gate: playback leaking back in sits well under the
-    ///     threshold real speech clears.
+    ///  1. Apple's voice-processing input, which is the hardware echo
+    ///     canceller and which this call turns on
+    ///     (`SpeechDictation.usesVoiceProcessing`, set in `init`). Session
+    ///     mode `.voiceChat` alone was NOT doing this: an `AVAudioEngine`
+    ///     input node is a plain RemoteIO until somebody asks for the
+    ///     voice-processing one, so the comment that used to sit here was
+    ///     describing cancellation the capture path never had. It is also
+    ///     the one a Simulator does not have, which is why it is allowed to
+    ///     fail silently and why it is not the thing being relied on.
+    ///  2. `BargeInDetector`: the level has to clear the echo floor the
+    ///     detector MEASURES during this very answer, with a rising edge and
+    ///     a sustain. This is the gate that does not depend on a constant
+    ///     anybody guessed, and it is the reason steady echo cannot fire
+    ///     however loud the room is.
     ///  3. `BargeIn.isEcho`, a text backstop for whatever gets past both.
     ///
     /// And a kill switch above all three, because a room this misbehaves in is
@@ -408,48 +437,47 @@ final class CallSessionModel: ObservableObject {
             // never take the answer down with it.
             do { try dictation.start() } catch { return }
         }
-        let tuning = bargeTuning
+        // One detector per answer, and it starts by measuring rather than
+        // deciding: the microphone is open from the first sample precisely so
+        // the first 400ms of echo can be sampled before anything is judged
+        // against it. See `BargeInDetector`.
+        let detector = BargeInDetector(tuning: bargeTuning)
         let opened = ContinuousClock.now
         bargeMonitor = Task { @MainActor [weak self] in
-            // When the level first crossed and has held since. Reset the
-            // moment it drops, so `sustainedMs` means a continuous hold rather
-            // than a total across the answer - a rattle that crosses the gate
-            // on alternate samples is the case it exists to reject.
-            var holdingSince: ContinuousClock.Instant?
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(120))
                 guard let self, !Task.isCancelled else { return }
+                // A muted or interrupted stretch feeds the detector nothing.
+                // Not zeros: a run of zeros would drag the measured floor to
+                // the bottom and hand the next real sample a rising edge it
+                // did not earn.
                 guard self.phase == .speaking, !self.isMuted, !self.isInterrupted else {
-                    holdingSince = nil
                     continue
                 }
                 let now = ContinuousClock.now
-                // THE COOLDOWN. The loudest part of an answer is its first
-                // syllable, and it is the part most likely to reach the
-                // microphone past the echo canceller. Zero by default, which
-                // is the behaviour this has always had.
-                if tuning.cooldownMs > 0,
-                   now - opened < .milliseconds(tuning.cooldownMs) { continue }
+                let afterMs = Int((now - opened) / .milliseconds(1))
+                // THE LEVEL GATE, which is now a measurement rather than a
+                // constant: calibration, adaptive floor, margin, rising edge
+                // and sustain all live inside `feed`.
+                guard detector.feed(level: Float(self.dictation.level),
+                                    at: afterMs) else { continue }
+                // THE TEXT BACKSTOP, unchanged: words, and not a run lifted
+                // out of the sentence being spoken.
                 guard BargeIn.shouldInterrupt(partial: self.dictation.transcript,
                                               level: self.dictation.level,
                                               spokenSoFar: self.answer,
-                                              voiceLevel: tuning.level) else {
-                    holdingSince = nil
+                                              voiceLevel: detector.tuning.level) else {
                     continue
                 }
-                // THE SUSTAIN. Also zero by default - the predicate has always
-                // acted on the first sample that passed - and the knob for a
-                // room where the speaker echoes into the microphone in bursts.
-                let began = holdingSince ?? now
-                holdingSince = began
-                if tuning.sustainedMs > 0,
-                   now - began < .milliseconds(tuning.sustainedMs) { continue }
                 self.bargedIn = true
                 // COUNTED, so false triggers can be. Content-free: the level
-                // that tripped it and how far into the answer, nothing else.
-                // Read on the next question - see `answerQuestion`.
+                // that tripped it, what it was measured against, and how far
+                // into the answer. Read on the next question - see
+                // `answerQuestion`.
                 self.pendingBarge = (level: self.dictation.level,
-                                     afterMs: Int((now - opened) / .milliseconds(1)))
+                                     afterMs: afterMs,
+                                     floor: detector.floor,
+                                     margin: detector.margin)
                 voiceLog.notice("barge-in: the caller cut in over the answer")
                 // Silence, now - and everything queued behind it goes too.
                 self.player.stop()
@@ -501,7 +529,8 @@ final class CallSessionModel: ObservableObject {
         if let report = pendingBarge {
             pendingBarge = nil
             stt = (stt ?? STTConfidence())
-                .reportingBargeIn(level: report.level, afterMs: report.afterMs)
+                .reportingBargeIn(level: report.level, afterMs: report.afterMs,
+                                  floor: report.floor, margin: report.margin)
         }
 
         // Streaming first: sentence audio starts while the model is still
@@ -739,12 +768,17 @@ enum EndOfTurn {
     }
 }
 
-/// The three constants the barge-in predicate turns on, served by the server.
+/// The four constants the barge-in predicate turns on, served by the server.
 ///
 /// They were all chosen in a Simulator, which has no hardware echo
 /// cancellation and no speaker in a room - so the one number that decides
 /// whether ATARU stops for the caller or stops for itself has never been set
 /// against a real handset on speakerphone. Tuning it meant a TestFlight build.
+///
+/// `margin` (added 2026-09-07) is the one that makes the rest of them matter
+/// less: it is measured against the echo floor `BargeInDetector` builds during
+/// the answer rather than against a level somebody guessed, so the predicate
+/// no longer depends on `level` being right for the room.
 ///
 /// The server sends these on `/voice/vocabulary`, the fetch the call already
 /// makes. `.default` is what the app compiled in, and it is also exactly what
@@ -752,27 +786,39 @@ enum EndOfTurn {
 /// A server that has never heard of the field leaves these at `.default` too.
 struct BargeInTuning: Equatable, Sendable {
     /// Mic level above this counts as someone speaking. Peak amplitude 0...1,
-    /// where room tone sits near zero.
+    /// where room tone sits near zero. An absolute FLOOR under the adaptive
+    /// threshold now, rather than the threshold itself.
     let level: Double
+    /// How far above the measured echo floor a level has to be. This is the
+    /// knob that actually decides echo from speech: 0.10 on the 0...1 peak
+    /// scale is roughly the gap between an answer leaking back in and a voice
+    /// close to the microphone. Zero disables the relative half of the
+    /// threshold; the rising edge and the sustain still apply.
+    let margin: Double
     /// How long the level must hold before the interruption is believed. Zero
-    /// is the historical behaviour: the monitor samples every 120ms and acts
-    /// on the first sample that passes.
+    /// is the historical behaviour, and `BargeInDetector` still enforces its
+    /// own two-sample minimum underneath it.
     let sustainedMs: Int
     /// How long after the answer starts speaking before the window opens at
-    /// all. Zero is the historical behaviour. The leading edge of TTS is its
-    /// loudest part and the most likely to get past the echo canceller.
+    /// all. Zero is the historical behaviour, and the detector's 400ms
+    /// calibration window is the effective minimum in any case. The leading
+    /// edge of TTS is its loudest part and the most likely to get past the
+    /// echo canceller.
     let cooldownMs: Int
 
     static let `default` = BargeInTuning(
-        level: CallSessionModel.voiceLevel, sustainedMs: 0, cooldownMs: 0)
+        level: CallSessionModel.voiceLevel, margin: CallSessionModel.bargeMargin,
+        sustainedMs: 0, cooldownMs: 0)
 
     /// A server's answer, with anything missing or nonsensical falling back to
     /// the compiled constant.
     ///
     /// Fail-closed on purpose, and in the same shape as the server's own
     /// guard: a level of 0 would interrupt on silence and a level of 1 would
-    /// never fire, so neither is a tuning anyone means.
-    init(level: Double?, sustainedMs: Int?, cooldownMs: Int?) {
+    /// never fire, so neither is a tuning anyone means. A margin of 0 IS
+    /// meaningful (it says "trust the absolute level"), so it is accepted;
+    /// negative and >= 1 are not.
+    init(level: Double?, margin: Double?, sustainedMs: Int?, cooldownMs: Int?) {
         // `.default` is built through the private initialiser below, so
         // reading it here cannot recurse.
         let fallback = BargeInTuning.default
@@ -781,12 +827,18 @@ struct BargeInTuning: Equatable, Sendable {
         } else {
             self.level = fallback.level
         }
+        if let margin, margin >= 0, margin < 1 {
+            self.margin = margin
+        } else {
+            self.margin = fallback.margin
+        }
         self.sustainedMs = max(0, sustainedMs ?? fallback.sustainedMs)
         self.cooldownMs = max(0, cooldownMs ?? fallback.cooldownMs)
     }
 
-    private init(level: Double, sustainedMs: Int, cooldownMs: Int) {
+    private init(level: Double, margin: Double, sustainedMs: Int, cooldownMs: Int) {
         self.level = level
+        self.margin = margin
         self.sustainedMs = sustainedMs
         self.cooldownMs = cooldownMs
     }
