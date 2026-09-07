@@ -157,6 +157,58 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         }
     }
 
+    // MARK: Daily routine (in-memory)
+
+    /// The same four items the vault carries, so the Health screen's checklist
+    /// is fully tickable in Demo mode - which is where the tile design is
+    /// judged, and where the UI suite drives it. State lives for the process
+    /// and resets on relaunch, exactly like the demo plan above.
+    private static let routineLock = NSLock()
+    nonisolated(unsafe) private static var routineState = DailyRoutine(
+        date: DailyPlan.todayKey,
+        tz: TimeZone.current.abbreviation() ?? "",
+        items: [
+            RoutineItem(id: "vitamin-d3", label: "Vitamin D3",
+                        detail: "1 tablet", done: true, doneAt: "08:20"),
+            RoutineItem(id: "white-pine", label: "White pine",
+                        detail: "1 tablet", done: false, doneAt: nil),
+            RoutineItem(id: "green-juice", label: "Green juice",
+                        detail: "1 glass", done: false, doneAt: nil),
+            RoutineItem(id: "red-light", label: "Red light",
+                        detail: "25 min, Iris Store helmet",
+                        done: false, doneAt: nil)],
+        reminderTimes: ["12:00", "18:00", "21:00"])
+
+    func routine() async throws -> DailyRoutine {
+        try await pause()
+        Self.routineLock.lock()
+        defer { Self.routineLock.unlock() }
+        return Self.routineState
+    }
+
+    func routineSetDone(id: String, done: Bool) async throws -> DailyRoutine {
+        try await pause()
+        Self.routineLock.lock()
+        defer { Self.routineLock.unlock() }
+        // `setting` is the domain model's own optimistic flip, reused rather
+        // than reimplemented: a demo that ticked rows differently from the
+        // real service would be a fixture that hides bugs instead of showing
+        // them. The one thing added is the timestamp, which the real server
+        // supplies.
+        let stamp = DateFormatter()
+        stamp.dateFormat = "HH:mm"
+        Self.routineState = DailyRoutine(
+            date: Self.routineState.date, tz: Self.routineState.tz,
+            items: Self.routineState.setting(id: id, done: done).items.map {
+                $0.id == id && done && $0.doneAt == nil
+                    ? RoutineItem(id: $0.id, label: $0.label, detail: $0.detail,
+                                  done: true, doneAt: stamp.string(from: Date()))
+                    : $0
+            },
+            reminderTimes: Self.routineState.reminderTimes)
+        return Self.routineState
+    }
+
     private func pause() async throws {
         try await Task.sleep(for: latency)
     }

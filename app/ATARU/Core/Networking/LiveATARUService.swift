@@ -226,6 +226,34 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         let done: Bool
     }
 
+    // MARK: - Daily routine
+
+    func routine() async throws -> DailyRoutine {
+        guard let url = endpoints.url("api/health/routine") else {
+            throw APIError.invalidURL
+        }
+        let (data, _) = try await perform(request(for: url))
+        return try decode(DTO.Routine.self, from: data).domain
+    }
+
+    func routineSetDone(id: String, done: Bool) async throws -> DailyRoutine {
+        guard let url = endpoints.url("api/health/routine/check") else {
+            throw APIError.invalidURL
+        }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            RoutineCheckBody(id: id, done: done))
+        let (data, _) = try await perform(request)
+        return try decode(DTO.Routine.self, from: data).domain
+    }
+
+    private struct RoutineCheckBody: Encodable {
+        let id: String
+        let done: Bool
+    }
+
     // MARK: - Morning call
 
     func morningSchedule() async throws -> MorningSchedule {

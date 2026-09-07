@@ -93,6 +93,25 @@ protocol ATARUService: AnyObject, Sendable {
     func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan
     func planRemove(section: String, index: Int) async throws -> DailyPlan
 
+    // MARK: Daily routine
+
+    /// The daily health routine - the four things Arya does every single day,
+    /// and whether each has happened today.
+    ///
+    /// Backed by the CHAT server (`/api/health/routine`) and the vault file
+    /// behind it, NOT by the read-only health-view backend the rest of the
+    /// Health screen reads. That one is a dashboard renderer with no writer in
+    /// it; this list is ticked from the phone, so it has to talk to the
+    /// service that owns the vault.
+    func routine() async throws -> DailyRoutine
+
+    /// Ticks one item off, or un-ticks it, and returns the WHOLE new list.
+    ///
+    /// The full list rather than an acknowledgement, so an optimistic tick is
+    /// replaced by the truth in one round trip instead of being merged into
+    /// by hand - the same choice `planSetDone` makes.
+    func routineSetDone(id: String, done: Bool) async throws -> DailyRoutine
+
     // MARK: Morning call
 
     /// When tomorrow's first morning call is set to ring.
@@ -186,6 +205,15 @@ extension ATARUService {
     func planAdd(_ text: String, top3: Bool) async throws -> DailyPlan { .empty() }
     func planSetDone(section: String, index: Int, done: Bool) async throws -> DailyPlan { .empty() }
     func planRemove(section: String, index: Int) async throws -> DailyPlan { .empty() }
+
+    /// Same reasoning as the plan defaults, and the same caveat: these exist
+    /// so the test stubs compile without learning the vocabulary. Demo and
+    /// Live both implement the routine for real, and the LIVE one deliberately
+    /// throws when the route is missing rather than inheriting this - an empty
+    /// checklist that silently refuses every tap is the one answer worse than
+    /// an error, so the screen has to be able to tell the two apart.
+    func routine() async throws -> DailyRoutine { .empty }
+    func routineSetDone(id: String, done: Bool) async throws -> DailyRoutine { .empty }
 
     /// A backend that has no use for the confidence hint answers the question
     /// exactly as it always did. The hint is additive by construction: nothing

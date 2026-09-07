@@ -392,6 +392,13 @@ struct HealthScreen: View {
                     }
                 }
 
+                // First on the page, above everything the health-view backend
+                // renders: it is the only thing here he ACTS on, and the four
+                // things he does every day are the reason he opens this screen
+                // at noon. It owns its own loading and its own backend - see
+                // RoutineCard.
+                RoutineCard()
+
                 if let panels = payload?.panels, let date = panels.latest_date {
                     ATCard {
                         HStack {

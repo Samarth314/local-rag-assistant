@@ -62,6 +62,16 @@ final class RemotePushService: NSObject, ObservableObject {
 
     private override init() { super.init() }
 
+    /// Whether the SERVER can reach this phone - a token that was issued AND
+    /// accepted by the backend.
+    ///
+    /// Deliberately not just `token != nil`. A token this app holds but never
+    /// managed to upload reaches nothing, and it is precisely that case the
+    /// routine's local fallback exists for: keying the fallback on the token
+    /// alone would suppress it in the one situation where it is needed. See
+    /// RoutineReminders.
+    var isReachableByServer: Bool { token != nil && registrationError == nil }
+
     /// Ask, then register. Call once per launch.
     ///
     /// Nothing here blocks the UI: the caller does not await it, the
@@ -159,5 +169,59 @@ extension RemotePushService: UNUserNotificationCenterDelegate {
             @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+
+    /// A tap on a notification, routed to the screen it is about.
+    ///
+    /// Only the routine reminder claims one so far: the server stamps
+    /// `aps.category` (app/routine.py's PUSH_CATEGORY) and the local fallback
+    /// sets the same `categoryIdentifier`, so a tap on either lands on the
+    /// Health section rather than wherever the app happened to be. Every other
+    /// notification carries no category and behaves exactly as before - it
+    /// opens the app, and nothing here touches it.
+    ///
+    /// Posted through NotificationCenter rather than held as state: this
+    /// delegate can fire before RootView exists (a cold launch from a tap),
+    /// and `RootView` re-reads the pending destination on appear for exactly
+    /// that case.
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let category = response.notification.request.content.categoryIdentifier
+        if category == RoutineReminders.category {
+            PendingNotificationRoute.record(.health)
+            NotificationCenter.default.post(name: .ataruNotificationRoute,
+                                            object: nil)
+        }
+        completionHandler()
+    }
+}
+
+extension Notification.Name {
+    /// A notification tap asked for a particular tile. See
+    /// `PendingNotificationRoute`.
+    static let ataruNotificationRoute = Notification.Name("ataru.notificationRoute")
+}
+
+/// Where a notification tap wants the app to go, held until something can go
+/// there.
+///
+/// A cold launch from a notification runs the delegate before RootView is on
+/// screen, so the posted notification has nobody listening. RootView reads and
+/// clears this on appear as well as on the notification, which covers both the
+/// cold-launch and already-running cases with one mechanism.
+enum PendingNotificationRoute {
+    private static var tile: HomeTile?
+
+    static func record(_ destination: HomeTile) { tile = destination }
+
+    /// Returns the destination once per recorded tap, so however many delivery
+    /// routes fire the app navigates exactly once - the same contract
+    /// `PendingCallRequest.take()` has.
+    static func take() -> HomeTile? {
+        defer { tile = nil }
+        return tile
     }
 }

@@ -256,6 +256,15 @@ struct RootView: View {
         // waiting to be told what to do.
         .task {
             if PendingCallRequest.take() { call.call() }
+            // A notification tapped while the app was not running: the push
+            // delegate ran before this view existed, so its posted
+            // notification had nobody to hear it. See PendingNotificationRoute.
+            if let tile = PendingNotificationRoute.take() { open(tile: tile) }
+        }
+        // And the warm case - a tap while the app is already up.
+        .onReceive(NotificationCenter.default.publisher(
+            for: .ataruNotificationRoute)) { _ in
+            if let tile = PendingNotificationRoute.take() { open(tile: tile) }
         }
         // Not `await refreshConnection()` any more. That was the single probe
         // that ran before the tailnet was up and then published its negative
