@@ -77,67 +77,96 @@ struct VoiceView: View {
                     .allowsHitTesting(composerFocused)
                     .onTapGesture { composerFocused = false }
 
-                // THE COMPOSER MUST STAY ABOVE THE KEYBOARD, both ways up.
+                // THE BANNERS SIT OUTSIDE THE MEASURED COLUMN.
                 //
-                // This column is given an explicit height because it is
-                // Spacers and fixed blocks and has to fill the screen rather
-                // than settle at its natural size. But SwiftUI's automatic
-                // keyboard avoidance works by shrinking the SAFE AREA, and a
-                // view with an explicit height does not care what the safe
-                // area does - so the column stayed full-screen tall and the
-                // keyboard was simply drawn over the bottom of it, composer
-                // included. That is the "I have no idea what I am typing" bug,
-                // and it was the same in landscape, where there is far less
-                // height to lose.
+                // They used to be the first rows inside it, and that is what
+                // made `AskMetrics.stackChrome` unknowable: the freshness
+                // banner is 30pt in Demo and nothing at all when the server is
+                // answering, and the morning banner comes and goes on its own
+                // schedule. A constant cannot describe that, so the arithmetic
+                // was short by a banner's height exactly when a banner was up -
+                // which is every UI-test run, and every minute the tunnel is
+                // down.
                 //
-                // So this opts out of the implicit behaviour that was already
-                // being overridden, and subtracts a measured keyboard overlap
-                // instead. `geo` then stays stable and orientation-correct,
-                // and the height change is animated with the keyboard's OWN
-                // duration, so the composer travels up with it rather than
-                // arriving after it.
-                GeometryReader { geo in
-                    // THE HEIGHT THE KEYBOARD LEFT BEHIND, and what fits in
-                    // it. Shrinking the frame was never enough on its own -
-                    // the fixed blocks inside it added up to more than the
-                    // remaining height, a frame does not clip, and the bottom
-                    // of the column (the composer) was drawn under the
-                    // keyboard. AskMetrics decides what yields. See there.
-                    let available = max(160, geo.size.height - keyboard.overlap)
-                    let isLandscape = geo.size.width > geo.size.height
-                    let metrics = isLandscape
-                        ? AskMetrics.landscape(available: available,
-                                               focused: composerFocused,
-                                               scale: textScale)
-                        : AskMetrics.portrait(available: available,
-                                              focused: composerFocused,
-                                              hasExchanges: !model.exchanges.isEmpty,
-                                              scale: textScale)
-                    Group {
-                        if isLandscape {
-                            landscapeLayout(metrics)
-                        } else {
-                            portraitLayout(metrics)
+                // Hoisting them here makes the variable term disappear rather
+                // than get estimated: whatever they take, `geo.size.height`
+                // below is already smaller by it.
+                VStack(spacing: Theme.Space.s) {
+                    FreshnessBanner(state: state.freshness)
+                        .padding(.horizontal, Theme.Space.screen)
+                        .dismissesKeyboard(when: composerFocused) {
+                            composerFocused = false
                         }
-                    }
-                    .frame(width: geo.size.width, height: available,
-                           alignment: .top)
-                    .animation(.easeOut(duration: keyboard.duration),
-                               value: keyboard.overlap)
-                    .onChange(of: keyboard.overlap) { _, overlap in
-                        keyboardLog.debug("""
-                            overlap=\(overlap, privacy: .public)                             geo=\(geo.size.height, privacy: .public)                             available=\(available, privacy: .public)                             orb=\(metrics.orb, privacy: .public)                             transcript=\(metrics.transcript, privacy: .public)                             status=\(metrics.status, privacy: .public)                             content=\(metrics.contentHeight, privacy: .public)
-                            """)
-                        // The one condition that means the composer is under
-                        // the keyboard again. Loud, and persisted, because it
-                        // is the whole bug.
-                        if metrics.contentHeight + AskMetrics.chrome > available + 1 {
-                            keyboardLog.error("""
-                                Ask content \(metrics.contentHeight + AskMetrics.chrome, privacy: .public)pt                                 exceeds \(available, privacy: .public)pt - the composer is covered
+                    MorningConfirmBanner(model: morning)
+                        .padding(.horizontal, Theme.Space.screen)
+                        .dismissesKeyboard(when: composerFocused) {
+                            composerFocused = false
+                        }
+
+                    // THE COMPOSER MUST STAY ABOVE THE KEYBOARD, both ways up.
+                    //
+                    // This column is given an explicit height because it is
+                    // Spacers and fixed blocks and has to fill the screen rather
+                    // than settle at its natural size. But SwiftUI's automatic
+                    // keyboard avoidance works by shrinking the SAFE AREA, and a
+                    // view with an explicit height does not care what the safe
+                    // area does - so the column stayed full-screen tall and the
+                    // keyboard was simply drawn over the bottom of it, composer
+                    // included. That is the "I have no idea what I am typing" bug,
+                    // and it was the same in landscape, where there is far less
+                    // height to lose.
+                    //
+                    // So this opts out of the implicit behaviour that was already
+                    // being overridden, and subtracts a measured keyboard overlap
+                    // instead. `geo` then stays stable and orientation-correct,
+                    // and the height change is animated with the keyboard's OWN
+                    // duration, so the composer travels up with it rather than
+                    // arriving after it.
+                    GeometryReader { geo in
+                        // THE HEIGHT THE KEYBOARD LEFT BEHIND, and what fits in
+                        // it. Shrinking the frame was never enough on its own -
+                        // the fixed blocks inside it added up to more than the
+                        // remaining height, a frame does not clip, and the bottom
+                        // of the column (the composer) was drawn under the
+                        // keyboard. AskMetrics decides what yields. See there.
+                        let available = max(160, geo.size.height - keyboard.overlap)
+                        let isLandscape = geo.size.width > geo.size.height
+                        let metrics = isLandscape
+                            ? AskMetrics.landscape(available: available,
+                                                   focused: composerFocused,
+                                                   scale: textScale)
+                            : AskMetrics.portrait(available: available,
+                                                  focused: composerFocused,
+                                                  hasExchanges: !model.exchanges.isEmpty,
+                                                  scale: textScale)
+                        Group {
+                            if isLandscape {
+                                landscapeLayout(metrics)
+                            } else {
+                                portraitLayout(metrics)
+                            }
+                        }
+                        .frame(width: geo.size.width, height: available,
+                               alignment: .top)
+                        .animation(.easeOut(duration: keyboard.duration),
+                                   value: keyboard.overlap)
+                        .onChange(of: keyboard.overlap) { _, overlap in
+                            keyboardLog.debug("""
+                                overlap=\(overlap, privacy: .public)                             geo=\(geo.size.height, privacy: .public)                             available=\(available, privacy: .public)                             orb=\(metrics.orb, privacy: .public)                             transcript=\(metrics.transcript, privacy: .public)                             status=\(metrics.status, privacy: .public)                             content=\(metrics.contentHeight, privacy: .public)
                                 """)
+                            // The one condition that means the composer is under
+                            // the keyboard again. Loud, and persisted, because it
+                            // is the whole bug.
+                            if !isLandscape,
+                               metrics.contentHeight + metrics.chrome > available + 1 {
+                                keyboardLog.error("""
+                                    Ask content \(metrics.contentHeight + metrics.chrome, privacy: .public)pt                                 exceeds \(available, privacy: .public)pt - the composer is covered
+                                    """)
+                            }
                         }
                     }
                 }
+                .padding(.top, Theme.Space.s)
                 .ignoresSafeArea(.keyboard, edges: .bottom)
             }
             .navigationTitle("Ask")
@@ -232,12 +261,6 @@ struct VoiceView: View {
     private func portraitLayout(_ metrics: AskMetrics) -> some View {
         VStack(spacing: Theme.Space.l) {
             VStack(spacing: Theme.Space.l) {
-                FreshnessBanner(state: state.freshness)
-                    .padding(.horizontal, Theme.Space.screen)
-
-                MorningConfirmBanner(model: morning)
-                    .padding(.horizontal, Theme.Space.screen)
-
                 Spacer(minLength: 0)
 
                 if metrics.showsOrb {
@@ -259,7 +282,6 @@ struct VoiceView: View {
                     .dismissesKeyboard(when: composerFocused) { composerFocused = false }
             }
         }
-        .padding(.top, Theme.Space.s)
         .animation(Theme.quick, value: composerFocused)
     }
 
@@ -286,8 +308,6 @@ struct VoiceView: View {
             .dismissesKeyboard(when: composerFocused) { composerFocused = false }
 
             VStack(spacing: Theme.Space.s) {
-                FreshnessBanner(state: state.freshness)
-                MorningConfirmBanner(model: morning)
                 transcript(maxHeight: .infinity)
                     .dismissesKeyboard(when: composerFocused) { composerFocused = false }
                 Spacer(minLength: 0)
@@ -297,7 +317,6 @@ struct VoiceView: View {
                 typeField
                     .padding(.bottom, Theme.Space.xs)
             }
-            .padding(.top, Theme.Space.s)
         }
     }
 

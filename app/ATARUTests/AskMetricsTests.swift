@@ -31,7 +31,7 @@ final class AskMetricsTests: XCTestCase {
                                                     focused: focused,
                                                     hasExchanges: hasExchanges)
                         XCTAssertLessThanOrEqual(
-                            m.contentHeight + AskMetrics.chrome, available + 0.001,
+                            m.contentHeight + m.chrome, available + 0.001,
                             """
                             \(m) overflows \(available)pt \
                             (screen \(height), keyboard \(overlap), \
@@ -68,9 +68,21 @@ final class AskMetricsTests: XCTestCase {
                                          hasExchanges: true)
         let resting = AskMetrics.portrait(available: 730, focused: false,
                                           hasExchanges: true)
+        // Nothing asked yet, so there is no conversation competing for the
+        // height: this is the case the orb is drawn full size in.
+        let quiet = AskMetrics.portrait(available: 730, focused: false,
+                                        hasExchanges: false)
 
-        XCTAssertEqual(resting.orb, AskMetrics.fullOrb,
-                       "with the keyboard down the orb should be full size")
+        XCTAssertEqual(quiet.orb, AskMetrics.fullOrb,
+                       "with the keyboard down and nothing said, the orb should be full size")
+        // NOT full size once there is a transcript to show. 260pt of orb plus
+        // 260pt of conversation plus the status line, the composer and the
+        // stack's own 108pt come to more than a 6.3" phone has, and the orb is
+        // the block that yields - which is the whole point of this type. The
+        // assertion here used to be `resting.orb == fullOrb`, and it only held
+        // because `chrome` claimed the stack cost 60pt when it costs 88.
+        XCTAssertGreaterThan(resting.orb, AskMetrics.minimumOrb,
+                             "the orb still has room to be an object at rest")
         XCTAssertLessThan(typing.orb, resting.orb,
                           "the orb has to shrink to make room for the keyboard")
         XCTAssertGreaterThan(typing.transcript, 0,

@@ -65,10 +65,27 @@ struct AskMetrics: Equatable {
     static let compactStatus: CGFloat = 46
     /// The composer's own height (`Theme.minHitTarget + 8`).
     static let composerHeight: CGFloat = 52
-    /// Everything the stack spends on padding and spacing between blocks.
-    /// Measured from the layout rather than guessed: three 20pt gaps and the
-    /// screen's top padding.
-    static let chrome: CGFloat = 60
+    /// Everything the stack spends on padding and spacing between the blocks
+    /// it does not measure. Counted off the layout, not guessed: the inner
+    /// column's three 20pt gaps (Spacer, orb, status, Spacer), the 20pt gap
+    /// between that column and the composer, and the composer's own 8pt
+    /// bottom padding.
+    ///
+    /// IT USED TO SAY 60, AND THAT WAS THE BUG COMING BACK. The real stack
+    /// spends 88, so the arithmetic handed out ~28pt it did not have and the
+    /// composer went back under the keyboard - on a screen whose own
+    /// diagnostic said it fitted, because the diagnostic was checking the same
+    /// wrong number. The two banners above the column are NOT in here any
+    /// more: they are dynamic, and they now sit outside the measured region
+    /// entirely, so `available` already excludes them. See `VoiceView`.
+    static let stackChrome: CGFloat = 88
+    /// One more 20pt gap, charged only when the transcript is actually drawn.
+    static let transcriptGap: CGFloat = 20
+
+    /// What this particular layout spends on chrome.
+    var chrome: CGFloat {
+        Self.stackChrome + (transcript > 0 ? Self.transcriptGap : 0)
+    }
 
     var contentHeight: CGFloat { orb + transcript + status + composer }
     var showsOrb: Bool { orb >= Self.minimumOrb }
@@ -87,7 +104,7 @@ struct AskMetrics: Equatable {
     ///     deliberately free of SwiftUI and therefore testable.
     static func portrait(available: CGFloat, focused: Bool,
                          hasExchanges: Bool, scale: CGFloat = 1) -> AskMetrics {
-        var budget = max(0, available - chrome)
+        var budget = max(0, available - stackChrome)
         let scale = min(max(scale, 1), 2.4)
 
         // 1. The composer, always and first. It grows with the text inside it:
@@ -108,8 +125,13 @@ struct AskMetrics: Equatable {
         let wantTranscript: CGFloat = hasExchanges ? (focused ? 140 : 260)
                                                    : (focused ? 0 : 120)
         let orbFloor: CGFloat = focused ? 72 : 140
-        let transcript = min(wantTranscript, max(0, budget - orbFloor))
-        var orb = min(fullOrb, budget - transcript)
+        // The transcript pays for the extra stack gap it brings with it, out
+        // of its own allowance. Charging it anywhere else would take the 20pt
+        // off a block that is not there on the turns before the first answer.
+        let transcript = min(wantTranscript,
+                             max(0, budget - orbFloor - transcriptGap))
+        if transcript > 0 { budget -= transcriptGap }
+        var orb = min(fullOrb, max(0, budget - transcript))
         if orb < minimumOrb { orb = 0 }
 
         return AskMetrics(orb: orb, transcript: transcript,
