@@ -112,6 +112,170 @@ final class StatementsTests: XCTestCase {
         XCTAssertEqual(payload.store?.reason, "index is locked")
     }
 
+    // MARK: - Asking ahead
+
+    /// Robinhood does not hand its activity report over on the spot, so the
+    /// contract carries a lead time, a note about what asking involves, the
+    /// date to have asked by, and which ids still need asking.
+    private let leadContract = """
+    {
+      "sitting": {"month": "2026-09", "label": "September 2026 sitting",
+                  "date": "2026-09-10", "is_today_or_past": false,
+                  "request_by": "2026-09-08"},
+      "sources": [
+        {"id": "robinhood-csv", "label": "Robinhood", "status": "missing",
+         "request_lead_days": 2,
+         "request_note": "Request the activity report first - Robinhood sends it about a day later."},
+        {"id": "amex-card-monthly", "label": "Amex card", "status": "missing",
+         "request_lead_days": 0, "request_note": null}
+      ],
+      "request_ahead": ["robinhood-csv"]
+    }
+    """
+
+    func testTheLeadTimeFieldsDecode() throws {
+        let payload = try decoded(leadContract)
+        XCTAssertEqual(payload.sitting?.request_by, "2026-09-08")
+        XCTAssertEqual(payload.request_ahead, ["robinhood-csv"])
+        let robinhood = try XCTUnwrap(
+            payload.sources?.first { $0.id == "robinhood-csv" })
+        XCTAssertEqual(robinhood.request_lead_days, 2)
+        XCTAssertEqual(robinhood.request_note,
+                       "Request the activity report first - "
+                       + "Robinhood sends it about a day later.")
+        let amex = try XCTUnwrap(
+            payload.sources?.first { $0.id == "amex-card-monthly" })
+        XCTAssertEqual(amex.request_lead_days, 0)
+        XCTAssertNil(amex.request_note)
+    }
+
+    /// The contract that predates leads decodes exactly as it always did.
+    func testAPayloadWithoutTheLeadFieldsDecodesAsBefore() throws {
+        let payload = try decoded(contract)
+        XCTAssertNil(payload.request_ahead)
+        XCTAssertNil(payload.sitting?.request_by)
+        for source in try XCTUnwrap(payload.sources) {
+            XCTAssertNil(source.request_lead_days)
+            XCTAssertNil(source.request_note)
+            XCTAssertNil(source.visibleRequestNote)
+        }
+        XCTAssertNil(payload.requestLine(today: "2026-09-08"))
+    }
+
+    /// The note is guidance for a row that still needs collecting. A filed row
+    /// is done, and a blank string is an absence rather than an empty line.
+    func testTheNoteIsHiddenOnceTheRowIsFiledOrWhenItIsBlank() throws {
+        let payload = try decoded("""
+        {"sources": [
+          {"id": "a", "status": "missing", "request_note": "Ask first."},
+          {"id": "b", "status": "present", "request_note": "Ask first."},
+          {"id": "c", "status": "not_posted_yet", "request_note": "Ask first."},
+          {"id": "d", "status": "missing", "request_note": "   "},
+          {"id": "e", "status": "missing", "request_note": null}
+        ]}
+        """)
+        func note(_ id: String) -> String? {
+            payload.sources?.first { $0.id == id }?.visibleRequestNote
+        }
+        XCTAssertEqual(note("a"), "Ask first.")
+        XCTAssertNil(note("b"), "a filed row still explained how to ask for it")
+        XCTAssertEqual(note("c"), "Ask first.")
+        XCTAssertNil(note("d"))
+        XCTAssertNil(note("e"))
+    }
+
+    /// On or before the date, and never after: past `request_by` the advice
+    /// cannot be acted on any more, and repeating it is only a reproach.
+    func testTheRequestLineShowsUpToTheDateAndNotAfterIt() throws {
+        let payload = try decoded(leadContract)
+        XCTAssertEqual(payload.requestLine(today: "2026-09-06"),
+                       "Request Robinhood by 2026-09-08")
+        XCTAssertEqual(payload.requestLine(today: "2026-09-08"),
+                       "Request Robinhood by 2026-09-08")
+        XCTAssertNil(payload.requestLine(today: "2026-09-09"))
+        XCTAssertNil(payload.requestLine(today: "2026-09-10"))
+        // The year and month are compared, not just the day.
+        XCTAssertEqual(payload.requestLine(today: "2025-12-31"),
+                       "Request Robinhood by 2026-09-08")
+        XCTAssertNil(payload.requestLine(today: "2026-10-01"))
+    }
+
+    /// Nothing left to ask for is nothing to say. This is the case that fires
+    /// once the report has actually arrived.
+    func testAnEmptyOrAbsentRequestAheadHidesTheLine() throws {
+        XCTAssertNil(try decoded("""
+        {"sitting": {"request_by": "2026-09-08"},
+         "sources": [{"id": "robinhood-csv", "label": "Robinhood"}],
+         "request_ahead": []}
+        """).requestLine(today: "2026-09-08"))
+        XCTAssertNil(try decoded("""
+        {"sitting": {"request_by": "2026-09-08"},
+         "sources": [{"id": "robinhood-csv", "label": "Robinhood"}]}
+        """).requestLine(today: "2026-09-08"))
+        // And a date with nothing to hang it on.
+        XCTAssertNil(try decoded("""
+        {"request_ahead": ["robinhood-csv"]}
+        """).requestLine(today: "2026-09-08"))
+    }
+
+    /// An id the sources array does not describe still names itself, rather
+    /// than producing a line with a hole in it.
+    func testAnUnknownIdInRequestAheadFallsBackToTheIdItself() throws {
+        let payload = try decoded("""
+        {"sitting": {"request_by": "2026-09-08"},
+         "sources": [{"id": "robinhood-csv", "label": "Robinhood"}],
+         "request_ahead": ["robinhood-csv", "brand-new-source"]}
+        """)
+        XCTAssertEqual(payload.requestLine(today: "2026-09-08"),
+                       "Request Robinhood and brand-new-source by 2026-09-08")
+        // Three or more read as a list.
+        let three = try decoded("""
+        {"sitting": {"request_by": "2026-09-08"},
+         "sources": [],
+         "request_ahead": ["a", "b", "c"]}
+        """)
+        XCTAssertEqual(three.requestLine(today: "2026-09-08"),
+                       "Request a, b and c by 2026-09-08")
+    }
+
+    /// A malformed date is not ordered against - lexicographic comparison is
+    /// chronological only for well-formed ISO days, so anything else hides the
+    /// line rather than guessing at it.
+    func testAMalformedDateHidesTheLineRatherThanComparingGarbage() throws {
+        for by in ["soon", "2026-9-8", "20260908", "", "2026-09-08T00:00:00Z"] {
+            let payload = try decoded("""
+            {"sitting": {"request_by": "\(by)"},
+             "sources": [], "request_ahead": ["x"]}
+            """)
+            XCTAssertNil(payload.requestLine(today: "2026-09-01"),
+                         "\(by) was treated as a date")
+        }
+        let good = try decoded(leadContract)
+        XCTAssertNil(good.requestLine(today: "not-a-date"))
+    }
+
+    /// Today is the device's own day, formatted the way the contract spells
+    /// dates. Asserted against components rather than a second formatter, so
+    /// this cannot pass by repeating its own bug.
+    func testTodayIsFormattedAsTheContractSpellsDates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try! XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 9
+        components.day = 8
+        components.hour = 23
+        components.minute = 30
+        let date = calendar.date(from: components)!
+        XCTAssertEqual(StatementsDTO.todayISO(date, calendar: calendar), "2026-09-08")
+        // Single digits are padded, which is what makes the comparison work.
+        components.month = 1
+        components.day = 2
+        XCTAssertEqual(
+            StatementsDTO.todayISO(calendar.date(from: components)!, calendar: calendar),
+            "2026-01-02")
+    }
+
     // MARK: - Order
 
     /// Missing first, then what has not posted, then what is filed, then what
@@ -520,10 +684,10 @@ final class StatementsTests: XCTestCase {
     func testTheDemoFixtureCoversEveryStateThePageCanDraw() {
         let payload = DemoFixtures.statements()
         let states = payload.orderedSources.map(\.state)
-        XCTAssertEqual(states.filter { $0 == .missing }.count, 2)
+        XCTAssertEqual(states.filter { $0 == .missing }.count, 3)
         XCTAssertEqual(states.filter { $0 == .not_posted_yet }.count, 1)
-        XCTAssertEqual(states.filter { $0 == .present }.count, 3)
-        XCTAssertEqual(payload.missingCount, 2)
+        XCTAssertEqual(states.filter { $0 == .present }.count, 2)
+        XCTAssertEqual(payload.missingCount, 3)
         XCTAssertTrue(payload.showsNudge, "the nudge is unreachable in Demo")
         XCTAssertTrue(payload.orderedSources.contains { !($0.gaps ?? []).isEmpty },
                       "no fixture row exercises the gaps line")
@@ -540,6 +704,30 @@ final class StatementsTests: XCTestCase {
         XCTAssertEqual(robinhood.flatMap(StatementLogin.url(for:))?.absoluteString,
                        robinhoodDeepLink,
                        "no Demo row exercises the deep-link path")
+    }
+
+    /// The request-ahead path has to be visible in Demo too, or nobody reviews
+    /// it: the Robinhood row carries the note AND is still outstanding, and the
+    /// header line resolves on the day before the sitting.
+    func testTheDemoFixtureExercisesTheRequestAheadPath() throws {
+        let payload = DemoFixtures.statements()
+        let robinhood = try XCTUnwrap(
+            payload.orderedSources.first { $0.id == "robinhood-csv" })
+        XCTAssertEqual(robinhood.state, .missing)
+        XCTAssertEqual(robinhood.request_lead_days, 2)
+        XCTAssertEqual(robinhood.visibleRequestNote,
+                       "Request the activity report first - "
+                       + "Robinhood sends it about a day later.")
+        XCTAssertEqual(payload.request_ahead, ["robinhood-csv"])
+        XCTAssertEqual(payload.sitting?.request_by, "2026-09-08")
+        XCTAssertEqual(payload.requestLine(today: "2026-09-08"),
+                       "Request Robinhood by 2026-09-08")
+        // Two days before the sitting, and no other row asks to be asked early.
+        XCTAssertEqual(payload.sitting?.date, "2026-09-10")
+        XCTAssertTrue(payload.orderedSources
+            .filter { $0.id != "robinhood-csv" }
+            .allSatisfy { ($0.request_lead_days ?? 0) == 0
+                           && $0.request_note == nil })
     }
 }
 

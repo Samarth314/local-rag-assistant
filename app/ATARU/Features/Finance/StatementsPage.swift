@@ -111,6 +111,14 @@ struct StatementsPage: View {
                     .foregroundStyle(payload.missingCount > 0
                                      ? Theme.amber : Theme.textPrimary)
             }
+            // One line, and only while it is still actionable. See
+            // `StatementsDTO.requestLine(today:)` for the rule.
+            if let request = payload.requestLine(today: StatementsDTO.todayISO()) {
+                Text(request)
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1)
+            }
             if let asOf = payload.as_of {
                 Text("Checked \(asOf)")
                     .font(.ataruCaption())
@@ -298,6 +306,17 @@ private struct StatementRow: View {
                 Text(detail)
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
+
+                // How this one is asked for, when asking is a step of its own.
+                // The same secondary style as the meta line above it, and
+                // deliberately not the amber of a fault: it is guidance for a
+                // row that still needs collecting, not something gone wrong.
+                if let note = source.visibleRequestNote {
+                    Text(note)
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.textTertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 if let gaps = source.gaps, !gaps.isEmpty {
                     Text("Also missing: \(gaps.joined(separator: ", "))")

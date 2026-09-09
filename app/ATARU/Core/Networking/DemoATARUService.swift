@@ -311,11 +311,12 @@ enum DemoFixtures {
 
     /// The statement checklist, for Demo mode.
     ///
-    /// Six accounts in every state the page can draw: two missing (one of them
-    /// carrying older gaps), one that has simply not posted yet, and three
-    /// already filed. The sitting is dated today and marked past, so the nudge
-    /// banner and the Overview chip are both reachable without waiting for the
-    /// 10th of a month.
+    /// Six accounts in every state the page can draw: three missing (one of
+    /// them carrying older gaps, one of them the row that has to be REQUESTED
+    /// days early), one that has simply not posted yet, and two already filed.
+    /// The sitting is dated today and marked past, so the nudge banner and the
+    /// Overview chip are both reachable without waiting for the 10th of a
+    /// month.
     ///
     /// Synthetic like everything else here: no real balances, no real dates,
     /// no account numbers anywhere. The only real strings are the six source
@@ -328,38 +329,42 @@ enum DemoFixtures {
             sitting_day: 10,
             sitting: StatementsDTO.Sitting(
                 month: "2026-09", label: "September 2026 sitting",
-                date: "2026-09-10", is_today_or_past: true),
+                date: "2026-09-10", is_today_or_past: true,
+                // Two days before the sitting: the longest lead any source
+                // below asks for.
+                request_by: "2026-09-08"),
             sources: [
                 StatementsDTO.Source(
                     id: "wellsfargo-checking", label: "Wells Fargo checking",
                     login_url: "https://www.wellsfargo.com/",
                     close_day: 7, posts_by_day: 10, target_month: "2026-09",
                     status: .not_posted_yet, latest_period_end: "2026-08-05",
-                    gaps: []),
+                    gaps: [], request_lead_days: nil, request_note: nil),
                 StatementsDTO.Source(
                     id: "amex-card-monthly", label: "Amex card",
                     login_url: "https://www.americanexpress.com/",
                     close_day: 3, posts_by_day: 8, target_month: "2026-09",
                     status: .missing, latest_period_end: "2026-08-03",
-                    gaps: []),
+                    gaps: [], request_lead_days: nil, request_note: nil),
                 StatementsDTO.Source(
                     id: "amex-savings-csv", label: "Amex savings",
                     login_url: "https://www.americanexpress.com/",
                     close_day: 1, posts_by_day: 6, target_month: "2026-09",
                     status: .missing, latest_period_end: "2026-06-01",
-                    gaps: ["2026-07", "2026-08"]),
+                    gaps: ["2026-07", "2026-08"],
+                    request_lead_days: nil, request_note: nil),
                 StatementsDTO.Source(
                     id: "capitalone-monthly", label: "Capital One",
                     login_url: "https://www.capitalone.com/",
                     close_day: 4, posts_by_day: 9, target_month: "2026-09",
                     status: .present, latest_period_end: "2026-09-04",
-                    gaps: []),
+                    gaps: [], request_lead_days: nil, request_note: nil),
                 StatementsDTO.Source(
                     id: "fidelity-statement", label: "Fidelity",
                     login_url: "https://www.fidelity.com/",
                     close_day: 30, posts_by_day: 8, target_month: "2026-09",
                     status: .present, latest_period_end: "2026-08-31",
-                    gaps: []),
+                    gaps: [], request_lead_days: nil, request_note: nil),
                 StatementsDTO.Source(
                     id: "robinhood-csv", label: "Robinhood",
                     // The one row that advertises a pinned deep link, so Demo
@@ -369,15 +374,22 @@ enum DemoFixtures {
                     login_url:
                         "https://robinhood.com/account/reports-statements/activity-reports",
                     close_day: 30, posts_by_day: 7, target_month: "2026-09",
-                    status: .present, latest_period_end: "2026-08-31",
-                    gaps: []),
+                    // The one row that is not simply downloaded: the activity
+                    // report has to be requested and turns up about a day
+                    // later, so Demo draws the note and the header's
+                    // "request by" line.
+                    status: .missing, latest_period_end: "2026-08-31",
+                    gaps: [], request_lead_days: 2,
+                    request_note: "Request the activity report first - "
+                        + "Robinhood sends it about a day later."),
             ],
-            missing: ["amex-card-monthly", "amex-savings-csv"],
+            missing: ["amex-card-monthly", "amex-savings-csv", "robinhood-csv"],
             not_posted_yet: ["wellsfargo-checking"],
             complete: false,
-            n_missing: 2,
+            n_missing: 3,
             store: StatementsDTO.Store(path: "records/finances/statements",
-                                       ok: true, reason: nil))
+                                       ok: true, reason: nil),
+            request_ahead: ["robinhood-csv"])
     }
 
     /// Canned answers keyed loosely off the question, so Demo responds to what

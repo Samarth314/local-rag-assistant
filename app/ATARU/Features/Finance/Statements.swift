@@ -75,6 +75,9 @@ struct StatementsDTO: Codable, Equatable {
         let label: String?
         let date: String?
         let is_today_or_past: Bool?
+        /// The sitting date minus the longest lead time of any source that
+        /// needs asking in advance. Absent on a contract that predates leads.
+        let request_by: String?
     }
 
     struct Source: Codable, Equatable {
@@ -87,12 +90,32 @@ struct StatementsDTO: Codable, Equatable {
         let status: Status?
         let latest_period_end: String?
         let gaps: [String]?
+        /// How many days before the sitting this source has to be ASKED for.
+        /// Zero or absent for a source that hands its file over on the spot.
+        let request_lead_days: Int?
+        /// What asking actually involves, in the service's own words. Guidance
+        /// for a row that still needs collecting, never an error.
+        let request_note: String?
 
         /// An absent status is not "fine". See `Status`.
         var state: Status { status ?? .unknown }
 
         /// What a row is called when the service did not name it.
         var displayLabel: String { label ?? id ?? "Unnamed account" }
+
+        /// The note, when there is one worth drawing.
+        ///
+        /// A filed row is done, and telling somebody how to ask for a file they
+        /// already have is noise. Whitespace-only text is treated as absent -
+        /// a blank secondary line under a row reads as a rendering fault.
+        var visibleRequestNote: String? {
+            guard state != .present,
+                  let note = request_note?.trimmingCharacters(
+                    in: .whitespacesAndNewlines),
+                  !note.isEmpty
+            else { return nil }
+            return note
+        }
     }
 
     struct Store: Codable, Equatable {
@@ -110,6 +133,9 @@ struct StatementsDTO: Codable, Equatable {
     let complete: Bool?
     let n_missing: Int?
     let store: Store?
+    /// The ids that have to be asked for ahead of the sitting and are not in
+    /// yet. Computed by the service, because only it knows what has arrived.
+    let request_ahead: [String]?
 
     // MARK: - What the page asks it
 
@@ -151,6 +177,61 @@ struct StatementsDTO: Codable, Equatable {
             return "Not all posted yet - the \(ordinal(day)) is the day"
         }
         return "Complete"
+    }
+
+    /// The header's "ask for this early" line, or nil for no line at all.
+    ///
+    /// Robinhood does not hand its activity report over on the spot - it is
+    /// requested and arrives about a day later - so a sitting that is meant to
+    /// be ONE sitting has to ask a couple of days ahead. The line is guidance
+    /// with a deadline, so it disappears once the deadline passes: after
+    /// `request_by` the advice is no longer actionable, and repeating it would
+    /// only be a reproach.
+    ///
+    /// `today` is passed in rather than read here, which is what makes the rule
+    /// testable. Both dates are ISO `yyyy-MM-dd`, where lexicographic order IS
+    /// chronological order - but only for well-formed values, so a malformed
+    /// `request_by` hides the line rather than comparing garbage.
+    func requestLine(today: String) -> String? {
+        guard let by = sitting?.request_by,
+              Self.isISODate(by), Self.isISODate(today),
+              today <= by
+        else { return nil }
+        let ids = request_ahead ?? []
+        guard !ids.isEmpty else { return nil }
+        let names = ids.map { id in
+            sources?.first { $0.id == id }?.displayLabel ?? id
+        }
+        return "Request \(Self.list(names)) by \(by)"
+    }
+
+    /// Today, as the device's own calendar spells it.
+    static func todayISO(_ date: Date = Date(),
+                         calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        guard let y = parts.year, let m = parts.month, let d = parts.day
+        else { return "" }
+        return String(format: "%04d-%02d-%02d", y, m, d)
+    }
+
+    /// Exactly `yyyy-MM-dd`. Anything else is not a date this can order.
+    private static func isISODate(_ value: String) -> Bool {
+        let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              parts[0].count == 4, parts[1].count == 2, parts[2].count == 2
+        else { return false }
+        return parts.allSatisfy { $0.allSatisfy(\.isASCII) && $0.allSatisfy(\.isNumber) }
+    }
+
+    /// "Robinhood", "Robinhood and Amex", "A, B and C".
+    private static func list(_ names: [String]) -> String {
+        switch names.count {
+        case 0:  return ""
+        case 1:  return names[0]
+        case 2:  return "\(names[0]) and \(names[1])"
+        default: return names.dropLast().joined(separator: ", ")
+                 + " and \(names[names.count - 1])"
+        }
     }
 
     /// True when the store itself could not be read, which makes every row
