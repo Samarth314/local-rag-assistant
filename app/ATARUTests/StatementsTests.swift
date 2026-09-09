@@ -201,8 +201,10 @@ final class StatementsTests: XCTestCase {
     // MARK: - Where "Log in" is allowed to go
 
     /// THE SECURITY CLAIM OF THIS PAGE. A bank login is exactly the link worth
-    /// spoofing, so the payload's `login_url` is matched against this table
-    /// rather than opened, and no other host can ever be reached from here.
+    /// spoofing, so the HOST of the payload's `login_url` is matched against
+    /// this table before anything opens, and no other host can ever be reached
+    /// from here. The rest of an allowlisted `https` link is the vault's to
+    /// choose - see the deep-link tests below.
     func testTheOnlyLoginHostsAreTheSixCanonicalOnes() {
         XCTAssertEqual(StatementLogin.catalog.count, 6)
         XCTAssertEqual(StatementLogin.catalog.map(\.url.absoluteString),
@@ -225,6 +227,8 @@ final class StatementsTests: XCTestCase {
         }
     }
 
+    /// With nothing advertised there is nothing to open as sent, so every
+    /// documented id falls back to its own canonical root.
     func testEveryDocumentedSourceIdResolvesToItsCanonicalRoot() {
         let expected = ["wellsfargo-checking": "https://www.wellsfargo.com/",
                         "amex-card-monthly": "https://www.americanexpress.com/",
@@ -238,59 +242,202 @@ final class StatementsTests: XCTestCase {
         }
     }
 
-    /// The id wins over whatever the payload advertises, so a compromised or
-    /// mistaken service cannot redirect a known row.
-    func testAKnownIdIgnoresTheAdvertisedURLEntirely() {
-        XCTAssertEqual(
-            StatementLogin.url(forID: "wellsfargo-checking",
-                               advertised: "https://wellsfargo.evil.example/login")?
-                .absoluteString,
-            "https://www.wellsfargo.com/")
-    }
+    /// The deep link Arya pinned in the vault for Robinhood. Public, the same
+    /// page for every account, and carrying no identifier of any kind - which
+    /// is why it is the one deep link allowed to appear in this repository.
+    private let robinhoodDeepLink =
+        "https://robinhood.com/account/reports-statements/activity-reports"
 
-    /// An unknown id may still be placed by its host - but what opens is the
-    /// canonical root, never the advertised URL, so a path or query cannot ride
-    /// along.
-    func testAnUnknownIdIsPlacedByHostAndStrippedToTheRoot() {
+    /// RULE 1. An allowlisted `https` link opens exactly as sent, path and
+    /// query intact, and the id does not override it: the vault is the source
+    /// of truth for the link, and the allowlist is what makes that safe.
+    func testAnAllowlistedHTTPSDeepLinkOpensExactlyAsSent() {
+        XCTAssertEqual(
+            StatementLogin.url(forID: "robinhood-csv",
+                               advertised: robinhoodDeepLink)?.absoluteString,
+            robinhoodDeepLink)
+        // A query survives too - the Amex savings link Arya pinned carries one.
+        // (Its own account parameter is never written down here.)
+        XCTAssertEqual(
+            StatementLogin.url(
+                forID: "amex-savings-csv",
+                advertised: "https://www.americanexpress.com/x/download?a=1&b=2")?
+                .absoluteString,
+            "https://www.americanexpress.com/x/download?a=1&b=2")
+        // And an unknown id gets the same treatment: the host is what is
+        // checked, never the id.
         XCTAssertEqual(
             StatementLogin.url(forID: "brand-new-account",
                                advertised: "https://www.fidelity.com/login?next=/x")?
                 .absoluteString,
-            "https://www.fidelity.com/")
+            "https://www.fidelity.com/login?next=/x")
     }
 
+    /// `https` exactly. The same link over `http` is a downgrade, and a login
+    /// page reached in the clear is worth no button of its own.
+    func testTheSameDeepLinkOverHTTPFallsBackToTheCanonicalRoot() {
+        let insecure = robinhoodDeepLink.replacingOccurrences(
+            of: "https://", with: "http://")
+        XCTAssertEqual(
+            StatementLogin.url(forID: "robinhood-csv", advertised: insecure)?
+                .absoluteString,
+            "https://robinhood.com/")
+        // The scheme test is case-insensitive, so a shouting one still opens.
+        // Asserted on the path rather than the whole string: whether Foundation
+        // lowercases a scheme it was handed is its business, and not the claim
+        // being made here.
+        let shouted = StatementLogin.url(
+            forID: "robinhood-csv",
+            advertised: robinhoodDeepLink.replacingOccurrences(
+                of: "https://", with: "HTTPS://"))
+        XCTAssertEqual(shouted?.path, "/account/reports-statements/activity-reports")
+    }
+
+    /// Userinfo is the oldest trick in the list: the allowlisted name is in the
+    /// URL a person reads, and the request goes to `evil.example`.
+    func testUserinfoInTheAuthorityIsNeverOpenedAsSent() {
+        // The host here is evil.example, so there is no canonical root to fall
+        // back to for an unknown id.
+        XCTAssertNil(StatementLogin.url(forID: "unheard-of",
+                                        advertised: "https://robinhood.com@evil.example/"))
+        XCTAssertNil(
+            StatementLogin.url(forID: "unheard-of",
+                               advertised: "https://robinhood.com:hunter2@evil.example/"))
+        // A known id still gets its own root, which is the safe answer.
+        XCTAssertEqual(
+            StatementLogin.url(forID: "robinhood-csv",
+                               advertised: "https://robinhood.com@evil.example/")?
+                .absoluteString,
+            "https://robinhood.com/")
+        // Userinfo in front of a genuinely allowlisted host is refused as well:
+        // the rule is a conjunction, not a best-of.
+        XCTAssertEqual(
+            StatementLogin.url(forID: "robinhood-csv",
+                               advertised: "https://someone@robinhood.com/x")?
+                .absoluteString,
+            "https://robinhood.com/")
+    }
+
+    /// An allowlisted name used as a label on somebody else's domain. Both the
+    /// as-sent rule and the host fallback have to reject it.
+    func testTheAllowlistedNameAsASubdomainOfAnAttackerFallsBack() {
+        for advertised in ["https://robinhood.com.evil.example/",
+                           "https://robinhood.com.example/",
+                           "https://robinhood.com.evil.example/account/reports"] {
+            XCTAssertNil(StatementLogin.url(forID: "unheard-of", advertised: advertised),
+                         "\(advertised) was offered as a login link")
+            XCTAssertEqual(
+                StatementLogin.url(forID: "robinhood-csv", advertised: advertised)?
+                    .absoluteString,
+                "https://robinhood.com/",
+                "\(advertised) was not replaced by the canonical root")
+        }
+    }
+
+    /// DOCUMENTED CHOICE: a trailing dot IS normalised away, so
+    /// `https://robinhood.com./x` is treated as `robinhood.com` and opens as
+    /// sent. The two names resolve to the same host in DNS and are served by
+    /// the same certificate, so refusing the dotted form would only mean
+    /// dropping a legitimate link; matching on the raw string, meanwhile,
+    /// would let the dot walk straight past the allowlist. What opens is still
+    /// the string the payload sent - the normalisation decides the match, not
+    /// the destination.
+    func testATrailingDotHostIsNormalisedAndSoOpensAsSent() {
+        let dotted = StatementLogin.url(forID: "robinhood-csv",
+                                        advertised: "https://robinhood.com./x")
+        XCTAssertEqual(dotted?.path, "/x", "the dotted host was not opened as sent")
+        XCTAssertNotEqual(dotted?.absoluteString, "https://robinhood.com/",
+                          "the dotted host fell back to the canonical root")
+        // The same normalisation applies to case.
+        let shouted = StatementLogin.url(forID: "robinhood-csv",
+                                         advertised: "https://RobinHood.COM/x")
+        XCTAssertEqual(shouted?.path, "/x")
+        XCTAssertEqual(shouted?.host?.lowercased(), "robinhood.com")
+    }
+
+    /// A port turns a trusted hostname into a pointer at whatever answers on
+    /// that port. Even 443, written explicitly, is refused: the rule is "no
+    /// port", not "no surprising port".
+    func testAnExplicitPortFallsBackToTheCanonicalRoot() {
+        for advertised in ["https://robinhood.com:8443/x",
+                           "https://robinhood.com:443/x"] {
+            XCTAssertEqual(
+                StatementLogin.url(forID: "robinhood-csv", advertised: advertised)?
+                    .absoluteString,
+                "https://robinhood.com/",
+                "\(advertised) was opened as sent")
+            // The host is allowlisted, so an unknown id still gets the root.
+            XCTAssertEqual(
+                StatementLogin.url(forID: "unheard-of", advertised: advertised)?
+                    .absoluteString,
+                "https://robinhood.com/")
+        }
+    }
+
+    /// RULE 2, the fallback half: an id this build has never heard of is still
+    /// placed by its host when the link itself cannot be opened as sent.
+    func testAnUnknownIdWithAnAllowlistedHostStillYieldsTheCanonicalRoot() {
+        XCTAssertEqual(
+            StatementLogin.url(forID: "brand-new-account",
+                               advertised: "http://www.fidelity.com/login?next=/x")?
+                .absoluteString,
+            "https://www.fidelity.com/")
+        XCTAssertEqual(
+            StatementLogin.url(forID: nil,
+                               advertised: "http://www.capitalone.com/deep/link?x=1")?
+                .absoluteString,
+            "https://www.capitalone.com/")
+    }
+
+    /// RULE 3. No id and no allowlisted host means no button at all.
     func testAnythingOffTheAllowlistGetsNoButtonAtAll() {
         for advertised in ["https://wellsfargo.com.evil.example/",
                            "https://phish.example/wellsfargo",
                            "https://sub.www.fidelity.com/",
                            "https://americanexpress.com/",
+                           "javascript:alert(1)",
                            "not a url",
                            ""] {
             XCTAssertNil(StatementLogin.url(forID: "unheard-of", advertised: advertised),
                          "\(advertised) was offered as a login link")
         }
         XCTAssertNil(StatementLogin.url(forID: nil, advertised: nil))
+        XCTAssertNil(StatementLogin.url(forID: "unheard-of", advertised: nil))
     }
 
     /// Every login link the page can produce, from any payload, lands on an
-    /// allowed host. This is the assertion that would fail if a future edit
-    /// started trusting `login_url`.
+    /// allowed host over https with no userinfo and no port. This is the
+    /// assertion that would fail if a future edit widened the rule.
     func testNoPayloadCanProduceALinkToAnyOtherHost() throws {
         let hostile = try decoded("""
         {"sources": [
           {"id": "wellsfargo-checking", "login_url": "https://evil.example/"},
           {"id": "not-a-real-source", "login_url": "https://evil.example/"},
           {"id": "robinhood-csv", "login_url": "http://robinhood.com.evil.example/"},
+          {"id": "fidelity-statement", "login_url": "https://user@evil.example/"},
+          {"id": "capitalone-monthly", "login_url": "https://www.capitalone.com:9/x"},
           {"login_url": "https://www.capitalone.com/deep/link?x=1"}
         ]}
         """)
         let resolved = hostile.orderedSources.compactMap(StatementLogin.url(for:))
-        XCTAssertEqual(resolved.count, 3, "an unknown source produced a link")
+        XCTAssertEqual(resolved.count, 5, "an unknown source produced a link")
         for url in resolved {
-            XCTAssertTrue(StatementLogin.allowedHosts.contains(url.host ?? ""),
-                          "\(url) escaped the allowlist")
-            XCTAssertEqual(url.path, "/")
+            let components = try XCTUnwrap(
+                URLComponents(url: url, resolvingAgainstBaseURL: false))
+            let host = (url.host ?? "").lowercased()
+            XCTAssertTrue(
+                StatementLogin.allowedHosts.contains(
+                    host.hasSuffix(".") ? String(host.dropLast()) : host),
+                "\(url) escaped the allowlist")
+            XCTAssertEqual(url.scheme?.lowercased(), "https", "\(url) is not https")
+            XCTAssertNil(components.user, "\(url) carries userinfo")
+            XCTAssertNil(components.password, "\(url) carries a password")
+            XCTAssertNil(components.port, "\(url) carries a port")
         }
+        // Only the one link that satisfies rule 1 keeps its path; the rest
+        // were replaced by canonical roots.
+        XCTAssertEqual(resolved.filter { $0.path != "/" }.map(\.absoluteString),
+                       ["https://www.capitalone.com/deep/link?x=1"])
     }
 
     // MARK: - Uploading
@@ -387,6 +534,12 @@ final class StatementsTests: XCTestCase {
             XCTAssertTrue(StatementLogin.allowedHosts.contains(host),
                           "\(source.displayLabel) has no allowed login link")
         }
+        // And one row advertises a pinned deep link, so Demo exercises the
+        // open-as-sent path rather than only the canonical-root fallback.
+        let robinhood = payload.orderedSources.first { $0.id == "robinhood-csv" }
+        XCTAssertEqual(robinhood.flatMap(StatementLogin.url(for:))?.absoluteString,
+                       robinhoodDeepLink,
+                       "no Demo row exercises the deep-link path")
     }
 }
 

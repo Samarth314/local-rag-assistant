@@ -198,17 +198,25 @@ struct StatementsUploadDTO: Codable, Equatable {
 
 // MARK: - Where "Log in" goes
 
-/// The only web addresses this page will ever open.
+/// The only hosts this page will ever open.
 ///
-/// THE SERVER DOES NOT GET TO CHOOSE. `login_url` arrives in the payload and
-/// is never opened as sent: it is matched against this table, and what opens
-/// is the canonical root here. A bank login is exactly the link worth spoofing,
-/// and "the finance service is trusted" is a statement about today's finance
-/// service rather than a property of the app.
+/// THE SERVER DOES NOT GET TO CHOOSE THE HOST. `login_url` arrives in the
+/// payload, and the host it names is matched against this table before
+/// anything opens. A bank login is exactly the link worth spoofing, and "the
+/// finance service is trusted" is a statement about today's finance service
+/// rather than a property of the app.
 ///
-/// Root domains only, and no path, query or fragment - a deep link into a
-/// login flow is indistinguishable from a phishing landing page once it is
-/// rendered as a button called "Log in".
+/// What the payload DOES get to choose, once the host clears, is the rest of
+/// the link. Arya pins the deep links in the vault - the statements page of a
+/// broker, the download-transactions page of a bank - and the vault is the
+/// single source of truth for them, so an allowlisted `https` link opens
+/// exactly as sent, path and query included. The allowlist is what makes that
+/// safe: the worst a wrong deep link can do is land on the wrong page of a
+/// bank the app already trusts, never on a phishing host.
+///
+/// The entries below are canonical ROOTS and stay that way. They are the
+/// fallback for a row the payload could not place, and the full list rendered
+/// when the store is broken - never a place to paste an account-specific URL.
 enum StatementLogin {
 
     struct Known: Identifiable, Equatable {
@@ -241,20 +249,63 @@ enum StatementLogin {
 
     /// Where a row's "Log in" button goes, or nil for no button at all.
     ///
-    /// A known id wins outright. A source this build has never heard of falls
-    /// back to its advertised host - and even then what opens is the canonical
-    /// root for that host, not the advertised URL, so an added path or query
-    /// cannot ride along. Anything else gets no button: a row without a login
-    /// link is a much smaller failure than a link to somewhere unexpected.
+    /// Three outcomes, in this order:
+    ///
+    /// 1. The advertised `login_url` opens EXACTLY AS SENT - path, query and
+    ///    fragment intact - if and only if it is `https`, its host is on
+    ///    `allowedHosts`, and its authority carries no userinfo and no explicit
+    ///    port. That is the pinned-deep-link case, and the vault is the source
+    ///    of truth for it.
+    /// 2. Otherwise a known source id opens its canonical root from the
+    ///    catalog, and an id this build has never heard of opens the canonical
+    ///    root of its advertised host if that host is allowlisted.
+    /// 3. Otherwise no button. A row without a login link is a much smaller
+    ///    failure than a link to somewhere unexpected.
+    ///
+    /// The userinfo and port checks are not decoration. `https://a.example@`
+    /// prefixed to an attacker's host puts an allowlisted-looking name in the
+    /// URL a person reads while the request goes elsewhere, and a port turns a
+    /// trusted hostname into a pointer at whatever answers on it.
     static func url(forID id: String?, advertised: String?) -> URL? {
+        if let advertised, let asSent = advertisedIfAllowed(advertised) {
+            return asSent
+        }
         if let id, let known = catalog.first(where: { $0.id == id }) {
             return known.url
         }
-        guard let advertised,
-              let host = URLComponents(string: advertised)?.host?.lowercased()
+        guard let advertised, let host = normalizedHost(of: advertised)
         else { return nil }
-        let normalized = host.hasSuffix(".") ? String(host.dropLast()) : host
-        return catalog.first { $0.url.host?.lowercased() == normalized }?.url
+        return catalog.first { $0.url.host?.lowercased() == host }?.url
+    }
+
+    /// The advertised URL itself, when every condition in rule 1 holds.
+    ///
+    /// Deliberately one guard: a link that fails any single clause is not
+    /// repaired, because repairing it would mean opening something the payload
+    /// did not actually say.
+    private static func advertisedIfAllowed(_ advertised: String) -> URL? {
+        guard let components = URLComponents(string: advertised),
+              components.scheme?.lowercased() == "https",
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              let host = normalizedHost(of: advertised),
+              allowedHosts.contains(host),
+              let url = URL(string: advertised)
+        else { return nil }
+        return url
+    }
+
+    /// The host as the allowlist spells it: lowercased, and with the trailing
+    /// dot of a fully-qualified name removed. "robinhood.com." and
+    /// "robinhood.com" are the same host to DNS, so they are the same host
+    /// here - matching on the raw string would let a trailing dot walk past
+    /// the allowlist.
+    private static func normalizedHost(of urlString: String) -> String? {
+        guard let host = URLComponents(string: urlString)?.host?.lowercased(),
+              !host.isEmpty
+        else { return nil }
+        return host.hasSuffix(".") ? String(host.dropLast()) : host
     }
 
     static func url(for source: StatementsDTO.Source) -> URL? {

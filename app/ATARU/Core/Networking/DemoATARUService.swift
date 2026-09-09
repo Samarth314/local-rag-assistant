@@ -319,7 +319,9 @@ enum DemoFixtures {
     ///
     /// Synthetic like everything else here: no real balances, no real dates,
     /// no account numbers anywhere. The only real strings are the six source
-    /// ids, which are names of institutions and not data about anyone.
+    /// ids and the login URLs, which name institutions and public pages rather
+    /// than saying anything about anyone. A deep link that identified an
+    /// account would not belong in this file, or in this repository.
     static func statements() -> StatementsDTO {
         StatementsDTO(
             as_of: "2026-09-08",
@@ -360,7 +362,12 @@ enum DemoFixtures {
                     gaps: []),
                 StatementsDTO.Source(
                     id: "robinhood-csv", label: "Robinhood",
-                    login_url: "https://robinhood.com/",
+                    // The one row that advertises a pinned deep link, so Demo
+                    // exercises the open-as-sent path and not only the
+                    // canonical-root fallback. Public and identifier-free -
+                    // it is the same page for every Robinhood account.
+                    login_url:
+                        "https://robinhood.com/account/reports-statements/activity-reports",
                     close_day: 30, posts_by_day: 7, target_month: "2026-09",
                     status: .present, latest_period_end: "2026-08-31",
                     gaps: []),
