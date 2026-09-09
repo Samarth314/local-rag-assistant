@@ -207,6 +207,33 @@ enum TileFetch {
         return try await run(type, request, timeout: timeout)
     }
 
+    /// Uploads files as multipart/form-data.
+    ///
+    /// Here rather than in the one screen that uploads, because the token is
+    /// here: `ATARUAuth.stamp` is the app's single credential seam and a
+    /// second request builder somewhere else is a second place for it to be
+    /// forgotten. See ATARUAuth for why that matters.
+    ///
+    /// A longer default timeout than a GET. This one is carrying whole
+    /// statement PDFs up a tailnet, and 10s is a size limit dressed as a
+    /// network setting.
+    @discardableResult
+    static func postMultipart<T: Decodable>(
+        _ type: T.Type, _ url: URL, parts: [MultipartBody.Part],
+        field: String = "files",
+        timeout: TimeInterval = 60) async throws -> T {
+        let boundary = MultipartBody.boundary()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = timeout
+        request.setValue("multipart/form-data; boundary=\(boundary)",
+                         forHTTPHeaderField: "Content-Type")
+        request.httpBody = MultipartBody.encode(parts: parts, boundary: boundary,
+                                                field: field)
+        ATARUAuth.stamp(&request)
+        return try await run(type, request, timeout: timeout)
+    }
+
     private static func run<T: Decodable>(_ type: T.Type, _ request: URLRequest,
                                           timeout: TimeInterval) async throws -> T {
         do {
@@ -289,7 +316,9 @@ enum TileCache {
     /// Every `kind` written by the screens in TileDataScreens, so `purge` can
     /// find the files again.
     private static let kinds = ["finance", "health", "home",
-                                "status", "journal", "workspaces"]
+                                "status", "journal", "workspaces",
+                                // Page three of Finance. See StatementsModel.
+                                StatementsModel.cacheKind]
 
     /// Derived from the backend URL by substitution, NOT by `hashValue` -
     /// String hashing is seeded per process, so a hashed filename would miss
@@ -358,7 +387,7 @@ enum TileCache {
 /// A layer in the root stack rather than a sheet, so the launcher can stay
 /// above it: a sheet outranks every layer the root view owns, and a launcher
 /// the fan cannot be seen over is a launcher that does not work on that page.
-/// The opaque backdrop is what makes it a screen rather than an overlay —
+/// The opaque backdrop is what makes it a screen rather than an overlay -
 /// nothing behind shows through, and nothing behind takes a touch.
 struct TileScreenHost: View {
     @EnvironmentObject private var state: AppState
@@ -433,7 +462,6 @@ struct TileScreenHost: View {
         switch tile {
         case .plan:       PlanView()
         case .notes:      NotesScreen()
-        case .cards:      CardsScreen()
         case .finance:    FinanceScreen()
         case .health:     HealthScreen()
         case .home:       HomeScreen()

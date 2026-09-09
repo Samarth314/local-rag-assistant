@@ -132,8 +132,19 @@ private enum FinanceDTO {
     }
 }
 
-struct FinanceScreen: View {
+/// Page one of Finance: net worth, spending, subscriptions.
+///
+/// Was `FinanceScreen`, and is unchanged apart from three things the pager
+/// around it needs: the demo flag reported upward (the navigation title is
+/// the pager's now - see FinanceScreen), and the statements chip, which is how
+/// a missing statement is visible without swiping to page three.
+struct FinanceOverviewScreen: View {
     @EnvironmentObject private var state: AppState
+    @ObservedObject var statements: StatementsModel
+    /// Reported up so the pager can put "(demo)" in the title.
+    @Binding var isDemoBackend: Bool
+    let openStatements: () -> Void
+
     @State private var payload: FinanceDTO.Payload?
     @State private var failed = false
     /// When the payload on screen was fetched, if it came off disk. See
@@ -143,6 +154,8 @@ struct FinanceScreen: View {
     var body: some View {
         ScrollView {
             VStack(spacing: Theme.Space.m) {
+                statementsChip
+
                 if failed {
                     // A first load with nothing to show is an error. A refresh
                     // that failed over content already on screen is a lost
@@ -263,9 +276,6 @@ struct FinanceScreen: View {
             }
             .padding(Theme.Space.screen)
         }
-        .ataruBackdrop()
-        .navigationTitle(payload?.demo == true ? "Finance (demo)" : "Finance")
-        .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See
         // TileCache for why every screen does this now and not just Home.
@@ -283,6 +293,38 @@ struct FinanceScreen: View {
         }
     }
 
+    /// The one thing on this page about a page you cannot see.
+    ///
+    /// A statement missing on the 10th is the only Finance fact that needs
+    /// acting on that day, and burying it behind a swipe is how it gets
+    /// missed. Calm rather than loud: a count and a way there.
+    @ViewBuilder
+    private var statementsChip: some View {
+        let missing = statements.missingCount
+        if missing > 0 {
+            Button(action: openStatements) {
+                HStack(spacing: Theme.Space.xs) {
+                    Image(systemName: "tray.full")
+                        .font(.system(size: 12))
+                    Text("\(missing) statement\(missing == 1 ? "" : "s") missing")
+                        .font(.ataruLabel())
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                }
+                .foregroundStyle(Theme.amber)
+                .padding(.horizontal, Theme.Space.s)
+                .padding(.vertical, Theme.Space.xs)
+                .background { Capsule().fill(Theme.amber.opacity(0.12)) }
+                .overlay { Capsule().strokeBorder(Theme.amber.opacity(0.28), lineWidth: 1) }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(missing) statements missing")
+            .accessibilityHint("Opens the statement checklist.")
+        }
+    }
+
     private var root: URL? { TileBackend.current(from: state).apiRoot(.finance) }
 
     /// Draw the last known numbers first, then go and check them.
@@ -292,6 +334,7 @@ struct FinanceScreen: View {
                                           kind: "finance", for: root) else { return }
         payload = cached.payload
         cachedAt = cached.savedAt
+        isDemoBackend = cached.payload.demo == true
     }
 
     private func load() async {
@@ -304,6 +347,7 @@ struct FinanceScreen: View {
                 failed = false
                 cachedAt = nil
             }
+            isDemoBackend = fresh.demo == true
             TileCache.save(fresh, kind: "finance", for: root)
         } catch {
             // A load cancelled by the page closing, or by a newer one, has
@@ -1345,7 +1389,7 @@ struct StatusScreen: View {
             Text(label)
                 .font(.ataruCaption())
                 .foregroundStyle(Theme.textTertiary)
-            Text(value.map { String(format: "%.0f%@", $0, suffix) } ?? "—")
+            Text(value.map { String(format: "%.0f%@", $0, suffix) } ?? "-")
                 .font(.ataruMono(13))
                 .foregroundStyle(Theme.textPrimary)
         }

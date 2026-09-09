@@ -5,7 +5,7 @@ import Foundation
 /// Set by the `-ATARUUITesting` launch argument. Two things depend on it, for
 /// different reasons: `AppState` swaps in a throwaway defaults suite so a run
 /// never inherits the last server the simulator was pointed at, and `OrbView`
-/// stops animating — see there for why that one is not cosmetic.
+/// stops animating - see there for why that one is not cosmetic.
 enum RuntimeMode {
 
     /// DEBUG ONLY, AND DELIBERATELY AT COMPILE TIME.
@@ -42,10 +42,17 @@ enum RuntimeMode {
     /// So the suite is handed a starting screen rather than a route to it,
     /// which is honest about what it is testing: the Library page's own
     /// behaviour, not the way in.
+    /// The name a retired tile answers to, so a suite (or anything else that
+    /// names a destination from outside) does not silently reach nowhere.
+    /// `cards` was its own tile until the Finance pager absorbed it.
     static var startTile: HomeTile? {
         guard isUITesting,
               let raw = UserDefaults.standard.string(forKey: "ATARUUIStartTile")
         else { return nil }
+        if raw == FinanceRoute.retiredCardsTile {
+            FinanceRoute.record(.cards)
+            return .finance
+        }
         return HomeTile(rawValue: raw)
     }
 }

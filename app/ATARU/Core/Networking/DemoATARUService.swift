@@ -3,7 +3,7 @@ import Foundation
 /// A complete ATARU backend, in-process.
 ///
 /// This exists so the app can be opened, reviewed and UI-tested on a machine
-/// that has never seen the real server — and so every state the UI can enter
+/// that has never seen the real server - and so every state the UI can enter
 /// (slow response, empty result, missing file, no voice engine) is reachable
 /// deliberately instead of only by breaking something.
 ///
@@ -54,7 +54,7 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         let body = DemoFixtures.body(for: document)
         let url = try await downloads.store(Data(body.utf8),
                                             preferredName: "\(document.title).txt")
-        // Demo has no original files, only text — which is exactly the
+        // Demo has no original files, only text - which is exactly the
         // reconstructed case, so the banner it drives is exercised here too.
         return DocumentPayload(url: url, isReconstructed: true)
     }
@@ -69,7 +69,7 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
     }
 
     /// Accepted and discarded. Demo mode has no server, so there is nothing to
-    /// ring this phone — but failing here would surface a registration error in
+    /// ring this phone - but failing here would surface a registration error in
     /// Settings for a mode where being un-ringable is the expected state.
     /// Demo mode biases nothing: there is no real correspondent list, and
     /// inventing one would train the recogniser on names that do not exist.
@@ -307,6 +307,70 @@ enum DemoFixtures {
         Category: \(document.category.title)
         Chunks:   \(document.chunkCount.map(String.init) ?? "unknown")
         """
+    }
+
+    /// The statement checklist, for Demo mode.
+    ///
+    /// Six accounts in every state the page can draw: two missing (one of them
+    /// carrying older gaps), one that has simply not posted yet, and three
+    /// already filed. The sitting is dated today and marked past, so the nudge
+    /// banner and the Overview chip are both reachable without waiting for the
+    /// 10th of a month.
+    ///
+    /// Synthetic like everything else here: no real balances, no real dates,
+    /// no account numbers anywhere. The only real strings are the six source
+    /// ids, which are names of institutions and not data about anyone.
+    static func statements() -> StatementsDTO {
+        StatementsDTO(
+            as_of: "2026-09-08",
+            sitting_day: 10,
+            sitting: StatementsDTO.Sitting(
+                month: "2026-09", label: "September 2026 sitting",
+                date: "2026-09-10", is_today_or_past: true),
+            sources: [
+                StatementsDTO.Source(
+                    id: "wellsfargo-checking", label: "Wells Fargo checking",
+                    login_url: "https://www.wellsfargo.com/",
+                    close_day: 7, posts_by_day: 10, target_month: "2026-09",
+                    status: .not_posted_yet, latest_period_end: "2026-08-05",
+                    gaps: []),
+                StatementsDTO.Source(
+                    id: "amex-card-monthly", label: "Amex card",
+                    login_url: "https://www.americanexpress.com/",
+                    close_day: 3, posts_by_day: 8, target_month: "2026-09",
+                    status: .missing, latest_period_end: "2026-08-03",
+                    gaps: []),
+                StatementsDTO.Source(
+                    id: "amex-savings-csv", label: "Amex savings",
+                    login_url: "https://www.americanexpress.com/",
+                    close_day: 1, posts_by_day: 6, target_month: "2026-09",
+                    status: .missing, latest_period_end: "2026-06-01",
+                    gaps: ["2026-07", "2026-08"]),
+                StatementsDTO.Source(
+                    id: "capitalone-monthly", label: "Capital One",
+                    login_url: "https://www.capitalone.com/",
+                    close_day: 4, posts_by_day: 9, target_month: "2026-09",
+                    status: .present, latest_period_end: "2026-09-04",
+                    gaps: []),
+                StatementsDTO.Source(
+                    id: "fidelity-statement", label: "Fidelity",
+                    login_url: "https://www.fidelity.com/",
+                    close_day: 30, posts_by_day: 8, target_month: "2026-09",
+                    status: .present, latest_period_end: "2026-08-31",
+                    gaps: []),
+                StatementsDTO.Source(
+                    id: "robinhood-csv", label: "Robinhood",
+                    login_url: "https://robinhood.com/",
+                    close_day: 30, posts_by_day: 7, target_month: "2026-09",
+                    status: .present, latest_period_end: "2026-08-31",
+                    gaps: []),
+            ],
+            missing: ["amex-card-monthly", "amex-savings-csv"],
+            not_posted_yet: ["wellsfargo-checking"],
+            complete: false,
+            n_missing: 2,
+            store: StatementsDTO.Store(path: "records/finances/statements",
+                                       ok: true, reason: nil))
     }
 
     /// Canned answers keyed loosely off the question, so Demo responds to what

@@ -6,6 +6,17 @@ import SwiftUI
 /// expires next", and grouping by card would bury a credit closing on Tuesday
 /// under one that runs to December.
 struct CardsScreen: View {
+    /// True when this is one page of the Finance pager rather than a whole
+    /// screen of its own.
+    ///
+    /// What it changes is NAVIGATION CHROME AND NOTHING ELSE. A `.toolbar`
+    /// declared inside a page-style TabView is merged into the bar by every
+    /// page the pager keeps alive, not just the visible one, so the "+" would
+    /// appear over Overview and flicker on every swipe. Embedded, the add
+    /// control sits in the page's own content instead; the wallet, the
+    /// reminders and every piece of state here are untouched either way.
+    var isEmbedded: Bool = false
+
     @EnvironmentObject private var state: AppState
     @StateObject private var wallet = CardWallet()
     @State private var catalog = CardCatalog.bundled
@@ -32,6 +43,7 @@ struct CardsScreen: View {
                 if wallet.cards.isEmpty {
                     if wallet.failure == nil { empty }
                 } else {
+                    if isEmbedded { addCardInline }
                     headline
                     ForEach(wallet.statuses(at: now)) { status in
                         BenefitRow(status: status, now: now) { redeemed in
@@ -46,13 +58,19 @@ struct CardsScreen: View {
             .padding(.horizontal, Theme.Space.screen)
             .padding(.bottom, Theme.Space.l)
         }
-        .navigationTitle("Cards")
+        // NOT `.navigationTitle(isEmbedded ? "" : "Cards")`. An empty title
+        // is still a title, and the innermost one wins - so that version
+        // blanked the bar the pager had just set to "Cards". Embedded, this
+        // screen declares no title at all and the pager's stands.
+        .titled("Cards", unless: isEmbedded)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { isPicking = true } label: { Image(systemName: "plus") }
-                    .accessibilityLabel("Add a card")
-                    .accessibilityIdentifier("add-card")
+            if !isEmbedded {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { isPicking = true } label: { Image(systemName: "plus") }
+                        .accessibilityLabel("Add a card")
+                        .accessibilityIdentifier("add-card")
+                }
             }
         }
         .sheet(isPresented: $isPicking) {
@@ -84,6 +102,24 @@ struct CardsScreen: View {
     }
 
     // MARK: - Pieces
+
+    /// The add control when the toolbar is not ours to put it in.
+    private var addCardInline: some View {
+        Button { isPicking = true } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("Add a card")
+            }
+            .font(.ataruLabel())
+            .foregroundStyle(Theme.cyan)
+            .padding(.vertical, Theme.Space.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Add a card")
+        .accessibilityIdentifier("add-card")
+    }
 
     private var headline: some View {
         ATCard {
@@ -142,7 +178,7 @@ struct CardsScreen: View {
             Text("No cards yet")
                 .font(.ataruTitle())
                 .foregroundStyle(Theme.textPrimary)
-            Text("Add the cards you carry and ATARU tracks the credits on them — what is still unspent this quarter, and when it disappears.")
+            Text("Add the cards you carry and ATARU tracks the credits on them - what is still unspent this quarter, and when it disappears.")
                 .font(.ataruCaption())
                 .foregroundStyle(Theme.textTertiary)
                 .multilineTextAlignment(.center)
@@ -318,7 +354,7 @@ private struct CardEditor: View {
                 }
 
                 Section("Add a credit") {
-                    TextField("What it is — e.g. Lululemon credit", text: $title)
+                    TextField("What it is - e.g. Lululemon credit", text: $title)
                     TextField("Amount in dollars", text: $amount)
                         .keyboardType(.decimalPad)
                     Picker("Resets", selection: $cycle) {
@@ -375,5 +411,13 @@ private struct CardEditor: View {
             to: live)
         title = ""
         amount = ""
+    }
+}
+
+private extension View {
+    /// Applies a navigation title, or applies nothing whatsoever.
+    @ViewBuilder
+    func titled(_ title: String, unless suppressed: Bool) -> some View {
+        if suppressed { self } else { navigationTitle(title) }
     }
 }

@@ -14,7 +14,7 @@ import SwiftUI
 ///
 /// Stage one is chosen by how often a phone is the right device for the job:
 /// the surfaces holding your own data, and the ones that change day to day.
-/// Stage two is what is genuinely better on a bigger screen — a video server,
+/// Stage two is what is genuinely better on a bigger screen - a video server,
 /// a music server, a handwriting canvas, and remote desktops.
 ///
 /// Docker and Notify were removed outright. Portainer is a management console
@@ -23,7 +23,16 @@ import SwiftUI
 enum HomeTile: String, CaseIterable, Identifiable {
     // The surfaces holding his own data and the ones that change day to day,
     // in reach order.
-    case assistant, plan, notes, finance, cards, health, journal, documents, home, workspaces
+    //
+    // NO `cards`. It was here, between `notes` and `health`, and it is gone
+    // rather than merely hidden: Cards is the same subject as Finance seen
+    // from another angle, and it is now page two of the Finance pager (see
+    // FinancePage). The case is removed outright because nothing persists a
+    // `HomeTile` - the enum is a routing table, not a stored value - so there
+    // is no saved "cards" anywhere that could fail to decode. The one place
+    // that resolves a tile by NAME from outside the app, `RuntimeMode`, sends
+    // that name to Finance on its Cards page.
+    case assistant, plan, notes, finance, health, journal, documents, home, workspaces
     // Settings-class: dialled once and then left alone. `morning` is his own
     // daily routine rather than a machine or a media server, so it does not
     // belong with the second group - and `settings` is the same shape of
@@ -48,7 +57,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "Ask"
         case .plan:          return "Plan"
         case .notes:         return "Notes"
-        case .cards:         return "Cards"
         case .finance:       return "Finance"
         case .health:        return "Health"
         case .home:          return "Home"
@@ -71,7 +79,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "waveform"
         case .plan:          return "checklist"
         case .notes:         return "waveform.badge.mic"
-        case .cards:         return "creditcard"
         case .finance:       return "dollarsign.circle"
         case .health:        return "heart.text.square"
         case .home:          return "lightbulb"
@@ -95,8 +102,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .assistant:     return "Voice · chat"
         case .plan:          return "Top 3 · todos"
         case .notes:         return "Dictate · summarise"
-        case .cards:         return "Credits · expiries"
-        case .finance:       return "Spending · net worth"
+        case .finance:       return "Spending · cards · statements"
         case .health:        return "Labs · meds"
         case .home:          return "Devices · switches"
         case .status:        return "System dashboard"
@@ -136,7 +142,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
 /// as a menu the thumb is standing inside rather than one it is aiming at, it
 /// puts a third of the tiles under the hand that opened it, and it takes away
 /// the "behind the fan" that makes sweeping backwards a cancel. What the arc
-/// keeps from that work is the fitting — the sweep still narrows and turns to
+/// keeps from that work is the fitting - the sweep still narrows and turns to
 /// whatever the press leaves room for, rather than assuming a whole screen.
 struct RadialArc: Equatable {
     let radius: Double
@@ -194,7 +200,7 @@ struct RadialArc: Equatable {
 /// Where each tile goes for one particular press.
 ///
 /// Solved once when the press lands and then held for its duration, so the fan
-/// never rearranges under a moving thumb — and so the arithmetic runs once
+/// never rearranges under a moving thumb - and so the arithmetic runs once
 /// rather than on every touch-moved event.
 /// The whole fan: one shared centre, and rings filled to whatever that
 /// direction affords.
@@ -309,7 +315,7 @@ struct RadialFan: Equatable {
     /// the field.
     private static let maxSweep: Double = 2 * .pi - 0.25
 
-    /// The tightest spacing any rung will accept — the floor below which tiles
+    /// The tightest spacing any rung will accept - the floor below which tiles
     /// are never placed, whatever else the solver gives up to make a press
     /// fit. Exposed so a test can assert legality against the ladder itself
     /// rather than against a number copied out of it, which would then have to
@@ -663,7 +669,7 @@ struct RadialFan: Equatable {
 /// ## Why release commits
 ///
 /// One press you never lift, instead of tap-then-tap. Nothing is committed
-/// until release, so sliding back to the middle cancels — the gesture stays
+/// until release, so sliding back to the middle cancels - the gesture stays
 /// reversible right up to the last moment, which is what makes it safe to
 /// explore blind.
 ///
@@ -673,7 +679,7 @@ struct RadialFan: Equatable {
 /// `PressAnywhere`) and the bubbles are pure drawing, so this layer can sit
 /// over the entire app permanently without intercepting a single tap. It also
 /// means the fan is unreachable by VoiceOver and Switch Control, which cannot
-/// press-and-sweep — the Ask orb carries every tile as a named accessibility
+/// press-and-sweep - the Ask orb carries every tile as a named accessibility
 /// action for exactly that reason, and those must not be removed on the
 /// grounds that the dial does the same job. They are the app's floor: with the
 /// tab bar and the destinations menu both gone, they are the only route
@@ -713,7 +719,7 @@ struct RadialPressMenu: View {
     var body: some View {
         GeometryReader { geo in
             // Global, because the recogniser reports window coordinates and
-            // this layer is inset by the safe area — the fan should keep clear
+            // this layer is inset by the safe area - the fan should keep clear
             // of the notch and the home indicator, not merely of the screen.
             let frame = geo.frame(in: .global)
 
@@ -836,7 +842,7 @@ struct RadialPressMenu: View {
         let local = CGPoint(x: point.x - frame.minX, y: point.y - frame.minY)
 
         // Reaching past the first ring brings out the rest, and coming back
-        // inside puts them away — the stage follows the thumb rather than
+        // inside puts them away - the stage follows the thumb rather than
         // latching, so a sweep that overshot can be taken back without
         // lifting. A firmer haptic than a selection tick either way, because
         // this changes what is on screen rather than moving within it, and by
@@ -886,7 +892,7 @@ struct RadialPressMenu: View {
 ///
 /// A plain opacity fade keeps every edge crisp the whole way to invisible,
 /// which on glass reads as the tiles being switched off. Losing focus and
-/// growing a little as they go reads as them dissolving into the page —
+/// growing a little as they go reads as them dissolving into the page -
 /// the same thing steam does leaving a mirror, and what is actually
 /// happening to them.
 private struct Dissolve: ViewModifier {
