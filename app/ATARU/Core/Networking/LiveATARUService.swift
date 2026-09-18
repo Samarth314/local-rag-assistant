@@ -86,7 +86,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
     func ask(question: String, stt: STTConfidence?) async throws -> SpokenAnswer {
         guard let url = endpoints.speak(question) else { throw APIError.invalidURL }
         do {
-            let (data, response) = try await perform(request(for: url))
+            let (data, response) = try await perform(askRequest(for: url))
             let audio = try await downloads.store(data, preferredName: "answer.wav")
             return SpokenAnswer(
                 text: response.value(forHTTPHeaderField: "X-Ataru-Text") ?? "",
@@ -171,7 +171,7 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
 
     private func askForText(_ question: String, stt: STTConfidence? = nil) async throws -> SpokenAnswer {
         guard let url = endpoints.answer(question) else { throw APIError.invalidURL }
-        var request = self.request(for: url)
+        var request = self.askRequest(for: url)
         // A confidence object has to travel in a body, and a body means POST.
         // Only when there is something to send, though: with nothing measured
         // this stays the GET it has always been, so no existing call and no
@@ -416,6 +416,22 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         if let token = tokenProvider(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
+        return request
+    }
+
+    /// A request that is part of the conversation, rather than a lookup.
+    ///
+    /// Only asks carry the session header. Document reads, the vocabulary
+    /// roster and the health poll are not turns, and stamping the conversation
+    /// on those would keep it alive purely because the app was open - which is
+    /// the opposite of the idle window's point (see ConversationID).
+    ///
+    /// A header rather than a query item: it is not part of the resource being
+    /// addressed, and it stays out of the URL column of every access log.
+    private func askRequest(for url: URL) -> URLRequest {
+        var request = self.request(for: url)
+        request.setValue(ConversationID.shared.current(),
+                         forHTTPHeaderField: "X-Ataru-Session")
         return request
     }
 

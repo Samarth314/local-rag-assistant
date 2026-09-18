@@ -328,11 +328,83 @@ final class STTConfidenceTests: XCTestCase {
     /// every typed question, every Apple-transcribed turn, and every turn
     /// against a server that does not measure.
     func testAskFrameOmitsTheConfidenceWhenThereIsNone() {
-        let frame = VoiceStreamSession.askFrame(question: "hello", stt: nil)
+        let frame = VoiceStreamSession.askFrame(question: "hello", stt: nil,
+                                                conversation: "ios-abc123")
         XCTAssertEqual(frame["type"] as? String, "ask")
         XCTAssertEqual(frame["q"] as? String, "hello")
         XCTAssertNil(frame["stt"])
-        XCTAssertEqual(frame.count, 2)
+        // type, q, conversation_id - and nothing else.
+        XCTAssertEqual(frame.count, 3)
+    }
+
+    // MARK: The conversation id
+
+    /// The 2026-09-11 failure: one continuous conversation on the sofa became
+    /// six server-side sessions, because the id lived on the socket and the
+    /// socket dies on any stream failure. The id now rides on every ask.
+    func testAskFrameCarriesTheConversation() {
+        let frame = VoiceStreamSession.askFrame(question: "any of them, play it",
+                                                stt: nil,
+                                                conversation: "ios-abc123")
+        XCTAssertEqual(frame["conversation_id"] as? String, "ios-abc123")
+        XCTAssertTrue(JSONSerialization.isValidJSONObject(frame))
+    }
+
+    private func scratchDefaults() throws -> UserDefaults {
+        let name = "ataru.tests.conversation.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        addTeardownBlock { UserDefaults().removePersistentDomain(forName: name) }
+        return defaults
+    }
+
+    /// Two questions in a row are one conversation - including across a
+    /// reconnect, an app restart, and the switch between the streaming and
+    /// blocking paths, since all three read the same stored value.
+    func testTheConversationSurvivesBetweenQuestions() throws {
+        let defaults = try scratchDefaults()
+        let ids = ConversationID(defaults: defaults)
+        let first = ids.current()
+        XCTAssertFalse(first.isEmpty)
+        XCTAssertEqual(ids.current(), first)
+        // A fresh instance reading the same store is the app relaunching.
+        XCTAssertEqual(ConversationID(defaults: defaults).current(), first)
+    }
+
+    /// Yesterday evening is not context for this morning. The window matches
+    /// the server's, so neither side resumes what the other has dropped.
+    func testAnIdleGapStartsANewConversation() throws {
+        let defaults = try scratchDefaults()
+        let now = Date()
+        let first = ConversationID(defaults: defaults, clock: { now }).current()
+        let later = now.addingTimeInterval(ConversationID.idleWindow + 1)
+        XCTAssertNotEqual(ConversationID(defaults: defaults, clock: { later }).current(),
+                          first)
+        // Just inside the window is still the same conversation.
+        let defaults2 = try scratchDefaults()
+        let a = ConversationID(defaults: defaults2, clock: { now }).current()
+        let soon = now.addingTimeInterval(ConversationID.idleWindow - 60)
+        XCTAssertEqual(ConversationID(defaults: defaults2, clock: { soon }).current(), a)
+    }
+
+    func testStartingANewChatRotatesTheConversation() throws {
+        let defaults = try scratchDefaults()
+        let ids = ConversationID(defaults: defaults)
+        let first = ids.current()
+        let second = ids.startNew()
+        XCTAssertNotEqual(second, first)
+        XCTAssertEqual(ids.current(), second)
+    }
+
+    /// The server sanitises identifiers off the wire to `[A-Za-z0-9_.:-]` and
+    /// truncates at 44 characters. An id that survives that untouched is one
+    /// less thing the two sides can disagree about.
+    func testTheConversationIdSurvivesTheServersSanitiser() throws {
+        let id = ConversationID(defaults: try scratchDefaults()).current()
+        XCTAssertTrue(id.hasPrefix("ios-"))
+        XCTAssertLessThanOrEqual(id.count, 44)
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-")
+        XCTAssertNil(id.rangeOfCharacter(from: allowed.inverted))
     }
 
     /// Present but empty is not something the wire has a meaning for, so it is

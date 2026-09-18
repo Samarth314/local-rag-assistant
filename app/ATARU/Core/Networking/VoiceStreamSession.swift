@@ -123,8 +123,17 @@ final class VoiceStreamSession: @unchecked Sendable {
     /// `stt` is omitted entirely rather than sent empty or null: the server
     /// distinguishes "no measurement" from a measurement, and an empty object
     /// on the wire is a third thing neither side has a meaning for.
-    static func askFrame(question: String, stt: STTConfidence?) -> [String: Any] {
+    static func askFrame(question: String, stt: STTConfidence?,
+                         conversation: String? = nil) -> [String: Any] {
         var frame: [String: Any] = ["type": "ask", "q": question]
+        // WHICH CONVERSATION THIS IS (2026-09-18). Per FRAME, not per socket:
+        // the socket dies on any stream failure and the conversation does not,
+        // and sending it here means a rotation ("new chat") takes effect on
+        // the next question without tearing the connection down. A server that
+        // does not read the field falls back to the id this device used last,
+        // so an older backend behaves exactly as before.
+        let id = conversation ?? ConversationID.shared.current()
+        if !id.isEmpty { frame["conversation_id"] = id }
         if let stt {
             let object = stt.jsonObject
             if !object.isEmpty { frame["stt"] = object }
