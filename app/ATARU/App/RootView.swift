@@ -25,6 +25,10 @@ struct RootView: View {
     /// native now - the radial dial and the accessibility menu are two ways of
     /// opening the same set, and nothing routes to a web page.
     @State private var presentedTile: HomeTile?
+    /// The one destination that is a web page rather than a screen of ours.
+    /// See `HomeTile.externalURL` for why Gym cannot be a tile screen, and
+    /// `SafariView` for why it is Safari and not the embedded web view.
+    @State private var safariPage: SafariPage?
 
     // Borrowed from CallStack, never constructed here. A view's init re-runs
     // on any parent update, and constructing call machinery per-init is what
@@ -173,7 +177,14 @@ struct RootView: View {
             // itself as `current` so the fan never offers the page you are
             // already reading.
             RadialPressMenu(
-                isEnabled: !call.state.isLive && !isComposerActive,
+                // Off under the Safari cover too. The press recogniser lives
+                // on the WINDOW (see PressAnywhere), so a cover drawn over
+                // this view does not put it out of reach the way a hit-tested
+                // overlay would - holding a thumb on somebody else's web page
+                // would open the fan underneath it and then navigate on
+                // release. Nothing else disables it, so it has to be said.
+                isEnabled: !call.state.isLive && !isComposerActive
+                    && safariPage == nil,
                 // Only what is actually on top gets to claim a hold. These
                 // are published by the root screen, which stays mounted
                 // underneath a tile — so leaving them in place meant the Ask
@@ -225,6 +236,18 @@ struct RootView: View {
                         .accessibilityAddTraits(.isModal)
                 }
             }
+        }
+        // The Gym page, in Safari's own web view.
+        //
+        // A cover rather than a layer in the stack above, and this is the one
+        // place a presentation is the right answer: the content is not ours,
+        // the launcher must not float over somebody else's site, and Safari's
+        // Done button is a better way back than a drag gesture we would have
+        // to draw over a page we do not control. `item:` keyed on the address,
+        // so opening Gym twice is one presentation.
+        .fullScreenCover(item: $safariPage) { page in
+            SafariView(url: page.url) { safariPage = nil }
+                .ignoresSafeArea()
         }
         // A finished call always comes back expanded. Restoring minimised would
         // hide the next call behind a bar the user has to notice and tap.
@@ -351,6 +374,21 @@ struct RootView: View {
         // so. Done outside the animation: there is nothing of ours to animate,
         // and the app is about to leave the foreground.
         if tile == .media, ExternalApp.swiftfin.open() { return }
+
+        // Gym is a web page, and it has to be Safari's web view rather than
+        // ours: its sign-in is a passkey, and WebAuthn does not work inside a
+        // WKWebView without a webcredentials entitlement this app does not
+        // have. Presented over the top rather than set as `presentedTile`, so
+        // Done comes straight back to whatever was already on screen - one
+        // tap, no tile page in between. See HomeTile.externalURL.
+        if let url = tile.externalURL {
+            guard ExternalPage.canPresentInApp(url) else {
+                ExternalPage.openOutOfApp(url)
+                return
+            }
+            safariPage = SafariPage(url: url)
+            return
+        }
 
         withAnimation(.easeInOut(duration: 0.24)) {
             presentedTile = tile == .assistant ? nil : tile

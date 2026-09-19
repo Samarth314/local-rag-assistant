@@ -6,7 +6,8 @@ import SwiftUI
 /// is the way in; the Ask orb carries the same set as accessibility actions
 /// for everyone the press-and-sweep cannot serve. Both read this enum, so a
 /// tile added here appears in both without another edit. Every case opens a
-/// native screen; nothing routes to a web page.
+/// native screen, with one declared exception: a tile carrying an
+/// `externalURL` is handed to Safari instead, and `gym` says why.
 ///
 /// Declaration order is reach order: the earlier a tile is listed, the sooner
 /// a thumb gets to it. The inner ring is filled first and in order, so where a
@@ -32,7 +33,28 @@ enum HomeTile: String, CaseIterable, Identifiable {
     // is no saved "cards" anywhere that could fail to decode. The one place
     // that resolves a tile by NAME from outside the app, `RuntimeMode`, sends
     // that name to Finance on its Cards page.
-    case assistant, plan, notes, finance, health, journal, documents, home, workspaces
+    case assistant, plan, notes, finance, health
+    // Gym sits next to Health because it is the same subject on the days it is
+    // opened at all - a workout is logged at the rack, on the phone, which is
+    // exactly the "phone is the right device for the job" test the first group
+    // is chosen by.
+    //
+    // IT IS THE ONE TILE THAT IS NOT A NATIVE SCREEN, and that is a platform
+    // constraint rather than a shortcut. OpenGym signs in with a passkey, and
+    // WebAuthn is refused outright inside a plain WKWebView unless the app
+    // carries a `webcredentials` associated-domain entitlement for that host.
+    // This app carries none, so the embedded web view the Remote tile uses
+    // would put up a sign-in this phone cannot finish - a dead end that looks
+    // like a bug in OpenGym. SFSafariViewController shares Safari's own
+    // credential store and the passkey works there, so `gym` declares an
+    // `externalURL` and RootView hands it to a Safari sheet.
+    //
+    // Reimplementing it natively, or embedding it in WebScreen, means adding
+    // the entitlement (and the matching `/.well-known/apple-app-site-
+    // association` on the host) FIRST. Do not "simplify" this into the tile
+    // screen switch without that.
+    case gym
+    case journal, documents, home, workspaces
     // Settings-class: dialled once and then left alone. `morning` is his own
     // daily routine rather than a machine or a media server, so it does not
     // belong with the second group - and `settings` is the same shape of
@@ -59,6 +81,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .notes:         return "Notes"
         case .finance:       return "Finance"
         case .health:        return "Health"
+        case .gym:           return "Gym"
         case .home:          return "Home"
         case .status:        return "Status"
         case .journal:       return "Journal"
@@ -81,6 +104,10 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .notes:         return "waveform.badge.mic"
         case .finance:       return "dollarsign.circle"
         case .health:        return "heart.text.square"
+        // SF Symbols 4, so it exists on every OS this app runs on - the
+        // deployment floor is iOS 18. A symbol the system does not have draws
+        // as nothing at all, silently, which is why this is worth stating.
+        case .gym:           return "dumbbell"
         case .home:          return "lightbulb"
         case .status:        return "gauge.with.dots.needle.50percent"
         case .journal:       return "book.closed"
@@ -104,6 +131,7 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .notes:         return "Dictate · summarise"
         case .finance:       return "Spending · cards · statements"
         case .health:        return "Labs · meds"
+        case .gym:           return "Workouts · body weight"
         case .home:          return "Devices · switches"
         case .status:        return "System dashboard"
         case .journal:       return "Write · reflect"
@@ -116,6 +144,21 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .music:         return "Navidrome"
         case .passwords:     return "Vaultwarden"
         case .remote:        return "Screens"
+        }
+    }
+
+    /// The page this tile hands to Safari instead of drawing a screen of our
+    /// own, or nil for every native destination.
+    ///
+    /// It lives on the enum rather than in `RootView` on purpose: this file is
+    /// the single source of truth for where a tile goes, and a destination
+    /// that leaves the app is still a destination. Built from
+    /// `ATARUAuth.ataruDomain` so there is one place the domain is written -
+    /// the tile hosts already resolve as subdomains of it.
+    var externalURL: URL? {
+        switch self {
+        case .gym: return URL(string: "https://gym.\(ATARUAuth.ataruDomain)")
+        default:   return nil
         }
     }
 

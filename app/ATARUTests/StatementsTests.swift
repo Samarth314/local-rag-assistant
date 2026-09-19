@@ -751,9 +751,44 @@ final class FinancePagerTests: XCTestCase {
     func testEveryOtherTileSurvivedTheRemoval() {
         XCTAssertEqual(HomeTile.allCases.map(\.rawValue),
                        ["assistant", "plan", "notes", "finance", "health",
-                        "journal", "documents", "home", "workspaces",
+                        "gym", "journal", "documents", "home", "workspaces",
                         "morning", "settings", "status", "passwords", "media",
                         "music", "whiteboard", "remote"])
+    }
+
+    /// Gym is next to Health, which is the whole of its priority claim -
+    /// declaration order is reach order.
+    func testGymIsReachedRightAfterHealth() {
+        let order = HomeTile.allCases
+        guard let health = order.firstIndex(of: .health),
+              let gym = order.firstIndex(of: .gym) else {
+            return XCTFail("the launcher lost a tile")
+        }
+        XCTAssertEqual(gym, health + 1)
+        XCTAssertEqual(HomeTile.gym.title, "Gym")
+        XCTAssertEqual(HomeTile.gym.symbol, "dumbbell")
+        XCTAssertEqual(HomeTile.gym.kind, "Workouts · body weight")
+    }
+
+    /// The tile is a web destination, and it is the ONLY one. A second tile
+    /// quietly acquiring an `externalURL` is a routing change worth noticing:
+    /// those never reach `TileScreenHost` at all.
+    func testGymIsTheOneTileThatLeavesTheApp() {
+        XCTAssertEqual(HomeTile.gym.externalURL?.absoluteString,
+                       "https://gym.ataru.aryasasikumar.com")
+        XCTAssertEqual(HomeTile.allCases.filter { $0.externalURL != nil }, [.gym])
+    }
+
+    /// Whatever the address becomes, it stays something Safari can be handed
+    /// in app - the fallback out of the app exists, but Gym must not need it.
+    func testTheGymPageCanBePresentedInApp() {
+        guard let url = HomeTile.gym.externalURL else {
+            return XCTFail("Gym lost its address")
+        }
+        XCTAssertTrue(ExternalPage.canPresentInApp(url))
+        XCTAssertFalse(ExternalPage.canPresentInApp(URL(string: "opengym://home")!))
+        // Keyed on the address, so asking twice is one presentation.
+        XCTAssertEqual(SafariPage(url: url).id, url.absoluteString)
     }
 
     func testFinanceAdvertisesItsNewScope() {
