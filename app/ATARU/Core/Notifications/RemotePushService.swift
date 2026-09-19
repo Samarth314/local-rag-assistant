@@ -80,7 +80,15 @@ final class RemotePushService: NSObject, ObservableObject {
     /// notifications denied.
     func start() {
         UNUserNotificationCenter.current().delegate = self
-        Task { await requestThenRegister() }
+        Task {
+            // Before the permission prompt, deliberately. The category has to
+            // be known to the system by the time a notification carrying it
+            // arrives, and a cold launch straight from a tap is exactly the
+            // case where the prompt has long since been answered and this is
+            // the only thing that still needs to run.
+            await MorningCallAlert.register()
+            await requestThenRegister()
+        }
     }
 
     /// Point at the current backend, and re-upload. Called whenever Demo ⇄ Live
@@ -162,13 +170,27 @@ extension RemotePushService: UNUserNotificationCenterDelegate {
     /// wrong here: these are vault and system events - a renewal, a lab result
     /// landing, a machine going down - and none of them are on the screen you
     /// happen to be reading.
+    ///
+    /// The one exception is the morning-call alert while a call is already up.
+    /// The server sends the ring and the alert in the same attempt, so both
+    /// arriving is the NORMAL case rather than a fault - and a banner saying
+    /// "ATARU morning call" drawn over the ATARU call that is ringing is
+    /// noise about something already on the screen. The alert is a fallback
+    /// for a ring that did not arrive; when the ring did arrive there is
+    /// nothing for it to do.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler:
             @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        let content = notification.request.content
+        let isCallAlert = MorningCallAlert.wantsCall(category: content.categoryIdentifier,
+                                                     userInfo: content.userInfo)
+        let suppressed = MainActor.assumeIsolated {
+            isCallAlert && CallStack.shared.call.state.isLive
+        }
+        completionHandler(suppressed ? [] : [.banner, .sound])
     }
 
     /// A tap on a notification, routed to the screen it is about.
@@ -189,9 +211,21 @@ extension RemotePushService: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let category = response.notification.request.content.categoryIdentifier
+        let content = response.notification.request.content
+        let category = content.categoryIdentifier
         if category == RoutineReminders.category {
             PendingNotificationRoute.record(.health)
+            NotificationCenter.default.post(name: .ataruNotificationRoute,
+                                            object: nil)
+        } else if MorningCallAlert.wantsCall(category: category,
+                                             userInfo: content.userInfo) {
+            // Straight into `PendingCallRequest`, which is the SAME latch a
+            // Recents tap uses. One place decides what "the app was asked to
+            // call" means, and it already knows how to be drained exactly
+            // once however many delivery routes fire - which is what stops a
+            // tap on the alert stacking a second call on top of the VoIP one.
+            MainActor.assumeIsolated { PendingCallRequest.record() }
+            pushLog.notice("morning-call alert tapped - call requested")
             NotificationCenter.default.post(name: .ataruNotificationRoute,
                                             object: nil)
         }

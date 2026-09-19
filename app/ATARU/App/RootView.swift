@@ -267,6 +267,12 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(
             for: .ataruNotificationRoute)) { _ in
             if let tile = PendingNotificationRoute.take() { open(tile: tile) }
+            // The morning-call alert, tapped while the app was already up.
+            // Same latch as a Recents tap and same guard inside `call()`, so
+            // an alert arriving next to the VoIP push that is already ringing
+            // brings the call screen forward rather than starting a second
+            // call.
+            if PendingCallRequest.take() { call.call() }
         }
         // Not `await refreshConnection()` any more. That was the single probe
         // that ran before the tailnet was up and then published its negative

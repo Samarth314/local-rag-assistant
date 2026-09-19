@@ -215,6 +215,18 @@ protocol ATARUService: AnyObject, Sendable {
     /// Called on every launch, because that is when iOS hands over a token and
     /// the token can rotate at Apple's discretion. The endpoint is idempotent.
     func registerPushToken(_ token: String, environment: String) async throws
+
+    /// Says how the MORNING call stopped: he ended it, he declined it, or it
+    /// rang out.
+    ///
+    /// Reporting only. Nothing here stands the redial ladder down - that is
+    /// `confirmMorningCall`, and deliberately still only that. See
+    /// `CallHangup` for the classification and for why the two are separate.
+    ///
+    /// Called from a CallKit teardown, so the caller does not await it: a
+    /// report that never lands leaves the ladder behaving exactly as it did
+    /// before this existed.
+    func reportCallHangup(reason: CallHangupReason, at moment: Date) async throws
 }
 
 extension ATARUService {
@@ -321,6 +333,13 @@ extension ATARUService {
     /// app depends on registration having happened. (It also keeps the test
     /// stubs compiling without learning the vocabulary.)
     func registerPushToken(_ token: String, environment: String) async throws {}
+
+    /// A backend with no `/voip/hangup` hears nothing, and that is a
+    /// perfectly good outcome: the morning ladder worked without this report
+    /// for as long as it has existed, and an older server should not turn a
+    /// hangup into an error on a path that cannot show one. (Demo is the real
+    /// case, and it also keeps the test stubs compiling.)
+    func reportCallHangup(reason: CallHangupReason, at moment: Date) async throws {}
 }
 
 /// Client-side filtering and sorting.

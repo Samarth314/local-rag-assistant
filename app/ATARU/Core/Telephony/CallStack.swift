@@ -26,9 +26,11 @@ final class CallStack {
     let call: CallService
     let session: CallSessionModel
     let push: VoIPPushService
+    let hangups: MorningHangupReporter
 
     private init() {
         let call = CallService()
+        let hangups = MorningHangupReporter()
         // Placeholder until `configure` — replaced before any call can exist,
         // because RootView configures in its init and nothing can dial sooner.
         let session = CallSessionModel(service: DemoATARUService())
@@ -48,9 +50,18 @@ final class CallStack {
         // "That will be all" → goodbye → hang up, through the same CallKit
         // path as the End button.
         session.onFarewell = { [weak call] in call?.end() }
+        // The morning call stopping is a fact the server has no other way to
+        // learn: the ladder polls "did he confirm", and ending, declining or
+        // ignoring a call are all silence to that question. Strong capture on
+        // purpose - the reporter is owned here and has no other referent, and
+        // the callback fires exactly when the call is being torn down.
+        call.onMorningCallEnded = { reason, moment in
+            hangups.report(reason, at: moment)
+        }
 
         self.call = call
         self.session = session
+        self.hangups = hangups
         // The push registry must exist before a push can arrive.
         self.push = VoIPPushService(call: call)
     }
@@ -91,5 +102,6 @@ final class CallStack {
         configuredService = service
         session.update(service: service)
         push.update(service: service)
+        hangups.update(service: service)
     }
 }

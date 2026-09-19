@@ -497,6 +497,19 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         _ = try await perform(request)
     }
 
+    /// `POST /voip/hangup`, with the same bearer every other route carries.
+    ///
+    /// The body is built by `CallHangup` rather than here, because the shape
+    /// is the contract and the contract is what the tests pin down.
+    func reportCallHangup(reason: CallHangupReason, at moment: Date) async throws {
+        guard let url = endpoints.url("voip/hangup") else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try CallHangup.encode(reason: reason, at: moment)
+        _ = try await perform(request)
+    }
+
     func registerPushToken(_ token: String, environment: String) async throws {
         guard let url = endpoints.url("api/push/register") else { throw APIError.invalidURL }
         var request = self.request(for: url)
@@ -521,6 +534,14 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
     /// and production APNs hosts, and guessing wrong fails as BadDeviceToken
     /// with nothing to see. The VoIP registration already carries the same
     /// field for the same reason.
+    ///
+    /// THE ALERT TOKEN GOES HERE AND ONLY HERE. It is not also posted to
+    /// `/voip/register`, which is the morning ring's registry: the two are
+    /// different tokens for different APNs topics, and a PushKit token in the
+    /// alert registry (or the reverse) fails as BadDeviceToken with nothing
+    /// anywhere saying why. The paired morning alert is sent from THIS
+    /// registry - see the server's `push.ring_alert` - so nothing about the
+    /// two-push morning needs a second registration.
     private struct PushRegistration: Encodable {
         let token: String
         let platform: String

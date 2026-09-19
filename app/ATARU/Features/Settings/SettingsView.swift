@@ -26,6 +26,11 @@ struct SettingsView: View {
     // without this row a phone that cannot be rung looks identical to one
     // that can, right up until 7am when it doesn't ring.
     @ObservedObject private var push = CallStack.shared.push
+    /// The OTHER token. The morning ring now arrives as a VoIP push and an
+    /// ordinary alert in the same attempt, so a phone can be registered for
+    /// one and not the other - and that is exactly the state where the ring
+    /// silently loses its fallback with nothing anywhere saying so.
+    @ObservedObject private var alerts = RemotePushService.shared
 
     @State private var baseURL: String = ""
     @State private var token: String = ""
@@ -117,7 +122,7 @@ struct SettingsView: View {
                 #endif
 
                 if let error = push.registrationError {
-                    Label(error, systemImage: "bell.slash")
+                    Label("Ring: \(error)", systemImage: "bell.slash")
                         .font(.ataruCaption())
                         .foregroundStyle(Theme.amber)
                 } else if push.token != nil {
@@ -130,6 +135,12 @@ struct SettingsView: View {
                         .font(.ataruCaption())
                         .foregroundStyle(Theme.textTertiary)
                 }
+
+                alertRegistration
+
+                Text("The morning call arrives twice: a VoIP push that rings the phone, and an ordinary notification you can tap to open call mode. The second one is the fallback for a ring iOS decided not to deliver, so both lines above should be green.")
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
             }
         }
         .scrollContentBackground(.hidden)
@@ -148,6 +159,36 @@ struct SettingsView: View {
         .onAppear {
             baseURL = state.configuration.baseURLString
             token = state.token ?? ""
+        }
+    }
+
+    /// Whether the server can send the tappable morning-call notification.
+    ///
+    /// Three distinct answers, and the distinctions are the point. A REFUSED
+    /// permission is a different problem from a token that would not upload,
+    /// and both are different from iOS not having issued one yet - the first
+    /// is fixed in iOS Settings, the second by the server coming back, and the
+    /// third by waiting. One grey "not registered" line would hide all three.
+    @ViewBuilder
+    private var alertRegistration: some View {
+        if alerts.authorization == .denied {
+            Label("Alerts: notifications are off for ATARU. Turn them on in iOS Settings, or the morning call has no fallback.",
+                  systemImage: "bell.slash")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.amber)
+        } else if let error = alerts.registrationError {
+            Label("Alerts: \(error)", systemImage: "bell.slash")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.amber)
+        } else if alerts.token != nil {
+            Label("ATARU can notify this phone (\(VoIPPushService.environment) alert token registered).",
+                  systemImage: "bell.badge")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.green)
+        } else {
+            Text("No alert token yet - iOS hasn't issued one. Same entitlement as the ring above, and the server has to be reachable once for the phone to register it.")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.textTertiary)
         }
     }
 

@@ -40,6 +40,12 @@ enum CallState: Equatable {
 enum CallEndReason: Equatable {
     case hungUp
     case declined
+    /// It rang and nobody touched it.
+    ///
+    /// Distinct from `declined` although CallKit delivers both the same way -
+    /// see `CallHangup.endingForUnansweredCall` for how the two are told
+    /// apart, and why the difference is worth having at all.
+    case missed
     case failed(String)
     /// The system tore everything down — `providerDidReset`.
     case reset
@@ -54,6 +60,7 @@ enum CallEndReason: Equatable {
         switch self {
         case .hungUp: return "Call ended"
         case .declined: return "Declined"
+        case .missed: return "Missed call"
         case .failed: return "Call failed"
         case .reset: return "Call ended"
         case .superseded: return "Call ended"
@@ -136,6 +143,13 @@ final class CallService: NSObject, ObservableObject {
     var onAudioInterrupted: (() -> Void)?
     /// The route came back and the system said it is ours again.
     var onAudioResumed: (() -> Void)?
+    /// The MORNING call stopped, and how.
+    ///
+    /// Fires at most once per call, and only for the morning call - see
+    /// `CallHangup.report` for both gates. Wired in `CallStack` to
+    /// `MorningHangupReporter`; this class does no networking of its own, for
+    /// the same reason it does not own the conversation.
+    var onMorningCallEnded: ((CallHangupReason, Date) -> Void)?
 
     private let provider: CXProvider
     private let controller = CXCallController()
@@ -147,6 +161,15 @@ final class CallService: NSObject, ObservableObject {
     /// Whether the system has taken the audio route away mid-call - an alarm,
     /// a Siri invocation, a cellular call arriving over the top of this one.
     private var isInterrupted = false
+    /// When the current call started ringing, or nil if it was placed from
+    /// here. The only evidence there is for telling a decline from a call that
+    /// rang out - see `CallHangup.endingForUnansweredCall`.
+    private var ringingSince: Date?
+    /// One hangup report per call, whichever path ends it. A failed
+    /// transaction can tear a call down through `request`'s error handler and
+    /// then have the delegate arrive anyway; the server should hear about that
+    /// morning once.
+    private var didReportHangup = false
     /// Observers for the two things that can happen to a live route without
     /// CallKit saying a word about them.
     private var audioObservers: [NSObjectProtocol] = []
@@ -282,6 +305,9 @@ final class CallService: NSObject, ObservableObject {
         // Placed from this side, so there is no server reason behind it - and
         // nothing about it is the morning brief.
         reason = nil
+        // Never rang here, and nothing about ending it is reportable.
+        ringingSince = nil
+        didReportHangup = false
         state = .dialing
 
         let action = CXStartCallAction(call: id, handle: Self.handle)
@@ -332,6 +358,8 @@ final class CallService: NSObject, ObservableObject {
             self.callID = id
             // A test call from Settings is not the morning call.
             self.reason = nil
+            self.ringingSince = Date()
+            self.didReportHangup = false
 
             let update = CXCallUpdate()
             update.remoteHandle = Self.handle
@@ -389,6 +417,11 @@ final class CallService: NSObject, ObservableObject {
         callID = id
         state = .incoming
         self.reason = reason
+        // The clock the decline-versus-miss decision reads. Started here
+        // rather than on the first delegate callback, because for a call that
+        // is never answered there is no other callback.
+        ringingSince = Date()
+        didReportHangup = false
 
         let update = CXCallUpdate()
         update.remoteHandle = Self.handle
@@ -572,6 +605,12 @@ final class CallService: NSObject, ObservableObject {
             provider.reportCall(with: id, endedAt: Date(), reason: providerReason)
         }
 
+        // BEFORE `self.reason` is cleared below. The gate is "was this the
+        // morning call", and clearing first would make every ending
+        // unreportable - which is the same bug shape as the one the clearing
+        // itself exists to fix, in the other direction.
+        reportHangupIfMorning(reason)
+
         // Donate before clearing state — this is what teaches iOS to offer
         // ATARU on a contact card. Only completed calls count: donating a
         // dialing-then-failed call would advertise a way to reach something
@@ -587,8 +626,20 @@ final class CallService: NSObject, ObservableObject {
         // next call placed from the Phone app would inherit "morning-brief"
         // and offer to confirm a morning that is not happening.
         self.reason = nil
+        ringingSince = nil
         state = .ended(reason)
         onAudioDeactivated?()
+    }
+
+    /// Hands one ending to the reporter, if it is one the server should hear
+    /// about. Both gates live in `CallHangup.report`; this is only the
+    /// once-per-call latch and the handoff.
+    private func reportHangupIfMorning(_ ending: CallEndReason) {
+        guard !didReportHangup,
+              let report = CallHangup.report(for: ending,
+                                             isMorningCall: isMorningCall) else { return }
+        didReportHangup = true
+        onMorningCallEnded?(report, Date())
     }
 
     /// Starts the conversation even if the system never hands us the audio
@@ -632,6 +683,10 @@ extension CallService: CXProviderDelegate {
             // quiet-system fallback for that call.
             didActivateAudio = false
             self.reason = nil
+            // Nothing is reported for a reset - the system took the call, he
+            // did not - but the next call must start from a clean slate.
+            ringingSince = nil
+            didReportHangup = false
             isInterrupted = false
             state = .ended(.reset)
             onAudioDeactivated?()
@@ -661,14 +716,23 @@ extension CallService: CXProviderDelegate {
         }
     }
 
+    /// The red button, a decline from the lock screen, and the system's own
+    /// ring timeout all arrive here, with nothing on the action saying which.
+    ///
+    /// Answered is the easy half: a live conversation that ends is a hangup.
+    /// The other half is guesswork with one piece of evidence, elapsed ring
+    /// time, and `CallHangup` owns that guess so it can be argued with in a
+    /// test rather than inside a CallKit delegate.
     nonisolated func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         MainActor.assumeIsolated {
-            let wasAnswered = state == .active(connectedAt: Date()) || {
+            let wasAnswered: Bool = {
                 if case .active = state { return true }
                 return false
             }()
             action.fulfill()
-            teardown(reason: wasAnswered ? .hungUp : .declined)
+            teardown(reason: wasAnswered
+                     ? .hungUp
+                     : CallHangup.endingForUnansweredCall(ringingSince: ringingSince))
         }
     }
 
