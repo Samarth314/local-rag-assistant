@@ -321,6 +321,8 @@ enum TileCache {
                                 StatementsModel.cacheKind,
                                 // The openGym document. See GymStore.
                                 GymStore.cacheKind,
+                                // The Files browser's last listing.
+                                FilesViewModel.cacheKind,
                                 // And openGym's exercise catalogue, cached for
                                 // a day beside it.
                                 GymStore.libraryCacheKind]
@@ -518,7 +520,10 @@ struct TileScreenHost: View {
         // Settings was a gear in the Ask navigation bar - a permanent control
         // on the app's front page for something touched about twice a year.
         // They are ordinary tiles now, and every destination behaves the same.
-        case .documents:  DocumentsView()
+        // The tile is Files now: the projects index is the browser, and the
+        // vault library it used to open is one source inside it. See
+        // FilesScreen for why the two indexes are not merged into one list.
+        case .documents:  FilesScreen()
         case .settings:   SettingsView()
         default:          ServiceCardScreen(tile: tile)
         }

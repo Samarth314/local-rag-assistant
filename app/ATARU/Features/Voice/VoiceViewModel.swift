@@ -435,7 +435,11 @@ final class VoiceViewModel: ObservableObject {
             do {
                 let answer = try await service.ask(question: question, stt: stt)
                 guard !Task.isCancelled else { return }
-                record(question: question, answer: answer)
+                record(question: question, answer: answer, document: answer.document)
+                // The blocking path carries these too now. A question asked
+                // while the socket was down used to open nothing at all, even
+                // when the server had resolved a file for it.
+                apply(document: answer.document, files: answer.files)
                 speak(answer)
             } catch is CancellationError {
                 // Deliberate: the user asked something else.
@@ -489,7 +493,7 @@ final class VoiceViewModel: ObservableObject {
                     streamPlayer.enqueue(chunk)
                 case .audioEnd, .ttsUnavailable:
                     break
-                case .done(let spoken, let source, let document):
+                case .done(let spoken, let source, let document, let listing):
                     let final = spoken.isEmpty ? text : spoken
                     record(question: question,
                            answer: SpokenAnswer(text: final, source: source, audioURL: nil),
@@ -497,7 +501,10 @@ final class VoiceViewModel: ObservableObject {
                     // Opening it is the point of asking for it: a pull-up
                     // turn puts the file on screen here as well as on the
                     // wall, so he can zoom and scroll it in his hand.
-                    if let document { presentedDocument = document }
+                    //
+                    // One or the other, never both - see AnswerPayloadRouter
+                    // for why the specific artefact wins.
+                    apply(document: document, files: listing)
                     if streamPlayer.isActive {
                         await streamPlayer.finish()
                         if phase == .speaking { phase = .idle }
@@ -566,6 +573,25 @@ final class VoiceViewModel: ObservableObject {
             guard !Task.isCancelled, let self, self.phase == .speaking else { return }
             voiceLog.error("phase watchdog fired - tearing down a stalled turn")
             self.stopSpeaking()
+        }
+    }
+
+    /// Acts on whatever the turn pulled up.
+    ///
+    /// The precedence lives in `AnswerPayloadRouter` rather than here, because
+    /// it is a decision worth pinning in a test: a listing and a document can
+    /// arrive together and only one of them can be opened.
+    private func apply(document: DocumentRef?, files: FilesPayload?) {
+        switch AnswerPayloadRouter.route(document: document, files: files) {
+        case .openViewer(let ref):
+            presentedDocument = ref
+        case .openFiles(let payload):
+            // Handed to the Files tile rather than opened here: the browser is
+            // a tile screen and this view model has no business presenting
+            // one. See FilesRoute.
+            FilesRoute.deliver(payload)
+        case .none:
+            break
         }
     }
 

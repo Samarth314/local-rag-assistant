@@ -15,7 +15,8 @@ enum VoiceStreamEvent: Sendable {
     case audioChunk(Data)
     case audioEnd
     case ttsUnavailable
-    case done(text: String, source: String?, document: DocumentRef?)
+    case done(text: String, source: String?, document: DocumentRef?,
+              files: FilesPayload?)
 }
 
 enum VoiceStreamError: Error {
@@ -222,11 +223,24 @@ final class VoiceStreamSession: @unchecked Sendable {
                     doc = DocumentRef(id: id,
                                       title: d["title"] as? String ?? "Document",
                                       fileType: d["file_type"] as? String ?? "",
-                                      previewable: d["previewable"] as? Bool ?? true)
+                                      previewable: d["previewable"] as? Bool ?? true,
+                                      // Absent on every server that predates
+                                      // the projects index, which is exactly
+                                      // what "this is a vault record" means.
+                                      source: DocumentSource(
+                                          serverValue: d["source"] as? String),
+                                      url: d["url"] as? String)
+                }
+                // A listing rather than a file: "show me the Robolabs
+                // spreadsheets" opens the Files tile pre-filtered instead of
+                // reading forty names out loud.
+                var listing: FilesPayload?
+                if let f = dict["files"] as? [String: Any] {
+                    listing = FilesPayload(json: f)
                 }
                 return .done(text: dict["text"] as? String ?? "",
                              source: (source?.isEmpty ?? true) ? nil : source,
-                             document: doc)
+                             document: doc, files: listing)
             case "error":
                 throw VoiceStreamError.server(dict["message"] as? String ?? "unknown")
             default:

@@ -195,6 +195,21 @@ struct DocumentPayload: Equatable {
 // MARK: - Voice
 
 /// One spoken exchange, kept for the session's transcript.
+/// Which index an answer's document came out of.
+///
+/// The two are addressed by DIFFERENT routes - `/documents/{id}` for the vault
+/// library and `/api/files/{id}` for the projects index - and the ids are not
+/// interchangeable. A ref that did not say which one it belonged to would send
+/// half of them to the wrong endpoint and 404, so the source travels with it
+/// and defaults to the one that existed first.
+enum DocumentSource: String, Equatable, Sendable {
+    case vault, files
+
+    init(serverValue: String?) {
+        self = DocumentSource(rawValue: (serverValue ?? "").lowercased()) ?? .vault
+    }
+}
+
 /// A document an answer pulled up, resolvable on the phone.
 ///
 /// The id is the server's stable sha1(path) handle - a vault path is NOT
@@ -204,6 +219,13 @@ struct DocumentRef: Equatable, Identifiable {
     let title: String
     let fileType: String
     let previewable: Bool
+    var source: DocumentSource = .vault
+    /// Where the server says the bytes are, when it says. Advisory only: the
+    /// app still fetches by id through its own service, so a URL that points
+    /// somewhere unexpected cannot make this app go there. It is carried so a
+    /// future route can be followed without another protocol change, and so
+    /// the viewer can report what it was handed.
+    var url: String? = nil
 }
 
 struct VoiceExchange: Identifiable, Equatable {
@@ -273,6 +295,23 @@ struct SpokenAnswer: Equatable {
     /// Local file the player reads. Nil when the server had no voice engine,
     /// in which case the client falls back to on-device speech.
     let audioURL: URL?
+    /// A file this turn pulled up. The streaming path has carried one since
+    /// the wall display existed; the BLOCKING path did not, so a question
+    /// asked while the socket was down opened nothing on the phone even
+    /// though the server had resolved a document. Both carry it now.
+    var document: DocumentRef? = nil
+    /// A listing this turn narrowed to - "show me the Robolabs spreadsheets".
+    /// Opens the Files tile rather than being read out loud.
+    var files: FilesPayload? = nil
+
+    init(text: String, source: String?, audioURL: URL?,
+         document: DocumentRef? = nil, files: FilesPayload? = nil) {
+        self.text = text
+        self.source = source
+        self.audioURL = audioURL
+        self.document = document
+        self.files = files
+    }
 }
 
 // MARK: - Morning call

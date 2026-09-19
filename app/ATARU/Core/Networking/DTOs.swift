@@ -93,6 +93,38 @@ enum DTO {
         let text: String
         let source: String?
         let model: String?
+        /// A file the turn pulled up. Served by `/voice/answer` since the
+        /// wall-display shortcut existed; the app only started reading it
+        /// here when the blocking path needed to open the viewer too.
+        let document: AnswerDocument?
+        /// A listing the turn narrowed to. Absent on every older server, which
+        /// is exactly what "the Files tile does not open" should look like.
+        let files: FilesPayload?
+    }
+
+    /// `{id, title, file_type, previewable, source, url}`.
+    ///
+    /// Everything but `id` is optional: a server that resolves a document and
+    /// forgets to name its type should still open the viewer, and `source`
+    /// defaults to the vault library because that is the index that existed
+    /// before this one.
+    struct AnswerDocument: Decodable {
+        let id: String
+        let title: String?
+        let file_type: String?
+        let previewable: Bool?
+        let source: String?
+        let url: String?
+
+        var domain: DocumentRef? {
+            guard !id.isEmpty else { return nil }
+            return DocumentRef(id: id,
+                               title: title?.isEmpty == false ? title! : "Document",
+                               fileType: file_type ?? "",
+                               previewable: previewable ?? true,
+                               source: DocumentSource(serverValue: source),
+                               url: url)
+        }
     }
 
     // MARK: Health

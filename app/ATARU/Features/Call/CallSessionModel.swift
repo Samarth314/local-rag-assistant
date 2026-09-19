@@ -625,9 +625,16 @@ final class CallSessionModel: ObservableObject {
                     break
                 case .ttsUnavailable:
                     ttsLost = true
-                case .done(let spoken, let source, let document):
+                case .done(let spoken, let source, let document, let listing):
                     let final = spoken.isEmpty ? text : spoken
                     answer = final
+                    // A listing IS presented, unlike a document. It opens the
+                    // Files tile underneath the call rather than over it, so
+                    // "pull up the Robolabs spreadsheets" while he is talking
+                    // leaves the browser waiting on the other side of the
+                    // hang-up instead of being lost with the turn. Nothing
+                    // covers the call, and nothing interrupts it.
+                    if let listing { FilesRoute.deliver(listing) }
                     // Recorded, but NOT presented: on a call the phone is at
                     // his ear, and throwing a document viewer up mid-call
                     // would be the wrong moment for it. The wall display

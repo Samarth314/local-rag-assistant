@@ -150,3 +150,128 @@ Binary frames always belong to the most recent `audio_begin`. On any socket
 failure fall back to `GET /voice/speak` for that question and reconnect on
 the next one. Server truncation mirrors the blocking path
 (`RAG_VOICE_STREAM_MAX_SENTENCES`, default 3).
+
+---
+
+## Files index: `/api/files/*`
+
+The projects index, which is a DIFFERENT store from `/documents`. `/documents`
+serves the vault records; this serves everything under `~/Projects`. The ids
+are server-assigned hashes of different things and are **not interchangeable** -
+a `/documents` id sent to `/api/files/{id}` is a 404 with nothing on screen to
+explain it, which is why an answer's `document` payload carries a `source`.
+
+### `GET /api/files/search`
+
+Query parameters, all optional. `pod`, `umbrella`, `project`, `kind` and `ext`
+are **repeatable** - `kind=pdf&kind=slides`, never `kind=pdf,slides`. No `q` is
+a browse rather than a search.
+
+| Parameter | Notes |
+|---|---|
+| `q` | omitted entirely when blank |
+| `pod`, `umbrella`, `project`, `kind`, `ext` | repeatable |
+| `since`, `until` | `YYYY-MM-DD`, inclusive |
+| `location` | `local` or `nas-away` |
+| `sort` | `relevance`, `mtime_desc`, `mtime_asc`, `name`, `size_desc` |
+| `page`, `page_size` | 1-based page |
+
+```json
+{"ok": true, "total": 132, "page": 1, "page_size": 30,
+ "hits": [{"id": "abc123", "path": "Projects/Robolabs/Tournaments/run.xlsx",
+           "name": "run.xlsx", "title": "run", "ext": "xlsx", "kind": "sheet",
+           "pod": "work", "umbrella": "Robolabs", "project": "Tournaments",
+           "mtime": "2026-08-14T09:12:00Z", "size": 98304,
+           "location": "local", "snippet": "…", "score": 0.82,
+           "has_text": true}],
+ "facets": {"pod": {"work": 4}, "umbrella": {"Robolabs": 11},
+            "kind": {"sheet": 3}, "year": {"2026": 9}}}
+```
+
+`kind` is one of pdf, doc, slides, sheet, text, image, video, audio, other; an
+unknown value is read as `other` rather than failing the page. `snippet` and
+`score` exist only on a search - a browse omits both, and the client must not
+read their absence as zero. **Facets are computed over the whole match set**,
+not over the page returned: the category rails are drawn from them while one
+page is on screen, and counting the page would relabel every chip on "load
+more".
+
+`location: "nas-away"` means the bytes are on the NAS and only an `AWAY.md`
+placeholder is on this host. The row still appears - it is findable by name -
+and the client shows a NAS badge and refuses to open a viewer for it.
+
+### `GET /api/files/{id}`
+
+```json
+{"ok": true,
+ "file": {"…hit fields…", "text_chars": 8421,
+          "extracted_at": "2026-09-10T11:02:44.318000Z"},
+ "previewable": true, "viewer": "pdf"}
+```
+
+`viewer` is `pdf`, `image`, `text`, `office` or `none`; anything else is read
+as `none`. `text_chars` and `extracted_at` sit **inside** `file`.
+
+### `GET /api/files/{id}/content`
+
+The original bytes, inline, with the right content type and a
+`Content-Disposition` filename. **404 for a `nas-away` file** - there is
+nothing on this host to send, and an empty 200 would be a lie.
+
+### `GET /api/files/{id}/preview`
+
+A PNG thumbnail, or **204** when there is none. Never an error: a missing
+thumbnail is cosmetic and the row draws its kind icon instead. The client
+caches the absence as well as the image.
+
+### `POST /api/files/narrow`
+
+```json
+{"q": "just the 2025 spreadsheets",
+ "filters": {"umbrella": ["Robolabs"]},
+ "history": [{"q": "robolabs", "filters": {}}]}
+```
+
+```json
+{"ok": true, "query": "tournament",
+ "filters": {"umbrella": ["Robolabs"], "kind": ["sheet"],
+             "since": "2025-01-01", "until": "2025-12-31"},
+ "explanation": "Narrowed to spreadsheets in Robolabs from 2025.",
+ "result": {"…a search result…"}}
+```
+
+`filters` echoes the FULL new set, not a delta, and the client adopts it
+wholesale. `explanation` is shown verbatim and the client never writes that
+line itself: an invented "filtered to PDFs from 2025" that does not match what
+the server applied is worse than no line at all. `history` is every earlier
+rung, oldest first, each carrying the question asked and the filters that were
+in force when it was asked.
+
+A filter set may render a single value as a bare string (`"kind": "pdf"`); the
+client accepts both that and a list.
+
+### Chat and voice payloads
+
+`done` on the socket, and the blocking `GET /voice/answer`, may carry either:
+
+```json
+"document": {"id": "f1", "title": "LAMC transcript", "file_type": "pdf",
+             "previewable": true, "source": "files",
+             "url": "/api/files/f1/content"}
+"files": {"query": "run sheet",
+          "filters": {"umbrella": ["Robolabs"], "kind": ["sheet"]},
+          "total": 3}
+```
+
+`document` opens the viewer; `files` opens the Files tile with the narrowing
+applied. `source` is `vault` or `files` and **defaults to `vault`** when
+absent, because that is the index that existed first. If both arrive, the
+document wins - a specific artefact is more specific than a listing.
+
+### Putting a file on the wall display
+
+**There is no REST route for this.** The server's document-on-display path is a
+chat shortcut (`bridge._document_shortcut`), so the app asks in words: it POSTs
+a text turn - "show <title> on the display" - through `/voice/answer` and shows
+the server's own answer verbatim, including the two cases where it found the
+file and could not display it.

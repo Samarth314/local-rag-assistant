@@ -314,6 +314,15 @@ struct RootView: View {
                 SpeechDictation.sharedVocabulary = names
             }
         }
+        // An answer narrowed the files index. The payload is already in the
+        // route latch; this is the half that has to happen out here, because
+        // only the root knows which tile is on screen. The browser takes the
+        // payload itself - whether it was already open or has just arrived -
+        // and `FilesRoute.take()` hands it over exactly once either way.
+        .onReceive(NotificationCenter.default.publisher(for: .ataruFilesRoute)) { _ in
+            guard presentedTile != .documents else { return }
+            open(tile: .documents)
+        }
         // The call's socket, dropped from here rather than from the call
         // screen: a minimised call has no CallSessionView mounted, and it is
         // exactly the call still running through an outage whose next turn

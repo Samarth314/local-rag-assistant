@@ -48,8 +48,56 @@ final class ATARUUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Demo data — no backend connected."].exists)
     }
 
-    func testLibraryListsDocumentsAndFiltersByCategory() {
+    /// The Files browser itself: rows, and a facet chip that changes them.
+    ///
+    /// The tile is Files now. The vault library it used to open is one source
+    /// INSIDE it, reached by the "Vault records" chip - which is what the two
+    /// tests below go through.
+    func testFilesBrowserListsProjectFilesAndFiltersByUmbrella() {
         launch(startingOn: "documents")
+
+        let career = app.staticTexts["Arya Sasikumar resume 2026.pdf"]
+        XCTAssertTrue(career.waitForExistence(timeout: 8))
+
+        app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Robolabs'"))
+            .firstMatch.tap()
+        XCTAssertFalse(career.waitForExistence(timeout: 3),
+                       "a Career file should not survive the Robolabs filter")
+        XCTAssertTrue(app.staticTexts["Robolabs tournament 2025 run sheet.xlsx"]
+                        .waitForExistence(timeout: 5))
+    }
+
+    /// Narrowing in words, and then the thing the NAS badge is warning about.
+    ///
+    /// Two assertions in one flow on purpose: the narrow field is how an away
+    /// file is reached without scrolling past fifty local ones, and reaching
+    /// it that way is itself the conversational path worth covering.
+    func testNarrowingFindsAnAwayFileWhichSaysItIsNotOnThisHost() {
+        launch(startingOn: "documents")
+        let field = app.descendants(matching: .any)
+            .matching(identifier: "narrow-field").firstMatch
+        XCTAssertTrue(field.waitForExistence(timeout: 8))
+        field.tap()
+        field.typeText("videos on the nas\n")
+
+        let away = app.staticTexts["Teleop session 041 recording.mp4"]
+        XCTAssertTrue(away.waitForExistence(timeout: 8),
+                      "narrowing by words did not reach the away videos")
+        away.tap()
+        XCTAssertTrue(app.staticTexts["Not on this host yet"]
+                        .waitForExistence(timeout: 8))
+    }
+
+    private func openVaultRecords() {
+        launch(startingOn: "documents")
+        let chip = app.buttons["Vault records"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 8))
+        chip.tap()
+        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+    }
+
+    func testLibraryListsDocumentsAndFiltersByCategory() {
+        openVaultRecords()
 
         let firstDocument = app.staticTexts["System Architecture.md"]
         XCTAssertTrue(firstDocument.waitForExistence(timeout: 8))
@@ -61,7 +109,7 @@ final class ATARUUITests: XCTestCase {
     }
 
     func testDocumentOpensAndOffersSending() {
-        launch(startingOn: "documents")
+        openVaultRecords()
         app.staticTexts["System Architecture.md"].firstMatch.tap()
 
         XCTAssertTrue(app.buttons["Send"].waitForExistence(timeout: 5))
@@ -113,10 +161,10 @@ final class ATARUUITests: XCTestCase {
     /// is still claimed from.
     func testATilePageIsClosedByDraggingItsHandleDown() {
         launch(startingOn: "documents")
-        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 8))
         // Still nothing in the navigation BAR: the X lives beside the grab bar
         // under it, which is the page's own chrome rather than the bar's.
-        XCTAssertFalse(app.navigationBars["Library"].buttons["Close"].exists,
+        XCTAssertFalse(app.navigationBars["Files"].buttons["Close"].exists,
                        "a tile screen has grown a close button in its navigation bar")
 
         let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.14))
@@ -135,7 +183,7 @@ final class ATARUUITests: XCTestCase {
     /// the accident; this control is what keeps the page closable without one.
     func testATilePageIsClosedByItsCloseButton() {
         launch(startingOn: "documents")
-        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 8))
         let close = app.buttons["Close"]
         XCTAssertTrue(close.waitForExistence(timeout: 5),
                       "a tile screen has no explicit way to close it")
@@ -151,13 +199,13 @@ final class ATARUUITests: XCTestCase {
     /// must leave the page exactly where it was.
     func testDraggingTheContentDownDoesNotClose() {
         launch(startingOn: "documents")
-        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 8))
 
         let middle = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
         let lower = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
         middle.press(forDuration: 0.05, thenDragTo: lower)
 
-        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 3),
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 3),
                       "a downward drag on the content closed the page")
     }
 }

@@ -37,7 +37,7 @@ xcodebuild -project ATARU.xcodeproj -scheme ATARU -sdk iphonesimulator \
   -destination 'platform=iOS Simulator,name=iPhone 16 Pro' test
 ```
 
-39 unit tests, 4 UI tests.
+445 unit tests, 9 UI tests.
 
 ## Demo and Live
 

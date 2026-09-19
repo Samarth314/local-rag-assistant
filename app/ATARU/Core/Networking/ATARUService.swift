@@ -22,6 +22,49 @@ protocol ATARUService: AnyObject, Sendable {
     /// directory that is emptied when the app leaves the foreground.
     func documentContent(id: String) async throws -> DocumentPayload
 
+    // MARK: Files
+
+    /// One page of the files index: everything on the laptop's project tree,
+    /// not only the vault records `documents` covers.
+    ///
+    /// No `q` is a browse rather than a search, and the server says so by
+    /// returning no snippets and no scores. `facets` are computed over the
+    /// WHOLE match set, which is what lets the category rails carry honest
+    /// counts while only one page is on screen.
+    func filesSearch(_ request: FileSearchRequest) async throws -> FileSearchResult
+
+    /// One file, with what the viewer needs to know about it.
+    func fileDetail(id: String) async throws -> FileDetail
+
+    /// The bytes, written to a local file the caller owns. `nas-away` files
+    /// have none on this host and throw `notFound`, which is the honest
+    /// answer rather than an empty viewer.
+    func fileContent(id: String) async throws -> DocumentPayload
+
+    /// A PNG thumbnail, or nil when the server has none (a 204). Never throws:
+    /// a missing thumbnail is a cosmetic absence and must not fail a row.
+    func filePreview(id: String) async -> Data?
+
+    /// Conversational narrowing. The server reads `q` against the filters
+    /// already applied and the ones applied before them, and answers with a
+    /// NEW filter set, its own sentence about what it did, and the results.
+    ///
+    /// The explanation is the server's, never the client's - see
+    /// `FilesNarrowing`.
+    func filesNarrow(q: String, filters: FileFilters,
+                     history: [FileNarrowStep]) async throws -> FilesNarrowing
+
+    /// Puts a file on the mini's kiosk display.
+    ///
+    /// THERE IS NO REST ROUTE FOR THIS, and the implementation says so rather
+    /// than inventing one: the server's document-on-display path is a CHAT
+    /// shortcut (`bridge._document_shortcut`), reached by asking in words. So
+    /// this posts a text turn - "show <title> on the display" - through the
+    /// existing answer endpoint and hands back what the server said. The
+    /// sentence it returns is the server's own, including the two cases where
+    /// it found the file and could NOT show it.
+    func showOnDisplay(title: String) async throws -> String
+
     // MARK: Voice
 
     /// Asks a question and returns the answer with server-rendered audio.
@@ -232,6 +275,25 @@ protocol ATARUService: AnyObject, Sendable {
 extension ATARUService {
     /// Backends without streaming (Demo) inherit the blocking path.
     func voiceStream() -> VoiceStreamSession? { nil }
+
+    /// A backend with no files index says so, and the browser renders
+    /// "unavailable" - never an empty listing, which is a claim about what
+    /// Arya owns rather than about what this server can answer. Demo and Live
+    /// both implement these for real; the defaults are here so the test stubs
+    /// compile without learning the vocabulary.
+    func filesSearch(_ request: FileSearchRequest) async throws -> FileSearchResult {
+        throw APIError.notFound
+    }
+    func fileDetail(id: String) async throws -> FileDetail { throw APIError.notFound }
+    func fileContent(id: String) async throws -> DocumentPayload { throw APIError.notFound }
+    /// Cosmetic, and never an error: a row with no thumbnail draws its kind
+    /// icon, which is what every row does until its thumbnail arrives anyway.
+    func filePreview(id: String) async -> Data? { nil }
+    func filesNarrow(q: String, filters: FileFilters,
+                     history: [FileNarrowStep]) async throws -> FilesNarrowing {
+        throw APIError.notFound
+    }
+    func showOnDisplay(title: String) async throws -> String { throw APIError.notFound }
 
     /// A backend that does not serve the constants leaves the app on the ones
     /// it compiled in - which is also exactly what an unconfigured server

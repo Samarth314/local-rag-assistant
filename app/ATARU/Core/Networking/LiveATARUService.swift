@@ -77,6 +77,76 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return DocumentPayload(url: fileURL, isReconstructed: reconstructed)
     }
 
+    // MARK: - Files
+
+    func filesSearch(_ request: FileSearchRequest) async throws -> FileSearchResult {
+        guard let url = endpoints.url("api/files/search", query: request.queryItems) else {
+            throw APIError.invalidURL
+        }
+        let (data, _) = try await perform(self.request(for: url))
+        return try decode(FileSearchResult.self, from: data)
+    }
+
+    func fileDetail(id: String) async throws -> FileDetail {
+        guard let url = endpoints.url("api/files/\(EndpointBuilder.escape(id))") else {
+            throw APIError.invalidURL
+        }
+        let (data, _) = try await perform(self.request(for: url))
+        return try decode(FileDetail.self, from: data)
+    }
+
+    func fileContent(id: String) async throws -> DocumentPayload {
+        guard let url = endpoints.url("api/files/\(EndpointBuilder.escape(id))/content") else {
+            throw APIError.invalidURL
+        }
+        let (data, response) = try await perform(self.request(for: url))
+        let name = Self.filename(from: response) ?? "file"
+        let fileURL = try await downloads.store(data, preferredName: name)
+        // The projects index serves originals, never an extract rebuilt from
+        // the text - that is a vault-library behaviour and there is no header
+        // for it here. Reporting `isReconstructed` would be a claim this route
+        // cannot make.
+        return DocumentPayload(url: fileURL, isReconstructed: false)
+    }
+
+    func filePreview(id: String) async -> Data? {
+        guard let url = endpoints.url("api/files/\(EndpointBuilder.escape(id))/preview"),
+              let (data, response) = try? await perform(self.request(for: url)),
+              response.statusCode != 204, !data.isEmpty
+        else { return nil }
+        return data
+    }
+
+    func filesNarrow(q: String, filters: FileFilters,
+                     history: [FileNarrowStep]) async throws -> FilesNarrowing {
+        guard let url = endpoints.url("api/files/narrow") else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(
+            NarrowBody(q: q, filters: filters, history: history))
+        let (data, _) = try await perform(request)
+        return try decode(FilesNarrowing.self, from: data)
+    }
+
+    private struct NarrowBody: Encodable {
+        let q: String
+        let filters: FileFilters
+        let history: [FileNarrowStep]
+    }
+
+    /// See the protocol: this is a chat turn, because the display path IS a
+    /// chat shortcut on the server. The text-only route rather than
+    /// `/voice/speak`, so nothing is synthesised and nothing plays - the user
+    /// tapped a button, they did not ask to be spoken to.
+    func showOnDisplay(title: String) async throws -> String {
+        let question = "show \(title) on the display"
+        guard let url = endpoints.answer(question) else { throw APIError.invalidURL }
+        let (data, _) = try await perform(askRequest(for: url))
+        let answer = try decode(DTO.VoiceAnswer.self, from: data)
+        return answer.text.isEmpty ? "Sent it to the display." : answer.text
+    }
+
     // MARK: - Voice
 
     func ask(question: String) async throws -> SpokenAnswer {
@@ -187,7 +257,8 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         }
         let (data, _) = try await perform(request)
         let answer = try decode(DTO.VoiceAnswer.self, from: data)
-        return SpokenAnswer(text: answer.text, source: answer.source, audioURL: nil)
+        return SpokenAnswer(text: answer.text, source: answer.source, audioURL: nil,
+                            document: answer.document?.domain, files: answer.files)
     }
 
     // MARK: - Plan

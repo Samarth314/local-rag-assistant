@@ -59,9 +59,54 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         return DocumentPayload(url: url, isReconstructed: true)
     }
 
+    // MARK: - Files
+
+    func filesSearch(_ request: FileSearchRequest) async throws -> FileSearchResult {
+        try await pause()
+        return DemoFilesIndex.search(request)
+    }
+
+    func fileDetail(id: String) async throws -> FileDetail {
+        try await pause()
+        return try DemoFilesIndex.detail(id: id)
+    }
+
+    func fileContent(id: String) async throws -> DocumentPayload {
+        try await pause()
+        let (data, name) = try DemoFilesIndex.content(id: id)
+        let url = try await downloads.store(data, preferredName: name)
+        // Generated here rather than read off a disk, but it is the real
+        // artefact of its type - a PDF is a PDF - so it is not the
+        // "reconstructed from the index" case the vault library has.
+        return DocumentPayload(url: url, isReconstructed: false)
+    }
+
+    /// Demo has no thumbnailer. Every row draws its kind icon, which is also
+    /// what a live row does whenever the server answers 204.
+    func filePreview(id: String) async -> Data? { nil }
+
+    func filesNarrow(q: String, filters: FileFilters,
+                     history: [FileNarrowStep]) async throws -> FilesNarrowing {
+        try await pause()
+        return DemoFilesIndex.narrow(q: q, filters: filters, history: history)
+    }
+
+    /// There is no wall display attached to a fixture, and saying "it is on
+    /// the display" would be a claim about a screen that does not exist.
+    func showOnDisplay(title: String) async throws -> String {
+        try await pause()
+        return "Demo mode has no display to send \(title) to. "
+            + "Connect your server in Settings."
+    }
+
     func ask(question: String) async throws -> SpokenAnswer {
         try await pause()
         try await Task.sleep(for: .milliseconds(900))   // retrieval + generation
+        // A question about files answers with a PAYLOAD rather than with a
+        // list read aloud, which is the whole point of the Files tile: "narrow
+        // to the Robolabs spreadsheets" should move the browser, not recite
+        // eleven names. Same shapes the live server sends.
+        if let spoken = DemoFilesIndex.fileIntent(for: question) { return spoken }
         let (answer, source) = DemoFixtures.answer(for: question)
         // No audio: demo mode has no Piper, which drives the same on-device
         // speech fallback a server without a voice engine would.

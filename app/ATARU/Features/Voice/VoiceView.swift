@@ -249,8 +249,23 @@ struct VoiceView: View {
         .sheet(item: $model.presentedDocument) { doc in
             // Done, not a flick - the same rule as every other sheet in the
             // app now. See TileDismissal for the report behind it.
-            DocumentPopup(document: doc, service: state.service)
+            //
+            // Which viewer depends on which INDEX the answer came out of: a
+            // vault record resolves through /documents, a projects file
+            // through /api/files, and the ids are not interchangeable.
+            DocumentRefViewer(document: doc, service: state.service)
                 .interactiveDismissDisabled(true)
+        }
+        // A docked orb on some other tile has taken the microphone. Standby
+        // lets go of it for the duration rather than listening to the same
+        // room through a second recogniser - the same thing a live call
+        // already does, for the same reason.
+        .onReceive(NotificationCenter.default.publisher(for: .ataruDockedMicTaken)) { _ in
+            model.standbyPause()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ataruDockedMicReleased)) { _ in
+            guard !call.state.isLive else { return }
+            model.standbyResume()
         }
     }
 
