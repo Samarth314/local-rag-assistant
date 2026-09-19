@@ -171,7 +171,7 @@ struct GymWorkoutDetail: View {
                 ForEach(Array(workout.entries.enumerated()), id: \.offset) { _, entry in
                     ATCard {
                         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                            Text(store.names.name(for: entry.id))
+                            Text(store.displayName(for: entry.id))
                                 .font(.ataruBody())
                                 .foregroundStyle(Theme.textPrimary)
                             ForEach(Array(entry.sets.enumerated()), id: \.offset) { index, row in

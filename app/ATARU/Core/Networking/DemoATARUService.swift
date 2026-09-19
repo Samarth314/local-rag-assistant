@@ -245,6 +245,16 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         return GymToday.resolve(from: state, on: date ?? GymClock.day(), names: names)
     }
 
+    /// A short catalogue rather than the real 1324 rows: enough to search, to
+    /// filter and to add from, with the real `media_base` so a Demo run on the
+    /// tailnet loads the same animations production does. The ids and
+    /// filenames are openGym's own, read from the live route, so a row picked
+    /// here would be a valid routine entry.
+    func gymLibrary() async throws -> GymLibrary {
+        try await pause()
+        return GymFixtures.library()
+    }
+
     func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
         try await pause()
         Self.gymLock.lock()

@@ -185,6 +185,15 @@ protocol ATARUService: AnyObject, Sendable {
     /// newer number, which is the silent overwrite the check exists to stop.
     func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult
 
+    /// openGym's built-in exercise catalogue - names, body parts, equipment
+    /// and animation filenames for the ids the state document carries.
+    ///
+    /// Static, 1324 rows, and cached for an hour on the server. Fetched once
+    /// per launch and held on disk for a day by the store; it is never polled
+    /// with `rev`, which counts changes to Arya's OWN document and has nothing
+    /// to say about a build artefact.
+    func gymLibrary() async throws -> GymLibrary
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -246,6 +255,7 @@ extension ATARUService {
     func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
         throw GymError.disabled
     }
+    func gymLibrary() async throws -> GymLibrary { throw GymError.disabled }
 
     /// A backend that has no use for the confidence hint answers the question
     /// exactly as it always did. The hint is additive by construction: nothing

@@ -8,6 +8,8 @@ struct GymTodayPage: View {
     @ObservedObject var store: GymStore
     let startWorkout: () -> Void
 
+    @State private var isConfirmingDiscard = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -24,50 +26,127 @@ struct GymTodayPage: View {
             .padding(Theme.Space.screen)
         }
         .refreshable { await store.refresh() }
+        .confirmationDialog("Discard the workout in progress?",
+                            isPresented: $isConfirmingDiscard,
+                            titleVisibility: .visible) {
+            Button("Discard", role: .destructive) { store.discardWorkout() }
+            Button("Keep it", role: .cancel) {}
+        } message: {
+            Text("It only exists on this phone and nothing has been sent to "
+                 + "openGym, so it would be gone.")
+        }
     }
 
     // MARK: - The week
 
-    /// Monday to Sunday, with the routine's letter under each day.
+    /// Monday to Sunday, with one character per day and today's full routine
+    /// name written out underneath.
     ///
     /// Monday first because `weekStart` says so and because that is how the
     /// split is written down - but the LOOKUP is by Javascript's weekday, 0 =
     /// Sunday, which is what the document is keyed by. Those are two different
     /// things and conflating them is how a Monday shows Tuesday's routine.
+    ///
+    /// ## Why every measurement here is fixed
+    ///
+    /// On the demo fixture this strip looked right and on Arya's own document
+    /// it did not: "the week view doesn't render text properly, stuff is
+    /// staggered instead of all the same level, and barbell isn't even fitting
+    /// on one line, the circle around abs is hugging way too close."
+    ///
+    /// One cause, three symptoms. `GymRoutine.shortLabel` returned openGym's
+    /// `emoji` field verbatim, and that field holds an ICON NAME, not an emoji
+    /// - `"barbell"`, `"pullup"`, `"abs"`. A seven-word strip in a
+    /// seven-column HStack wraps; a wrapped label is taller than an unwrapped
+    /// one, so the cells stopped sharing a baseline; and the ring, which was
+    /// sized to the circle but drawn in a ZStack that the text could outgrow,
+    /// ended up tight around the word.
+    ///
+    /// `shortLabel` is fixed at the source. This strip is then built so that
+    /// no label CAN do it again: a fixed cell height, a fixed 30pt ring, one
+    /// line, and a scale floor rather than a wrap. A cell that cannot change
+    /// height cannot stagger the row.
     private var weekStrip: some View {
         ATCard {
-            HStack(spacing: 0) {
-                ForEach(weekdayOrder, id: \.self) { weekday in
-                    VStack(spacing: 6) {
-                        Text(shortWeekdayName(weekday))
-                            .font(.ataruCaption())
-                            .foregroundStyle(weekday == todayWeekday
-                                             ? Theme.cyan : Theme.textTertiary)
-                        ZStack {
-                            Circle()
-                                .fill(weekday == todayWeekday
-                                      ? Theme.accentSoft : Color.clear)
-                                .overlay {
-                                    Circle().strokeBorder(
-                                        weekday == todayWeekday
-                                            ? Theme.cyanSubdued : Color.clear,
-                                        lineWidth: 1)
-                                }
-                                .frame(width: 30, height: 30)
-                            Text(letter(for: weekday))
-                                .font(.ataruBody())
-                                .foregroundStyle(letter(for: weekday) == "-"
-                                                 ? Theme.textTertiary
-                                                 : Theme.textPrimary)
-                        }
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                HStack(spacing: 0) {
+                    ForEach(weekdayOrder, id: \.self) { weekday in
+                        dayCell(weekday)
                     }
-                    .frame(maxWidth: .infinity)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(accessibleWeekday(weekday))
                 }
+                // Nothing is hidden by shortening the labels: today's routine
+                // is named in full, right here, in the one place a name is
+                // actually worth the width.
+                Text(todayLine)
+                    .font(.ataruCaption())
+                    .foregroundStyle(Theme.textTertiary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityHidden(true)
             }
             .padding(Theme.Space.m)
         }
+    }
+
+    /// One day. Two fixed-height rows, so every cell in the strip is the same
+    /// height whatever is in it.
+    private func dayCell(_ weekday: Int) -> some View {
+        let isToday = weekday == todayWeekday
+        let token = letter(for: weekday)
+        return VStack(spacing: 6) {
+            Text(shortWeekdayName(weekday))
+                .font(.ataruCaption())
+                .lineLimit(1)
+                .foregroundStyle(isToday ? Theme.cyan : Theme.textTertiary)
+                .frame(height: Self.weekdayRowHeight)
+
+            ZStack {
+                // A ring of a FIXED size, drawn behind the label rather than
+                // around it. Nothing the label does can make it hug.
+                Circle()
+                    .fill(isToday ? Theme.accentSoft : Color.clear)
+                    .overlay {
+                        Circle().strokeBorder(isToday ? Theme.cyanSubdued : Color.clear,
+                                              lineWidth: 1)
+                    }
+                    .frame(width: Self.ringSize, height: Self.ringSize)
+
+                Text(token)
+                    .font(.ataruBody())
+                    .foregroundStyle(token == Self.restToken
+                                     ? Theme.textTertiary : Theme.textPrimary)
+                    // One line, and a floor rather than a wrap: a label that
+                    // somehow arrives long shrinks inside the ring instead of
+                    // growing the cell.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .frame(width: Self.ringSize - 8)
+            }
+            .frame(height: Self.ringSize)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.cellHeight)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibleWeekday(weekday))
+    }
+
+    /// The strip's whole geometry, in one place, so "the same level" is a
+    /// property of the layout rather than of what the labels happen to be.
+    private static let ringSize: CGFloat = 30
+    private static let weekdayRowHeight: CGFloat = 16
+    private static let cellHeight: CGFloat = weekdayRowHeight + 6 + ringSize
+    static let restToken = "-"
+
+    /// Today's routine, written out - or why there isn't one.
+    private var todayLine: String {
+        guard let state = store.state else { return "" }
+        guard let id = state.routineID(on: GymClock.day()),
+              let routine = state.routine(id: id), !routine.name.isEmpty else {
+            return state.isDeclaredRest(on: GymClock.day())
+                ? "Today: rest day" : "Today: nothing planned"
+        }
+        return "Today: \(routine.name)"
     }
 
     /// Monday first, Sunday last, in Javascript's numbering.
@@ -82,7 +161,7 @@ struct GymTodayPage: View {
 
     private func letter(for weekday: Int) -> String {
         guard let state = store.state, let id = state.weekRoutineID(weekday: weekday),
-              let routine = state.routine(id: id) else { return "-" }
+              let routine = state.routine(id: id) else { return Self.restToken }
         return routine.shortLabel
     }
 
@@ -185,9 +264,25 @@ struct GymTodayPage: View {
                 // in a routine, and a ForEach handed the same id twice draws
                 // one row.
                 ForEach(Array(routine.exercises.enumerated()), id: \.offset) { _, exercise in
-                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                    HStack(spacing: Theme.Space.s) {
+                        // Tap the demo, not the row: the row itself is a
+                        // reading of today's plan and has nowhere else to go.
+                        NavigationLink {
+                            GymExerciseDetail(
+                                name: store.displayName(for: exercise.id,
+                                                        fallback: exercise.name),
+                                entry: store.libraryEntry(for: exercise.id),
+                                gifURL: store.gifURL(forExercise: exercise.id))
+                        } label: {
+                            GymExerciseThumbnail(url: store.gifURL(forExercise: exercise.id),
+                                                 side: 36)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show \(store.displayName(for: exercise.id, fallback: exercise.name))")
+
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(exercise.name ?? exercise.id)
+                            Text(store.displayName(for: exercise.id,
+                                                   fallback: exercise.name))
                                 .font(.ataruBody())
                                 .foregroundStyle(Theme.textPrimary)
                             Text(GymFormat.target(sets: exercise.sets,
@@ -201,7 +296,6 @@ struct GymTodayPage: View {
                             .foregroundStyle(Theme.textSecondary)
                     }
                     .padding(.vertical, 2)
-                    .accessibilityElement(children: .combine)
                 }
             }
         }
@@ -222,30 +316,63 @@ struct GymTodayPage: View {
 
     private var unit: String { store.state?.unit ?? "kg" }
 
+    /// Start, or resume - and, when there is something to resume, a way to end
+    /// it for good.
+    ///
+    /// "He started Ayush C, backed out, and now sees Resume workout with no
+    /// way to abandon it." A session in progress lives only on this phone
+    /// (openGym deletes `active` on every write), so the only control that can
+    /// end one is here, and until now there wasn't one: backing out of the
+    /// session screen left the file, and the card offered Resume forever.
+    ///
+    /// Side by side rather than a menu, because Resume is the thing he wants
+    /// in the gym and Discard is the thing he wants exactly once - and behind
+    /// a confirmation, because a discard cannot be undone from anywhere.
     @ViewBuilder
     private func startButton(_ routine: GymToday.Routine) -> some View {
         let resuming = store.active != nil
-        Button(action: startWorkout) {
-            HStack(spacing: Theme.Space.xs) {
-                Image(systemName: resuming ? "arrow.clockwise" : "play.fill")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(resuming ? "Resume workout" : "Start workout")
-                    .font(.ataruBody())
+        HStack(spacing: Theme.Space.s) {
+            Button(action: startWorkout) {
+                HStack(spacing: Theme.Space.xs) {
+                    Image(systemName: resuming ? "arrow.clockwise" : "play.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(resuming ? "Resume workout" : "Start workout")
+                        .font(.ataruBody())
+                }
+                .foregroundStyle(Theme.onAccent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background {
+                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
+                        .fill(Theme.cyan)
+                }
             }
-            .foregroundStyle(Theme.onAccent)
-            .frame(maxWidth: .infinity)
-            .frame(height: 48)
-            .background {
-                RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                    .fill(Theme.cyan)
+            .buttonStyle(.atPress)
+            .disabled(routine.exercises.isEmpty)
+            .accessibilityHint(resuming
+                ? "Go back to the session already in progress."
+                : "Log sets for \(routine.name ?? "this routine").")
+
+            if resuming {
+                Button(role: .destructive) {
+                    isConfirmingDiscard = true
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 15, weight: .light))
+                        .foregroundStyle(Theme.red)
+                        .frame(width: 48, height: 48)
+                        .background {
+                            RoundedRectangle(cornerRadius: Theme.Radius.card,
+                                             style: .continuous)
+                                .fill(Theme.surfaceElevated)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Discard workout")
+                .accessibilityHint("Throw away the session in progress.")
             }
         }
-        .buttonStyle(.atPress)
         .padding(.top, Theme.Space.xs)
-        .disabled(routine.exercises.isEmpty)
-        .accessibilityHint(resuming
-            ? "Go back to the session already in progress."
-            : "Log sets for \(routine.name ?? "this routine").")
     }
 
     // MARK: - Bodyweight

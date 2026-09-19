@@ -58,6 +58,11 @@ struct GymScreen: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
         }
         .ataruBackdrop()
+        // Every numeric field on these three pages can be put away: tap off
+        // it, drag the page, or use the Done bar above the keys. The number
+        // pad has no return key, so without this it stays up until something
+        // else resigns first responder - and on these pages nothing did.
+        .dismissableNumberPads()
         .navigationTitle(page == .today ? "Gym" : page.title)
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $isWorkingOut) {
@@ -68,6 +73,13 @@ struct GymScreen: View {
                             cacheRoot: state.isDemo ? nil : state.configuration.baseURL)
             await store.restore()
             await store.refresh()
+            // The catalogue: once per launch, off disk for a day, and
+            // separately from the document because it is openGym's build
+            // artefact rather than Arya's data. After the document and not
+            // beside it, so the plan is on screen first; failing is silent -
+            // the screens render ids and placeholders, which is what they did
+            // before there was a library at all.
+            await store.loadLibrary()
         }
         // Back on the network after an outage - the same key every other
         // screen uses.

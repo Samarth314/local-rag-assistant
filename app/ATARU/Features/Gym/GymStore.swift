@@ -65,6 +65,23 @@ struct ActiveWorkout: Codable, Equatable {
     var startedAt: Int
     var restSeconds: Int
     var entries: [Entry]
+    /// WHEN THE REST ENDS, not how much is left.
+    ///
+    /// Ms epoch, stored with the session and therefore surviving the screen
+    /// going away, the app being backgrounded and the phone being locked. A
+    /// countdown held in a view's `@State` and decremented by a timer is none
+    /// of those things: leaving the screen tore the state down, and coming
+    /// back showed no rest at all - "the rest timer must survive leaving the
+    /// screen or the app".
+    ///
+    /// An absolute instant also cannot drift. Remaining time is recomputed
+    /// from the clock on every appear and every foreground, so a phone that
+    /// spent four minutes in a pocket comes back to a finished rest rather
+    /// than to four minutes it never counted.
+    ///
+    /// Optional, and old session files decode with it absent, which reads
+    /// correctly as "nothing is resting".
+    var restEndsAt: Int?
 
     struct Entry: Codable, Equatable, Identifiable {
         var id: UUID = UUID()
@@ -89,6 +106,16 @@ struct ActiveWorkout: Codable, Equatable {
     var doneSetCount: Int { entries.reduce(0) { $0 + $1.doneCount } }
     var totalSetCount: Int { entries.reduce(0) { $0 + $1.sets.count } }
     var hasAnythingLogged: Bool { doneSetCount > 0 }
+
+    /// Seconds of rest still to run, from the clock rather than from a
+    /// counter. Nil when nothing is resting; never negative, and a rest whose
+    /// end has passed is simply over.
+    func restRemaining(at now: Date = Date()) -> Int? {
+        guard let restEndsAt else { return nil }
+        let seconds = (Double(restEndsAt) - now.timeIntervalSince1970 * 1000) / 1000
+        guard seconds > 0 else { return nil }
+        return Int(seconds.rounded(.up))
+    }
 
     /// The session as openGym writes it (`finish-workout.js`).
     ///
@@ -198,10 +225,19 @@ final class GymStore: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var isSaving = false
     @Published private(set) var active: ActiveWorkout?
+    /// openGym's built-in catalogue. Nil until it has been fetched or read
+    /// back off disk, and nil forever on a backend with no library route -
+    /// which renders as ids and placeholders, never as an empty picker.
+    @Published private(set) var library: GymLibrary?
 
     private var service: ATARUService?
     private var cacheRoot: URL?
     private var hasRestored = false
+    /// Built once per library rather than per row: 1324 rows are looked up on
+    /// every exercise of every screen, and a linear scan per row is the
+    /// difference between a list that scrolls and one that does not.
+    private var libraryIndex: [String: GymLibraryEntry] = [:]
+    private var libraryFetchedAt: Date?
 
     /// What the disk holds between launches: the document, its revision, and
     /// the names learned so far.
@@ -212,6 +248,24 @@ final class GymStore: ObservableObject {
     }
 
     static let cacheKind = "gym"
+    /// A second cache file, separate from the document on purpose: the
+    /// document is Arya's and changes all day, the catalogue is openGym's and
+    /// changes on an upgrade. Holding them together would mean re-writing
+    /// 1324 rows on every set he logs.
+    static let libraryCacheKind = "gym-library"
+
+    /// What the disk holds of the catalogue.
+    struct CachedLibrary: Codable {
+        var library: GymLibrary
+    }
+
+    /// How long a cached catalogue is trusted before it is fetched again.
+    ///
+    /// A day, per the brief, and the right order of magnitude: the server
+    /// caches it for an hour and it only actually moves when openGym's dataset
+    /// is upgraded. It is deliberately NOT polled with `rev`, which counts
+    /// changes to Arya's own document.
+    static let libraryMaxAge: TimeInterval = 24 * 60 * 60
 
     // MARK: Configuration
 
@@ -236,6 +290,96 @@ final class GymStore: ObservableObject {
         cachedAt = cached.savedAt
         today = GymToday.resolve(from: cached.payload.state,
                                  on: GymClock.day(), names: cached.payload.names)
+    }
+
+    /// The catalogue: disk first, then the network, and only when what is on
+    /// disk is older than a day.
+    ///
+    /// Failure is silent by design. Every screen that uses the library already
+    /// renders without it - an id where a name would be, a placeholder where
+    /// an animation would be - and a banner saying the exercise catalogue
+    /// could not be fetched on a page that is otherwise working is noise
+    /// during a workout.
+    func loadLibrary() async {
+        if library == nil, let cached = await TileCache.load(
+            CachedLibrary.self, kind: Self.libraryCacheKind, for: cacheRoot) {
+            adopt(library: cached.payload.library, fetchedAt: cached.savedAt)
+        }
+        if let fetchedAt = libraryFetchedAt,
+           Date().timeIntervalSince(fetchedAt) < Self.libraryMaxAge { return }
+        guard let service else { return }
+        guard let fetched = try? await service.gymLibrary() else { return }
+        adopt(library: fetched, fetchedAt: Date())
+        if let cacheRoot {
+            TileCache.save(CachedLibrary(library: fetched),
+                           kind: Self.libraryCacheKind, for: cacheRoot)
+        }
+    }
+
+    private func adopt(library: GymLibrary, fetchedAt: Date) {
+        self.library = library
+        libraryIndex = library.index()
+        libraryFetchedAt = fetchedAt
+    }
+
+    // MARK: Naming and media
+
+    /// The best name this app has for an exercise id.
+    ///
+    /// Three sources in order, and the id itself is the honest last answer -
+    /// never "Unknown", which hides WHICH exercise it was. The name book
+    /// carries what the server already resolved; the catalogue answers for
+    /// every built-in id whether or not the server has been asked about it.
+    func displayName(for id: String) -> String {
+        if let learned = names.resolvedName(for: id) { return learned }
+        if let entry = libraryIndex[id] { return entry.name }
+        return id
+    }
+
+    /// The same, for a caller that already holds a name from the server.
+    ///
+    /// `/api/gym/today` "falls back to the raw exercise id if nothing resolves
+    /// it", so its `name` is never nil and a plain `??` never fires - which is
+    /// how a catalogue exercise rendered as "0003" on a screen that had the
+    /// catalogue open. A name equal to the id is not a name.
+    func displayName(for id: String, fallback: String?) -> String {
+        let resolved = displayName(for: id)
+        if resolved != id { return resolved }
+        if let fallback, !fallback.isEmpty, fallback != id { return fallback }
+        return id
+    }
+
+    /// The catalogue row for an id, or the profile's own custom exercise
+    /// dressed as one. Nil for an id neither knows, which is a real answer.
+    func libraryEntry(for id: String) -> GymLibraryEntry? {
+        if let entry = libraryIndex[id] { return entry }
+        return state?.customLibraryEntries.first { $0.id == id }
+    }
+
+    /// The animation for an exercise, or nil - which is not a failure. A
+    /// custom exercise has no media at all, and so does a catalogue row the
+    /// dataset never had an animation for.
+    func gifURL(forExercise id: String) -> URL? {
+        guard let library, let entry = libraryIndex[id] else { return nil }
+        return library.gifURL(for: entry)
+    }
+
+    /// Everything that can be added to a routine: the catalogue, plus this
+    /// profile's own custom exercises.
+    ///
+    /// Merged here rather than server-side, because the customs live in the
+    /// document this store already holds and a day-old cached copy of them
+    /// would hide one Arya added two minutes ago in the browser.
+    func searchableExercises(matching query: String) -> [GymLibraryEntry] {
+        let customs = state?.customLibraryEntries ?? []
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let words = needle.split(separator: " ").map(String.init)
+        let matchedCustoms = needle.isEmpty
+            ? customs
+            : customs.filter { entry in words.allSatisfy { entry.haystack.contains($0) } }
+        // Customs first: they are his, there are a handful of them, and they
+        // are what he is most likely to be looking for.
+        return matchedCustoms + (library?.search(needle) ?? [])
     }
 
     func refresh() async {
@@ -386,6 +530,37 @@ final class GymStore: ObservableObject {
         return stored
     }
 
+    /// Adds a CATALOGUE exercise to a routine.
+    ///
+    /// The difference from `addExercise(named:)` is the whole point of the
+    /// picker: this writes openGym's own id (`"0043"`) into `routine.ex` and
+    /// adds NOTHING to `customEx`. That is exactly what the web app writes
+    /// when the same exercise is picked there, so the entry resolves to the
+    /// catalogue's name, body part and animation on every client rather than
+    /// becoming a second private copy of an exercise openGym already has.
+    ///
+    /// The config is the same 3 x 10 openGym defaults a new entry to, at zero
+    /// weight, and every other key is left ABSENT - `sets`, `mode`, `reps` and
+    /// `weight` are the only ones openGym writes unconditionally, and
+    /// inventing values for the rest is how a client writes a document the web
+    /// app then reads differently.
+    @discardableResult
+    func addLibraryExercise(_ entry: GymLibraryEntry, to routineID: String) async -> Bool {
+        // A custom exercise reaching this path would silently lose its
+        // customEx row; it has its own method and its own id namespace.
+        guard !entry.id.isEmpty else { return false }
+        return await commit { state in
+            guard var routine = state.routine(id: routineID) else { return }
+            var list = routine.exercises
+            list.append(GymExerciseConfig(raw: ["id": .string(entry.id),
+                                                "sets": .int(3),
+                                                "reps": .int(10),
+                                                "weight": .number(0)]))
+            routine.setExercises(list)
+            state.replaceRoutine(routine)
+        }
+    }
+
     // MARK: A session
 
     func startWorkout() {
@@ -413,7 +588,7 @@ final class GymStore: ObservableObject {
             }
             return ActiveWorkout.Entry(
                 exerciseID: exercise.id,
-                name: names.name(for: exercise.id),
+                name: displayName(for: exercise.id, fallback: exercise.name),
                 target: config?.raw ?? ["id": .string(exercise.id),
                                         "sets": .int(planned)],
                 sets: rows)
@@ -453,7 +628,57 @@ final class GymStore: ObservableObject {
     /// foreground and when the session screen goes away.
     func persistActive() { ActiveWorkoutStore.save(active) }
 
-    func discardWorkout() { setActive(nil) }
+    /// Throws the session away for good: the file on the phone goes, and
+    /// nothing is sent anywhere.
+    ///
+    /// openGym is never told, because it was never told the session existed -
+    /// `active` is device-local and the server deletes the key on every write.
+    /// So a discard is purely local and there is nothing to undo it with,
+    /// which is why every caller asks first.
+    ///
+    /// "He started Ayush C, backed out, and now sees Resume workout with no
+    /// way to abandon it": backing out of the session screen leaves the file
+    /// in place by design, and until this there was no control anywhere that
+    /// removed it.
+    func discardWorkout() {
+        GymRestNotice.cancel()
+        setActive(nil)
+    }
+
+    // MARK: Rest
+
+    /// Starts a rest from now, as an ABSOLUTE end time, and books the notice.
+    ///
+    /// Stored on the session rather than in a view, so leaving the screen or
+    /// the app does not end it - see `ActiveWorkout.restEndsAt`. Persisted
+    /// immediately for the same reason: the event it has to survive is the app
+    /// being suspended, which gives no warning.
+    func startRest(seconds: Int? = nil) {
+        guard let workout = active else { return }
+        let length = max(10, seconds ?? workout.restSeconds)
+        let end = Date().addingTimeInterval(TimeInterval(length))
+        updateActive { $0.restEndsAt = GymClock.milliseconds(end) }
+        Task { await GymRestNotice.schedule(at: end) }
+    }
+
+    /// Skipped, or superseded by the next set. Clears the bar and the pending
+    /// notice together - a "Rest over" arriving after he has already started
+    /// the next set is worse than none.
+    func stopRest() {
+        GymRestNotice.cancel()
+        guard active?.restEndsAt != nil else { return }
+        updateActive { $0.restEndsAt = nil }
+    }
+
+    /// Drops a rest whose end has already passed, so the session file does not
+    /// carry a stale instant around. Called on appear and on foreground, where
+    /// the answer is recomputed from the clock anyway.
+    func reconcileRest(at now: Date = Date()) {
+        guard let workout = active, workout.restEndsAt != nil,
+              workout.restRemaining(at: now) == nil else { return }
+        updateActive { $0.restEndsAt = nil }
+        GymRestNotice.cancel()
+    }
 
     /// Writes the session and, only on success, clears it from the phone.
     @discardableResult

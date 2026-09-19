@@ -165,11 +165,29 @@ struct GymRoutine: Identifiable, Equatable, Codable {
         raw["ex"] = .array(list.map { .object($0.raw) })
     }
 
-    /// The single letter on the week strip. The routine's own emoji when it
-    /// has one, otherwise the last word's first character - "Ayush B" reads
-    /// as B, which is how Arya names them.
+    /// ONE character for the week strip, and never more than one.
+    ///
+    /// ## `emoji` is not an emoji
+    ///
+    /// The field is called `emoji` and openGym does not put an emoji in it. It
+    /// stores the NAME of the icon the web app draws - Arya's three routines
+    /// carry `"barbell"`, `"pullup"` and `"abs"` - so trusting the field
+    /// verbatim put whole words into a seven-cell strip. That is exactly what
+    /// he saw: "barbell isn't even fitting on one line", "the circle around
+    /// abs is hugging way too close", and the wrapping pushed each day cell to
+    /// a different height, which is the staggering.
+    ///
+    /// The test is structural rather than a list of known icon names, which
+    /// would go stale the moment openGym adds one: a label is taken verbatim
+    /// only when it is a SINGLE grapheme cluster. A real emoji passes (a flag,
+    /// a skin-toned lifter and a ZWJ sequence are each one cluster); a bare
+    /// letter passes; `"barbell"` does not, and falls through to the name.
+    ///
+    /// The fallback is the last word's first character - "Ayush B" reads as B,
+    /// which is how Arya names them. The full name is shown under the strip
+    /// for today, so nothing is actually hidden by the shortening.
     var shortLabel: String {
-        if let emoji, !emoji.isEmpty { return emoji }
+        if let emoji, emoji.count == 1 { return emoji }
         guard let last = name.split(separator: " ").last, let first = last.first else {
             return "?"
         }
@@ -746,6 +764,12 @@ struct GymNameBook: Equatable, Codable {
 
     /// True when nothing better than the raw id is known.
     func isUnresolved(_ id: String) -> Bool { names[id] == nil }
+
+    /// The learned name, or nil - as opposed to `name(for:)`, which answers
+    /// the id. The caller that has a second source to try (the catalogue) has
+    /// to be able to tell "not known here" from "known, and it is called
+    /// 0043".
+    func resolvedName(for id: String) -> String? { names[id] }
 
     mutating func absorb(_ today: GymToday) {
         for exercise in today.routine?.exercises ?? [] {

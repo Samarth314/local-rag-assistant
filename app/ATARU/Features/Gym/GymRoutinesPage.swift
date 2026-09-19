@@ -92,8 +92,11 @@ struct GymRoutineDetail: View {
 
     @State private var draft: [GymExerciseConfig] = []
     @State private var expanded: Int?
-    @State private var newExercise = ""
     @State private var isAdding = false
+    /// The library picker, pushed rather than presented. A sheet here would be
+    /// one more surface a downward flick can throw away, which is exactly the
+    /// complaint this pass is fixing elsewhere.
+    @State private var isPicking = false
     @State private var removing: Int?
     @State private var loadedFor: String?
 
@@ -131,8 +134,15 @@ struct GymRoutineDetail: View {
             .padding(Theme.Space.screen)
         }
         .ataruBackdrop()
+        .dismissableNumberPads()
         .navigationTitle(store.state?.routine(id: routineID)?.name ?? "Routine")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(isPresented: $isPicking) {
+            GymExercisePicker(store: store) { choice in
+                isPicking = false
+                Task { await add(choice) }
+            }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Save") { Task { await save() } }
@@ -180,30 +190,43 @@ struct GymRoutineDetail: View {
     private func row(index: Int, config: GymExerciseConfig) -> some View {
         let isOpen = expanded == index
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            Button {
-                withAnimation(Theme.quick) { expanded = isOpen ? nil : index }
-            } label: {
-                HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(store.names.name(for: config.id))
-                            .font(.ataruBody())
-                            .foregroundStyle(Theme.textPrimary)
-                        Text(summary(config))
-                            .font(.ataruCaption())
+            HStack(spacing: Theme.Space.s) {
+                NavigationLink {
+                    GymExerciseDetail(name: store.displayName(for: config.id),
+                                      entry: store.libraryEntry(for: config.id),
+                                      gifURL: store.gifURL(forExercise: config.id))
+                } label: {
+                    GymExerciseThumbnail(url: store.gifURL(forExercise: config.id),
+                                         side: 36)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show \(store.displayName(for: config.id))")
+
+                Button {
+                    withAnimation(Theme.quick) { expanded = isOpen ? nil : index }
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: Theme.Space.s) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(store.displayName(for: config.id))
+                                .font(.ataruBody())
+                                .foregroundStyle(Theme.textPrimary)
+                            Text(summary(config))
+                                .font(.ataruCaption())
+                                .foregroundStyle(Theme.textTertiary)
+                        }
+                        Spacer(minLength: Theme.Space.s)
+                        Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 12, weight: .light))
                             .foregroundStyle(Theme.textTertiary)
                     }
-                    Spacer(minLength: Theme.Space.s)
-                    Image(systemName: isOpen ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .light))
-                        .foregroundStyle(Theme.textTertiary)
+                    .contentShape(Rectangle())
+                    .padding(.vertical, 4)
                 }
-                .contentShape(Rectangle())
-                .padding(.vertical, 4)
+                .buttonStyle(.plain)
+                .accessibilityLabel(store.displayName(for: config.id))
+                .accessibilityValue(summary(config))
+                .accessibilityHint(isOpen ? "Collapse" : "Edit sets, reps and weight")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(store.names.name(for: config.id))
-            .accessibilityValue(summary(config))
-            .accessibilityHint(isOpen ? "Collapse" : "Edit sets, reps and weight")
 
             if isOpen { editor(index: index) }
         }
@@ -333,38 +356,42 @@ struct GymRoutineDetail: View {
 
     // MARK: Adding
 
-    /// Adding an exercise, and an honest note about what it can be.
+    /// Adding an exercise: one button, and a picker behind it.
     ///
-    /// openGym's 1324 built-in exercises live in the container's own dataset
-    /// and the ATARU server publishes no endpoint for them, so this app cannot
-    /// offer that picker without inventing one. What it CAN do is what openGym
-    /// itself does for anything not in the catalogue: add a custom exercise by
-    /// name, which the web app treats identically. The note says so rather
-    /// than leaving a search field that would return nothing.
+    /// This used to be a bare "Name" field with a note explaining that
+    /// openGym's 1324 built-in exercises were not reachable from the phone.
+    /// They are now (`GET /api/gym/library`), so typing a name the catalogue
+    /// already has - which is most names - no longer quietly creates a second
+    /// private copy of it under a custom id that no other client can match.
+    ///
+    /// Creating a custom exercise is still here, at the bottom of the picker,
+    /// which is where it belongs: it is the answer for a name the catalogue
+    /// does not have, not the default.
     private var addCard: some View {
         ATCard {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 SectionHeader(text: "Add an exercise")
-                HStack(spacing: Theme.Space.s) {
-                    TextField("Name", text: $newExercise)
-                        .font(.ataruBody())
-                        .foregroundStyle(Theme.textPrimary)
-                        .padding(.horizontal, Theme.Space.s)
-                        .frame(height: Theme.minHitTarget)
-                        .background {
-                            RoundedRectangle(cornerRadius: Theme.Radius.small,
-                                             style: .continuous)
-                                .fill(Theme.surfaceElevated)
-                        }
-                    Button("Add") { Task { await add() } }
-                        .font(.ataruBody())
-                        .foregroundStyle(canAdd ? Theme.cyan : Theme.textTertiary)
-                        .frame(minHeight: Theme.minHitTarget)
-                        .disabled(!canAdd)
+                Button {
+                    isPicking = true
+                } label: {
+                    HStack(spacing: Theme.Space.xs) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 13, weight: .regular))
+                        Text("Search the exercise library")
+                            .font(.ataruBody())
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .light))
+                    }
+                    .foregroundStyle(store.sync.isReadOnly
+                                     ? Theme.textTertiary : Theme.cyan)
+                    .contentShape(Rectangle())
+                    .frame(minHeight: Theme.minHitTarget)
                 }
-                Text("Added as a custom exercise, at 3 x 10. openGym's built-in "
-                     + "library isn't reachable from the phone yet - search it "
-                     + "in the browser to add one of those.")
+                .buttonStyle(.plain)
+                .disabled(store.sync.isReadOnly || isAdding)
+
+                Text(libraryNote)
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
             }
@@ -372,20 +399,35 @@ struct GymRoutineDetail: View {
         }
     }
 
-    private var canAdd: Bool {
-        !newExercise.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !isAdding && !store.sync.isReadOnly
+    private var libraryNote: String {
+        guard let library = store.library else {
+            return "Added at 3 x 10. The catalogue has not loaded - a custom "
+                + "exercise can still be created from the picker."
+        }
+        return "\(library.exercises.count) built-in exercises, plus your own. "
+            + "Added at 3 x 10."
     }
 
-    private func add() async {
+    /// Writes the picked exercise into the routine and reloads the draft.
+    ///
+    /// A catalogue row is written with openGym's OWN id and no `customEx`
+    /// entry; a typed name still becomes a custom exercise exactly as before.
+    /// Both go through the store, which writes the whole document once.
+    private func add(_ choice: GymExerciseChoice) async {
         guard !isDirty else {
             store.errorMessage = "Save the changes above first."
             return
         }
         isAdding = true
         defer { isAdding = false }
-        if await store.addExercise(named: newExercise, to: routineID) {
-            newExercise = ""
+        let stored: Bool
+        switch choice {
+        case .library(let entry):
+            stored = await store.addLibraryExercise(entry, to: routineID)
+        case .custom(let name):
+            stored = await store.addExercise(named: name, to: routineID)
+        }
+        if stored {
             draft = store.state?.routine(id: routineID)?.exercises ?? []
             loadedFor = key
         }

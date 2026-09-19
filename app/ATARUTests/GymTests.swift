@@ -406,3 +406,354 @@ final class GymFormatTests: XCTestCase {
         XCTAssertEqual(GymFormat.target(sets: nil, reps: 8), "")
     }
 }
+
+// MARK: - The week strip's label
+
+/// Three of the seven things Arya reported on the week strip were one bug:
+/// openGym's `emoji` field holds an ICON NAME, not an emoji, and it was being
+/// rendered verbatim. "barbell isn't even fitting on one line, the circle
+/// around abs is hugging way too close", and the wrapping is what staggered
+/// the day cells off each other's baseline.
+final class GymRoutineLabelTests: XCTestCase {
+
+    private func routine(name: String, emoji: String?) -> GymRoutine {
+        var raw: [String: JSONValue] = ["id": .string("r"), "name": .string(name)]
+        if let emoji { raw["emoji"] = .string(emoji) }
+        return GymRoutine(raw: raw)
+    }
+
+    /// The three values in Arya's own document, read from the live
+    /// `/api/gym/state` on 2026-09-19.
+    func testAnIconNameIsNotUsedAsALabel() {
+        XCTAssertEqual(routine(name: "Ayush A", emoji: "barbell").shortLabel, "A")
+        XCTAssertEqual(routine(name: "Ayush B", emoji: "pullup").shortLabel, "B")
+        XCTAssertEqual(routine(name: "Ayush C", emoji: "abs").shortLabel, "C")
+    }
+
+    /// A real emoji still wins, including the multi-scalar ones - a ZWJ
+    /// sequence and a skin tone are each ONE grapheme cluster, which is what
+    /// the test is, so neither is mistaken for a word.
+    func testARealEmojiIsKept() {
+        XCTAssertEqual(routine(name: "Ayush A", emoji: "🏋").shortLabel, "🏋")
+        XCTAssertEqual(routine(name: "Ayush A", emoji: "🏋🏽‍♂️").shortLabel, "🏋🏽‍♂️")
+        XCTAssertEqual(routine(name: "Ayush A", emoji: "🇯🇵").shortLabel, "🇯🇵")
+    }
+
+    /// A one-character label of any kind is fine - it fits, which is the
+    /// entire requirement.
+    func testASingleLetterLabelIsKept() {
+        XCTAssertEqual(routine(name: "Push Day", emoji: "P").shortLabel, "P")
+    }
+
+    /// No emoji at all, and the awkward names: the last word's first
+    /// character, upper-cased, and never an empty string.
+    func testTheFallbackIsOneCharacterOfTheName() {
+        XCTAssertEqual(routine(name: "Ayush A", emoji: nil).shortLabel, "A")
+        XCTAssertEqual(routine(name: "Ayush A", emoji: "").shortLabel, "A")
+        XCTAssertEqual(routine(name: "lower body", emoji: nil).shortLabel, "B")
+        XCTAssertEqual(routine(name: "", emoji: nil).shortLabel, "?")
+    }
+
+    /// Whatever the document holds, ONE character comes out. This is the
+    /// property the strip's fixed cell height depends on.
+    func testEveryLabelIsExactlyOneCharacter() {
+        let awkward = ["barbell", "pullup", "abs", "", "lower body",
+                       "Ayush A", "cardio & conditioning"]
+        for name in awkward {
+            for emoji in [nil, "", "barbell", "abs", "🏋"] as [String?] {
+                let label = routine(name: name, emoji: emoji).shortLabel
+                XCTAssertEqual(label.count, 1,
+                               "\(name)/\(emoji ?? "nil") rendered as \(label)")
+            }
+        }
+    }
+
+    /// And the fixture carries the real values, so the bug is reproducible in
+    /// Demo rather than only against Arya's own document - which is how it
+    /// shipped in the first place.
+    func testTheFixtureCarriesTheRealIconNames() async throws {
+        let document = try await DemoATARUService(latency: .zero).gymState()
+        XCTAssertEqual(document.state.routines.compactMap(\.emoji),
+                       ["barbell", "pullup", "abs"])
+        XCTAssertEqual(document.state.routines.map(\.shortLabel), ["A", "B", "C"])
+    }
+}
+
+// MARK: - The rest timer
+
+/// "The rest timer must survive leaving the screen or the app." It is stored
+/// as an absolute end time on the session rather than as a countdown in a
+/// view, so the two things that used to end it - the screen going away and the
+/// app being suspended - cannot.
+final class GymRestTimerTests: XCTestCase {
+
+    private func session(restEndsAt: Int?) -> ActiveWorkout {
+        ActiveWorkout(id: "w", routineID: "r", routineName: "Ayush C",
+                      day: "2026-09-19", startedAt: 1_758_240_000_000,
+                      restSeconds: 90, entries: [], restEndsAt: restEndsAt)
+    }
+
+    func testRemainingIsComputedFromTheClockNotCountedDown() {
+        let now = Date(timeIntervalSince1970: 1_758_240_000)
+        let workout = session(restEndsAt: GymClock.milliseconds(now.addingTimeInterval(90)))
+        XCTAssertEqual(workout.restRemaining(at: now), 90)
+        // Sixty seconds spent on another tile, or in another app, or with the
+        // phone locked. The answer is the same either way, which is the whole
+        // point of storing the END rather than the remainder.
+        XCTAssertEqual(workout.restRemaining(at: now.addingTimeInterval(60)), 30)
+    }
+
+    /// A rest whose end has passed is over, not negative.
+    func testAnElapsedRestIsOver() {
+        let now = Date(timeIntervalSince1970: 1_758_240_000)
+        let workout = session(restEndsAt: GymClock.milliseconds(now.addingTimeInterval(10)))
+        XCTAssertNil(workout.restRemaining(at: now.addingTimeInterval(11)))
+        XCTAssertNil(workout.restRemaining(at: now.addingTimeInterval(4_000)))
+    }
+
+    func testNothingRestingReadsAsNothingResting() {
+        XCTAssertNil(session(restEndsAt: nil).restRemaining())
+    }
+
+    /// The session file is what carries it across a launch, so the field has
+    /// to survive the round trip through disk.
+    func testTheEndTimeSurvivesTheSessionFile() throws {
+        let workout = session(restEndsAt: 1_758_240_090_000)
+        let data = try JSONEncoder().encode(workout)
+        let again = try JSONDecoder().decode(ActiveWorkout.self, from: data)
+        XCTAssertEqual(again.restEndsAt, 1_758_240_090_000)
+        XCTAssertEqual(again, workout)
+    }
+
+    /// A session file written before there was a rest timer decodes as one
+    /// with nothing resting, rather than failing to decode at all - which
+    /// would lose the sets in it.
+    func testAnOlderSessionFileStillDecodes() throws {
+        let json = """
+        {"id":"w","routineID":"r","routineName":"Ayush C","day":"2026-09-19",
+         "startedAt":1758240000000,"restSeconds":90,"entries":[]}
+        """
+        let decoded = try JSONDecoder().decode(ActiveWorkout.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.restEndsAt)
+        XCTAssertNil(decoded.restRemaining())
+    }
+}
+
+// MARK: - The exercise catalogue
+
+/// `GET /api/gym/library` - openGym's 1324 built-in exercises, which the state
+/// document deliberately does not carry. The shapes here are from the vault's
+/// records/work/opengym/APP-API.md and were checked against the live route.
+final class GymLibraryTests: XCTestCase {
+
+    private let payload = """
+    {"ok": true, "media_base": "https://gym.ataru.aryasasikumar.com/gif/",
+     "exercises": [
+       {"id": "0001", "name": "3/4 sit-up", "body_part": "waist",
+        "equipment": "body weight", "gif": "0001-2gPfomN.gif"},
+       {"id": "0043", "name": "barbell full squat", "body_part": "upper legs",
+        "equipment": "barbell", "gif": "0043-qXTaZnJ.gif"},
+       {"id": "9998", "name": "mystery move", "body_part": null,
+        "equipment": null, "gif": null}
+     ]}
+    """
+
+    private func library() throws -> GymLibrary {
+        try JSONDecoder().decode(GymLibrary.self, from: Data(payload.utf8))
+    }
+
+    /// The route's keys are snake_case and the models are not. Getting this
+    /// wrong gives an empty body part on every row rather than an error.
+    func testTheRoutesKeysDecode() throws {
+        let library = try library()
+        XCTAssertEqual(library.mediaBase, "https://gym.ataru.aryasasikumar.com/gif/")
+        XCTAssertEqual(library.exercises.count, 3)
+        XCTAssertEqual(library.exercises[1].bodyPart, "upper legs")
+        XCTAssertEqual(library.exercises[1].equipment, "barbell")
+    }
+
+    /// `media_base` + the bare filename. Nothing else - no path joining, which
+    /// would drop a path component, and no slash rule, which would double one.
+    func testAGifURLIsTheBaseAndTheFilename() throws {
+        let library = try library()
+        XCTAssertEqual(library.gifURL(for: library.exercises[1])?.absoluteString,
+                       "https://gym.ataru.aryasasikumar.com/gif/0043-qXTaZnJ.gif")
+    }
+
+    /// A null `gif` is a real answer and must never become a URL - "draw the
+    /// placeholder; never build a URL from a null".
+    func testANullGifBuildsNoURL() throws {
+        let library = try library()
+        XCTAssertNil(library.gifURL(for: library.exercises[2]))
+    }
+
+    /// Every word has to land somewhere in the row, so a second word narrows.
+    func testSearchMatchesNameBodyPartAndEquipment() throws {
+        let library = try library()
+        XCTAssertEqual(library.search("squat").map(\.id), ["0043"])
+        XCTAssertEqual(library.search("waist").map(\.id), ["0001"])
+        XCTAssertEqual(library.search("barbell upper").map(\.id), ["0043"])
+        XCTAssertEqual(library.search("barbell waist").map(\.id), [])
+        // Case folded, and an empty query is everything rather than nothing.
+        XCTAssertEqual(library.search("BARBELL").map(\.id), ["0043"])
+        XCTAssertEqual(library.search("   ").count, 3)
+    }
+
+    /// The server sorts case-folded with the id as the tiebreak; re-sorting in
+    /// Swift over a lower-case dataset puts "3/4 sit-up" somewhere else. The
+    /// list comes back in the order it arrived.
+    func testTheServersOrderIsKept() throws {
+        let library = try library()
+        XCTAssertEqual(library.search("").map(\.id), ["0001", "0043", "9998"])
+    }
+
+    /// Custom exercises are NOT in the catalogue - they live in the state
+    /// document, they have no media, and merging them client-side is what
+    /// stops a day-old cache hiding one added two minutes ago.
+    func testCustomExercisesAreReadOutOfTheDocument() {
+        let state = GymState(raw: ["customEx": .array([
+            .object(["id": .string("cm0kq3y1"), "n": .string("Ayush curl"),
+                     "bp": .string("upper arms"), "eq": .string("dumbbell")]),
+            .object(["n": .string("no id, no row")])
+        ])])
+        let entries = state.customLibraryEntries
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].id, "cm0kq3y1")
+        XCTAssertEqual(entries[0].name, "Ayush curl")
+        XCTAssertEqual(entries[0].tagline, "upper arms · dumbbell")
+        XCTAssertNil(entries[0].gif)
+    }
+
+    /// Demo answers the library call too, with real ids and real filenames, so
+    /// the picker and the thumbnails are reviewable without the orin.
+    func testDemoServesACatalogue() async throws {
+        let library = try await DemoATARUService(latency: .zero).gymLibrary()
+        XCTAssertFalse(library.exercises.isEmpty)
+        XCTAssertEqual(library.mediaBase, "https://gym.ataru.aryasasikumar.com/gif/")
+        let squat = try XCTUnwrap(library.exercises.first { $0.id == "0043" })
+        XCTAssertEqual(squat.name, "barbell full squat")
+        XCTAssertEqual(library.gifURL(for: squat)?.absoluteString,
+                       "https://gym.ataru.aryasasikumar.com/gif/0043-qXTaZnJ.gif")
+    }
+
+    /// And the Demo document points at one of them, so a Demo run shows a real
+    /// animation next to the rows that correctly have none.
+    func testTheFixtureUsesAtLeastOneCatalogueId() async throws {
+        let document = try await DemoATARUService(latency: .zero).gymState()
+        let ids = document.state.routines.flatMap { $0.exercises.map(\.id) }
+        XCTAssertTrue(ids.contains("0043"), "no catalogue id in the fixture")
+        XCTAssertTrue(ids.contains(where: { $0.hasPrefix("cdemo") }),
+                      "the custom exercises went away")
+    }
+}
+
+// MARK: - Adding from the catalogue
+
+/// Adding by name always created a CUSTOM exercise, so picking "barbell full
+/// squat" - which openGym has had all along at id "0043" - made a private
+/// second copy under an id no other client could match. Adding from the
+/// library writes openGym's own id and nothing else.
+@MainActor
+final class GymAddExerciseTests: XCTestCase {
+
+    private func store() async -> GymStore {
+        let store = GymStore()
+        store.configure(service: DemoATARUService(latency: .zero), cacheRoot: nil)
+        await store.refresh()
+        return store
+    }
+
+    func testAddingFromTheLibraryWritesTheCatalogueIdAndNoCustomRow() async throws {
+        let store = await store()
+        let routineID = try XCTUnwrap(store.state?.routines.first?.id)
+        let customsBefore = store.state?.customLibraryEntries.count ?? 0
+        let entry = GymLibraryEntry(id: "0032", name: "barbell deadlift",
+                                    bodyPart: "upper legs", equipment: "barbell",
+                                    gif: "0032-ila4NZS.gif")
+
+        let stored = await store.addLibraryExercise(entry, to: routineID)
+        XCTAssertTrue(stored)
+
+        let routine = try XCTUnwrap(store.state?.routine(id: routineID))
+        let added = try XCTUnwrap(routine.exercises.last)
+        XCTAssertEqual(added.id, "0032")
+        XCTAssertEqual(added.sets, 3)
+        XCTAssertEqual(added.reps, 10)
+        // Nothing was added to the profile's own catalogue: a catalogue id is
+        // resolved by every client already.
+        XCTAssertEqual(store.state?.customLibraryEntries.count, customsBefore)
+    }
+
+    /// The config carries the four keys openGym writes unconditionally and no
+    /// others. Inventing `bodyweight`, `mode` or `side` is how a client writes
+    /// a document the web app then reads differently.
+    func testTheAddedConfigCarriesOnlyTheKeysOpenGymWrites() async throws {
+        let store = await store()
+        let routineID = try XCTUnwrap(store.state?.routines.first?.id)
+        let entry = GymLibraryEntry(id: "0652", name: "pull-up", bodyPart: "back",
+                                    equipment: "body weight", gif: "0652-lBDjFxJ.gif")
+        let stored = await store.addLibraryExercise(entry, to: routineID)
+        XCTAssertTrue(stored)
+        let added = try XCTUnwrap(store.state?.routine(id: routineID)?.exercises.last)
+        XCTAssertEqual(Set(added.raw.keys), ["id", "sets", "reps", "weight"])
+    }
+
+    /// Typing a name the catalogue does not have still makes a real openGym
+    /// custom exercise, exactly as before - that path did not change.
+    func testACustomNameStillBecomesACustomExercise() async throws {
+        let store = await store()
+        let routineID = try XCTUnwrap(store.state?.routines.first?.id)
+        let before = store.state?.customLibraryEntries.count ?? 0
+
+        let stored = await store.addExercise(named: "Ayush curl", to: routineID)
+        XCTAssertTrue(stored)
+
+        XCTAssertEqual(store.state?.customLibraryEntries.count, before + 1)
+        let added = try XCTUnwrap(store.state?.routine(id: routineID)?.exercises.last)
+        XCTAssertTrue(added.id.hasPrefix("c"), "a custom id is \"c\" plus a uid")
+        XCTAssertEqual(store.displayName(for: added.id), "Ayush curl")
+    }
+
+    /// The library resolves names for ids the name book has never seen, which
+    /// is what stops a catalogue exercise rendering as "0043".
+    func testTheLibraryNamesCatalogueIds() async throws {
+        let store = await store()
+        XCTAssertEqual(store.displayName(for: "0043"), "0043",
+                       "nothing is known before the library has loaded")
+        await store.loadLibrary()
+        XCTAssertEqual(store.displayName(for: "0043"), "barbell full squat")
+        XCTAssertEqual(store.gifURL(forExercise: "0043")?.absoluteString,
+                       "https://gym.ataru.aryasasikumar.com/gif/0043-qXTaZnJ.gif")
+        // An id in neither the catalogue nor the document is shown AS the id -
+        // never "Unknown", which hides which exercise it was.
+        XCTAssertEqual(store.displayName(for: "9999"), "9999")
+        XCTAssertNil(store.gifURL(forExercise: "9999"))
+    }
+
+    /// The picker searches one merged list, and his own exercises come first.
+    func testTheMergedPickerListPutsCustomsFirst() async throws {
+        let store = await store()
+        await store.loadLibrary()
+        let all = store.searchableExercises(matching: "")
+        let firstCustom = try XCTUnwrap(all.firstIndex { $0.id.hasPrefix("cdemo") })
+        let firstCatalogue = try XCTUnwrap(all.firstIndex { $0.id == "0001" })
+        XCTAssertLessThan(firstCustom, firstCatalogue)
+        // And a search reaches both halves.
+        XCTAssertTrue(store.searchableExercises(matching: "zercher")
+            .contains { $0.name == "Zercher Squat" })
+        XCTAssertTrue(store.searchableExercises(matching: "barbell full")
+            .contains { $0.id == "0043" })
+    }
+
+    /// Discarding a session removes it from the phone, which is the only copy
+    /// there is - openGym deletes `active` on every write, so it was never
+    /// sent anywhere.
+    func testDiscardingASessionClearsIt() async throws {
+        let store = await store()
+        store.startWorkout()
+        XCTAssertNotNil(store.active)
+        store.discardWorkout()
+        XCTAssertNil(store.active)
+        XCTAssertNil(ActiveWorkoutStore.load())
+    }
+}

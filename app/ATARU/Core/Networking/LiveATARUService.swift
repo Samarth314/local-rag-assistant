@@ -392,6 +392,20 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return today
     }
 
+    /// The catalogue. One call, 1324 rows, and the only gym route whose answer
+    /// is the same for everybody - it is openGym's dataset, not Arya's
+    /// document, which is why the store may hold it for a day.
+    func gymLibrary() async throws -> GymLibrary {
+        guard let url = endpoints.url("api/gym/library") else { throw APIError.invalidURL }
+        let (data, http) = try await gymPerform(request(for: url))
+        try Self.refuseGym(status: http.statusCode, data: data)
+        guard let library = try? ATARUCoding.decoder.decode(GymLibrary.self, from: data)
+        else {
+            throw APIError.malformedResponse("gym/library")
+        }
+        return library
+    }
+
     func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
         guard let url = endpoints.url("api/gym/state") else { throw APIError.invalidURL }
         var request = self.request(for: url)

@@ -19,25 +19,48 @@ struct ActiveWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    /// When the current rest ends. Nil when nothing is resting.
-    @State private var restUntil: Date?
+    /// The clock, ticked only while something is resting. The rest itself
+    /// lives on the SESSION as an absolute end time (see
+    /// `ActiveWorkout.restEndsAt`) - this is just what makes the number on
+    /// screen count down.
     @State private var now = Date()
     @State private var isFinishing = false
     @State private var isConfirmingDiscard = false
 
     private let tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
+    /// Recomputed from the clock on every frame that matters, never
+    /// decremented. A phone that spent four minutes in a pocket comes back to
+    /// a finished rest rather than to four minutes it never counted.
+    private var restSecondsLeft: Int? { store.active?.restRemaining(at: now) }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             content
-            if let restUntil, restUntil > now {
-                restBar(secondsLeft: Int(restUntil.timeIntervalSince(now).rounded(.up)))
+            if let secondsLeft = restSecondsLeft {
+                restBar(secondsLeft: secondsLeft)
             }
         }
         .ataruBackdrop()
         .navigationTitle(store.active?.routineName ?? "Workout")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // Top LEFT, next to the back button that leaves the session
+            // running - so the two ways out of this screen sit together and
+            // the destructive one is the one behind a menu.
+            ToolbarItem(placement: .topBarLeading) {
+                Menu {
+                    Button("Discard workout", role: .destructive) {
+                        isConfirmingDiscard = true
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 16, weight: .light))
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                .accessibilityLabel("Session options")
+                .disabled(store.active == nil)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Finish") { Task { await finish() } }
                     .font(.ataruBody())
@@ -49,16 +72,28 @@ struct ActiveWorkoutView: View {
             // Only while something is actually resting: a timer that redraws
             // the page twice a second for no reason is a page that eats
             // battery at the rack.
-            guard restUntil != nil else { return }
+            guard store.active?.restEndsAt != nil else { return }
             now = value
-            if let end = restUntil, end <= value { restUntil = nil }
+            store.reconcileRest(at: value)
         }
-        // Whatever is on screen is on disk before the app leaves the
-        // foreground, not after it comes back.
+        // Back from another tile, or from another app. BOTH edges: the rest
+        // is recomputed from the clock on the way in, and whatever is on
+        // screen is on disk before the app leaves the foreground rather than
+        // after it comes back.
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { store.persistActive() }
+            if phase == .active {
+                now = Date()
+                store.reconcileRest()
+            } else {
+                store.persistActive()
+            }
+        }
+        .onAppear {
+            now = Date()
+            store.reconcileRest()
         }
         .onDisappear { store.persistActive() }
+        .dismissableNumberPads()
         .confirmationDialog("Discard this session?",
                             isPresented: $isConfirmingDiscard,
                             titleVisibility: .visible) {
@@ -146,7 +181,22 @@ struct ActiveWorkoutView: View {
     private func exerciseCard(index: Int, entry: ActiveWorkout.Entry) -> some View {
         ATCard {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                HStack(alignment: .firstTextBaseline) {
+                HStack(spacing: Theme.Space.s) {
+                    // The demo, and the way to a bigger one. A thumbnail
+                    // rather than the animation: fourteen exercises animating
+                    // at once is fourteen display links running at the rack.
+                    NavigationLink {
+                        GymExerciseDetail(
+                            name: store.displayName(for: entry.exerciseID),
+                            entry: store.libraryEntry(for: entry.exerciseID),
+                            gifURL: store.gifURL(forExercise: entry.exerciseID))
+                    } label: {
+                        GymExerciseThumbnail(
+                            url: store.gifURL(forExercise: entry.exerciseID))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Show \(entry.name)")
+
                     Text(entry.name)
                         .font(.ataruBody())
                         .foregroundStyle(Theme.textPrimary)
@@ -213,13 +263,13 @@ struct ActiveWorkoutView: View {
             startedResting = wanted
         }
         // The rest starts when a set is finished, which is the only moment the
-        // phone can know it without being told.
+        // phone can know it without being told. Un-ticking a set is the one
+        // way to say it did not happen, so the rest goes with it.
         if startedResting {
-            let seconds = store.active?.restSeconds ?? 90
             now = Date()
-            restUntil = Date().addingTimeInterval(TimeInterval(max(10, seconds)))
+            store.startRest()
         } else {
-            restUntil = nil
+            store.stopRest()
         }
     }
 
@@ -256,7 +306,7 @@ struct ActiveWorkoutView: View {
     /// that is being logged.
     private func restBar(secondsLeft: Int) -> some View {
         Button {
-            restUntil = nil
+            store.stopRest()
         } label: {
             HStack(spacing: Theme.Space.s) {
                 Image(systemName: "timer")
