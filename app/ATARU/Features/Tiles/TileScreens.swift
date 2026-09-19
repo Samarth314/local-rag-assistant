@@ -320,7 +320,10 @@ enum TileCache {
                                 // Page three of Finance. See StatementsModel.
                                 StatementsModel.cacheKind,
                                 // The openGym document. See GymStore.
-                                GymStore.cacheKind]
+                                GymStore.cacheKind,
+                                // And openGym's exercise catalogue, cached for
+                                // a day beside it.
+                                GymStore.libraryCacheKind]
 
     /// Derived from the backend URL by substitution, NOT by `hashValue` -
     /// String hashing is seeded per process, so a hashed filename would miss
@@ -443,20 +446,56 @@ struct TileScreenHost: View {
         .animation(Theme.quick, value: state.isOffline)
     }
 
+    /// The handle, and an X beside it.
+    ///
+    /// ## Why the X came back
+    ///
+    /// It was removed on the reasoning that the drag IS the way out and a
+    /// glyph in the corner is chrome. That held while the drag was reliable.
+    /// It stopped holding when the drag started firing by itself: "across the
+    /// board in all aspects of the app, swiping down to close the window is
+    /// happening too easily by accident; I just try to scroll to the top and
+    /// it activates the close."
+    ///
+    /// The drag is now confined to this strip (see `TileDismissal`), which
+    /// fixes the accident and, on its own, would leave a page whose only exit
+    /// is a 28pt band most people never aim at. So: the handle for the people
+    /// who already drag, and a control for everyone else. One tap, no
+    /// threshold, nothing to learn.
     private var grabBar: some View {
-        // A generous strip around a small mark: 28pt of target for a 4pt bar,
-        // because the thing you have to hit should be bigger than the thing
-        // you can see.
-        Capsule()
-            .fill(Theme.textTertiary.opacity(0.45))
-            .frame(width: 38, height: 4)
-            .frame(maxWidth: .infinity)
-            .frame(height: 28)
-            .contentShape(Rectangle())
-            .accessibilityLabel("Close")
-            .accessibilityHint("Drag down anywhere on the page to close it.")
-            .accessibilityAddTraits(.isButton)
-            .accessibilityAction { onClose() }
+        ZStack {
+            // A generous strip around a small mark: 28pt of target for a 4pt
+            // bar, because the thing you have to hit should be bigger than the
+            // thing you can see.
+            Capsule()
+                .fill(Theme.textTertiary.opacity(0.45))
+                .frame(width: 38, height: 4)
+                .frame(maxWidth: .infinity)
+                .frame(height: 28)
+                .contentShape(Rectangle())
+                .accessibilityHidden(true)
+
+            HStack {
+                Spacer()
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Theme.textSecondary)
+                        .frame(width: 30, height: 30)
+                        .background {
+                            Circle().fill(Theme.surfaceElevated)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close")
+                .accessibilityHint("Close this screen and go back to Ask.")
+                // A control that owns its own touches: a finger that lands
+                // here is pressing a button, not starting a drag.
+                .dismissExclusion()
+                .padding(.trailing, Theme.Space.screen)
+            }
+        }
+        .frame(height: 34)
     }
 
     @ViewBuilder
@@ -599,14 +638,6 @@ struct TileDismissal: ViewModifier {
     /// How far the page has been pulled, with the dead zone already
     /// subtracted. Never animated while a finger is down.
     @State private var pull: CGFloat = 0
-    /// Whether the hosted page's ScrollView is at its top. True until told
-    /// otherwise: a page with no ScrollView never reports, and that is a real
-    /// answer rather than a missing one - it is trivially at its top.
-    ///
-    /// Note what this canNOT do on its own, which is the whole reason for the
-    /// dead zone: on a page with nothing to scroll it is true forever, so it
-    /// admits every downward wiggle. It is a handoff rule, not a protection.
-    @State private var atTop = true
     /// Controls that own their own drags, in global coordinates.
     @State private var exclusions: [CGRect] = []
     /// True once a drag has been claimed as a dismissal.
@@ -662,13 +693,6 @@ struct TileDismissal: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            // The page's own scroll position and whether it scrolls at all,
-            // read from out here. This is what the iOS 18 floor was raised for.
-            .onScrollGeometryChange(for: Bool.self) { geometry in
-                geometry.contentOffset.y <= geometry.contentInsets.top + 0.5
-            } action: { _, top in
-                atTop = top
-            }
             .onPreferenceChange(DismissExclusionKey.self) { exclusions = $0 }
             // Handing the gesture over cleanly rather than letting two things
             // move at once: without this the ScrollView rubber-bands downward
@@ -744,9 +768,35 @@ struct TileDismissal: ViewModifier {
     }
 
     /// Whether this drag is allowed to become a dismissal.
+    ///
+    /// ## The at-top rule is gone, and this is why
+    ///
+    /// It used to be the standard sheet rule: a drag anywhere on the page
+    /// could close it as long as the content was at its scroll top. That rule
+    /// has a hole, and he found it - "I just try to scroll to the top and it
+    /// activates the close."
+    ///
+    /// Scrolling back to the top IS a downward drag. The content reaches the
+    /// top part way through it, `atTop` flips to true mid-gesture, and the
+    /// same finger that was scrolling is now, by the rule, dismissing. The
+    /// dead zone cannot help: by the time the content has arrived at the top
+    /// the finger has already travelled far further than 28pt. Nor can reading
+    /// `atTop` at the START of the gesture, because a `minimumDistance` of 12
+    /// means the first event already arrives 12pt into the scroll.
+    ///
+    /// And on a page that does not scroll at all - which is most tile pages,
+    /// since most of them fit - the rule was `true` permanently, so every
+    /// downward wiggle was a candidate. That is the "across the board"
+    /// half of the report.
+    ///
+    /// So the content no longer dismisses at all. The handle does: the grab
+    /// bar and the navigation bar above it are not scrolling content, nothing
+    /// else means anything there, and a finger that lands there has aimed. The
+    /// X beside the grab bar is what covers everyone who was relying on the
+    /// gesture from the middle of the page.
     private func canClaim(_ value: DragGesture.Value) -> Bool {
-        // Downward, and decisively so. 2:1 rather than the old "more vertical
-        // than horizontal", which admitted a 46-degree wander.
+        // Downward, and decisively so. 2:1 rather than "more vertical than
+        // horizontal", which admitted a 46-degree wander.
         guard value.translation.height > 0,
               value.translation.height > abs(value.translation.width) * 2
         else { return false }
@@ -754,15 +804,8 @@ struct TileDismissal: ViewModifier {
         if exclusions.contains(where: { $0.contains(value.startLocation) }) {
             return false
         }
-        // The grab bar and the navigation bar are handles: they are not
-        // scrolling content, so they close the page however far down it has
-        // been read - which is what a sheet's grabber does.
-        if value.startLocation.y < handleBand { return true }
-        // Anywhere else: the content has to be at its top, which is the
-        // standard sheet rule. On a page that does not scroll this is always
-        // true - the dead zone and the dominance test above are what stand
-        // between a wiggle and a dismissal there.
-        return atTop
+        // The handle, and nothing else.
+        return value.startLocation.y < handleBand
     }
 
     /// Commit. The page keeps travelling as it dissolves rather than snapping

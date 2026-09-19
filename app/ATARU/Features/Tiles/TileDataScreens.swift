@@ -1532,9 +1532,13 @@ struct JournalScreen: View {
                 .accessibilityLabel("New entry")
             }
         }
+        // A half-written entry is the worst thing in this app to lose to an
+        // accidental flick, and the compose screen already has Cancel, which
+        // asks before throwing text away. The swipe asked nothing.
         .sheet(isPresented: $composing, onDismiss: { Task { await load() } }) {
             JournalComposeScreen()
                 .environmentObject(state)
+                .interactiveDismissDisabled(true)
         }
         .refreshable { await load() }
         // Last known content in the first frame, then the network. See

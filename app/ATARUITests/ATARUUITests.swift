@@ -105,25 +105,59 @@ final class ATARUUITests: XCTestCase {
         ).firstMatch.waitForExistence(timeout: 15))
     }
 
-    /// Pulling a tile page down closes it and puts Ask back.
+    /// Pulling a tile page down by its HANDLE closes it and puts Ask back.
     ///
-    /// The X in the corner is gone app-wide - every tile screen is closed by
-    /// dragging it down, which is why this is worth a smoke test even though
-    /// the gesture itself is exercised by hand.
-    func testATilePageIsClosedByDraggingItDown() {
+    /// The drag used to work from anywhere on the page as long as the content
+    /// was at its scroll top. It does not any more - see `TileDismissal` - so
+    /// this drags from the handle band at the top, which is the one place it
+    /// is still claimed from.
+    func testATilePageIsClosedByDraggingItsHandleDown() {
         launch(startingOn: "documents")
         XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
-        // Nothing in the navigation bar closes it any more. (The grab bar
-        // below it is labelled "Close" for VoiceOver and is not chrome in the
-        // bar, which is why this is scoped to the bar itself.)
+        // Still nothing in the navigation BAR: the X lives beside the grab bar
+        // under it, which is the page's own chrome rather than the bar's.
         XCTAssertFalse(app.navigationBars["Library"].buttons["Close"].exists,
-                       "a tile screen still has a close button in its navigation bar")
+                       "a tile screen has grown a close button in its navigation bar")
 
         let top = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.14))
         let bottom = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
         top.press(forDuration: 0.05, thenDragTo: bottom)
 
         XCTAssertTrue(app.staticTexts["Hold to ask"].waitForExistence(timeout: 5),
-                      "dragging the page down did not put it away")
+                      "dragging the handle down did not put it away")
+    }
+
+    /// And the X closes it too, which is the point of it being there.
+    ///
+    /// "Across the board in all aspects of the app, swiping down to close the
+    /// window is happening too easily by accident; I just try to scroll to the
+    /// top and it activates the close." Confining the drag to the handle fixed
+    /// the accident; this control is what keeps the page closable without one.
+    func testATilePageIsClosedByItsCloseButton() {
+        launch(startingOn: "documents")
+        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+        let close = app.buttons["Close"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5),
+                      "a tile screen has no explicit way to close it")
+        close.tap()
+        XCTAssertTrue(app.staticTexts["Hold to ask"].waitForExistence(timeout: 5),
+                      "the close button did not put the page away")
+    }
+
+    /// Dragging the CONTENT down no longer closes the page.
+    ///
+    /// This is the regression test for the report itself: a flick downward in
+    /// the middle of a page - which is what scrolling back to the top is -
+    /// must leave the page exactly where it was.
+    func testDraggingTheContentDownDoesNotClose() {
+        launch(startingOn: "documents")
+        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 8))
+
+        let middle = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55))
+        let lower = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.95))
+        middle.press(forDuration: 0.05, thenDragTo: lower)
+
+        XCTAssertTrue(app.navigationBars["Library"].waitForExistence(timeout: 3),
+                      "a downward drag on the content closed the page")
     }
 }

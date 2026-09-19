@@ -247,7 +247,10 @@ struct VoiceView: View {
         // wall display - the answer card keeps a way back in, so dismissing
         // this costs nothing.
         .sheet(item: $model.presentedDocument) { doc in
+            // Done, not a flick - the same rule as every other sheet in the
+            // app now. See TileDismissal for the report behind it.
             DocumentPopup(document: doc, service: state.service)
+                .interactiveDismissDisabled(true)
         }
     }
 

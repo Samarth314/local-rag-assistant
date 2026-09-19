@@ -73,14 +73,21 @@ struct CardsScreen: View {
                 }
             }
         }
+        // Both of these are dismissed by their own Cancel/Done, never by a
+        // flick. "Across the board in all aspects of the app, swiping down to
+        // close the window is happening too easily by accident; I just try to
+        // scroll to the top and it activates the close." A picker and an
+        // editor are exactly where that costs something.
         .sheet(isPresented: $isPicking) {
             CardPicker(catalog: catalog, held: wallet.cards) { entry in
                 wallet.add(entry.held())
                 isPicking = false
             }
+            .interactiveDismissDisabled(true)
         }
         .sheet(item: $editing) { card in
             CardEditor(card: card, wallet: wallet)
+                .interactiveDismissDisabled(true)
         }
         .task {
             now = Date()
