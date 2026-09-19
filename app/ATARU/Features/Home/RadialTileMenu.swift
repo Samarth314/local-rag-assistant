@@ -6,8 +6,8 @@ import SwiftUI
 /// is the way in; the Ask orb carries the same set as accessibility actions
 /// for everyone the press-and-sweep cannot serve. Both read this enum, so a
 /// tile added here appears in both without another edit. Every case opens a
-/// native screen, with one declared exception: a tile carrying an
-/// `externalURL` is handed to Safari instead, and `gym` says why.
+/// native screen of this app's own - there is no longer any exception, and
+/// `gym` was the last one.
 ///
 /// Declaration order is reach order: the earlier a tile is listed, the sooner
 /// a thumb gets to it. The inner ring is filled first and in order, so where a
@@ -39,20 +39,17 @@ enum HomeTile: String, CaseIterable, Identifiable {
     // exactly the "phone is the right device for the job" test the first group
     // is chosen by.
     //
-    // IT IS THE ONE TILE THAT IS NOT A NATIVE SCREEN, and that is a platform
-    // constraint rather than a shortcut. OpenGym signs in with a passkey, and
-    // WebAuthn is refused outright inside a plain WKWebView unless the app
-    // carries a `webcredentials` associated-domain entitlement for that host.
-    // This app carries none, so the embedded web view the Remote tile uses
-    // would put up a sign-in this phone cannot finish - a dead end that looks
-    // like a bug in OpenGym. SFSafariViewController shares Safari's own
-    // credential store and the passkey works there, so `gym` declares an
-    // `externalURL` and RootView hands it to a Safari sheet.
+    // IT USED TO BE THE ONE TILE THAT WAS NOT A NATIVE SCREEN. openGym signs
+    // in with a passkey, WebAuthn is refused inside a plain WKWebView without
+    // a `webcredentials` entitlement this app does not carry, and so the tile
+    // opened a Safari sheet instead.
     //
-    // Reimplementing it natively, or embedding it in WebScreen, means adding
-    // the entitlement (and the matching `/.well-known/apple-app-site-
-    // association` on the host) FIRST. Do not "simplify" this into the tile
-    // screen switch without that.
+    // It is a screen now, and the entitlement was never the answer. The phone
+    // does not sign in to openGym at all: the ATARU server reaches the same
+    // state document through a bridge on the orin, under the same bearer token
+    // every other /api call uses, so the app talks to its own backend and the
+    // browser keeps its passkey. See GymScreen and the vault's
+    // records/work/opengym/APP-API.md.
     case gym
     case journal, documents, home, workspaces
     // Settings-class: dialled once and then left alone. `morning` is his own
@@ -144,21 +141,6 @@ enum HomeTile: String, CaseIterable, Identifiable {
         case .music:         return "Navidrome"
         case .passwords:     return "Vaultwarden"
         case .remote:        return "Screens"
-        }
-    }
-
-    /// The page this tile hands to Safari instead of drawing a screen of our
-    /// own, or nil for every native destination.
-    ///
-    /// It lives on the enum rather than in `RootView` on purpose: this file is
-    /// the single source of truth for where a tile goes, and a destination
-    /// that leaves the app is still a destination. Built from
-    /// `ATARUAuth.ataruDomain` so there is one place the domain is written -
-    /// the tile hosts already resolve as subdomains of it.
-    var externalURL: URL? {
-        switch self {
-        case .gym: return URL(string: "https://gym.\(ATARUAuth.ataruDomain)")
-        default:   return nil
         }
     }
 

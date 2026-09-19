@@ -458,7 +458,15 @@ final class AppState: ObservableObject {
     /// every time the app leaves the foreground would delete it before it is
     /// ever read. It is written locked-device-protected instead. See TileCache.
     func purgeDownloads(includingCachedTiles: Bool = false) {
-        if includingCachedTiles { TileCache.purge() }
+        if includingCachedTiles {
+            TileCache.purge()
+            // The gym session in progress lives outside the tile caches, in
+            // Application Support, because a cache the system may evict is the
+            // wrong home for sets that have been done and not yet saved. It is
+            // still something ATARU put on this phone, so the button that
+            // deletes that has to reach it. See ActiveWorkoutStore.
+            ActiveWorkoutStore.purge()
+        }
         Task { await DocumentDownloadStore.shared.purge() }
     }
 

@@ -318,7 +318,9 @@ enum TileCache {
     private static let kinds = ["finance", "health", "home",
                                 "status", "journal", "workspaces",
                                 // Page three of Finance. See StatementsModel.
-                                StatementsModel.cacheKind]
+                                StatementsModel.cacheKind,
+                                // The openGym document. See GymStore.
+                                GymStore.cacheKind]
 
     /// Derived from the backend URL by substitution, NOT by `hashValue` -
     /// String hashing is seeded per process, so a hashed filename would miss
@@ -464,6 +466,7 @@ struct TileScreenHost: View {
         case .notes:      NotesScreen()
         case .finance:    FinanceScreen()
         case .health:     HealthScreen()
+        case .gym:        GymScreen()
         case .home:       HomeScreen()
         case .status:     StatusScreen()
         case .journal:    JournalScreen()
@@ -862,11 +865,6 @@ struct ServiceCardScreen: View {
         case .music:         return "Navidrome on the mini. Any Subsonic-compatible player on the tailnet connects to it."
         case .passwords:     return "Vaultwarden on the mini. Pair it with the Bitwarden app pointed at the tailnet URL."
         case .whiteboard:    return "The PenEcho AI canvas - handwriting first, so it lives best on the iPad or a desktop."
-        // Unreachable in practice: RootView.open(tile:) sends every tile with
-        // an `externalURL` to a Safari cover and never presents this host for
-        // one. Written anyway, because the alternative if a future route ever
-        // does reach here is a card with an empty line on it.
-        case .gym:           return "OpenGym opens in Safari rather than in here, because its sign-in is a passkey and a passkey cannot be used inside an app's own web view."
         default:             return ""
         }
     }

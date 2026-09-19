@@ -770,25 +770,21 @@ final class FinancePagerTests: XCTestCase {
         XCTAssertEqual(HomeTile.gym.kind, "Workouts · body weight")
     }
 
-    /// The tile is a web destination, and it is the ONLY one. A second tile
-    /// quietly acquiring an `externalURL` is a routing change worth noticing:
-    /// those never reach `TileScreenHost` at all.
-    func testGymIsTheOneTileThatLeavesTheApp() {
-        XCTAssertEqual(HomeTile.gym.externalURL?.absoluteString,
-                       "https://gym.ataru.aryasasikumar.com")
-        XCTAssertEqual(HomeTile.allCases.filter { $0.externalURL != nil }, [.gym])
-    }
-
-    /// Whatever the address becomes, it stays something Safari can be handed
-    /// in app - the fallback out of the app exists, but Gym must not need it.
-    func testTheGymPageCanBePresentedInApp() {
-        guard let url = HomeTile.gym.externalURL else {
-            return XCTFail("Gym lost its address")
-        }
-        XCTAssertTrue(ExternalPage.canPresentInApp(url))
-        XCTAssertFalse(ExternalPage.canPresentInApp(URL(string: "opengym://home")!))
-        // Keyed on the address, so asking twice is one presentation.
-        XCTAssertEqual(SafariPage(url: url).id, url.absoluteString)
+    /// Gym is a screen of the app's own now, and nothing in the launcher
+    /// leaves the app any more.
+    ///
+    /// THE CLAIM THIS REPLACES. Gym used to carry an `externalURL` and was
+    /// handed to a Safari cover, because openGym signs in with a passkey. The
+    /// phone does not sign in to openGym at all now - it reaches the same
+    /// state document through the ATARU server - so the property, the cover
+    /// and the Safari wrapper are gone together. The test is kept rather than
+    /// deleted so a tile acquiring a web destination again is a change someone
+    /// has to make deliberately.
+    func testEveryTileIsANativeScreen() {
+        XCTAssertTrue(HomeTile.allCases.contains(.gym))
+        // Three pages behind the one orb, like Finance.
+        XCTAssertEqual(GymPage.allCases.map(\.id), ["today", "routines", "history"])
+        XCTAssertEqual(GymPage.allCases.map(\.title), ["Today", "Routines", "History"])
     }
 
     func testFinanceAdvertisesItsNewScope() {
