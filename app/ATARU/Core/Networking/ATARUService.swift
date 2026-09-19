@@ -165,6 +165,26 @@ protocol ATARUService: AnyObject, Sendable {
     /// app comes to the foreground.
     func morningCallState() async throws -> MorningCallState
 
+    // MARK: Gym
+
+    /// The cheap poll: openGym's revision counter, with no document behind it.
+    /// One ssh hop on the server side, so it is what the app asks on every
+    /// foreground and fetches the state only when the number has moved.
+    func gymRevision() async throws -> Int
+
+    /// The whole openGym state document, and the revision it was read at.
+    func gymState() async throws -> GymDocument
+
+    /// Today's plan, pre-resolved by the server. `date` is `YYYY-MM-DD` and
+    /// defaults to the server's today.
+    func gymToday(date: String?) async throws -> GymToday
+
+    /// A conditional write. `baseRev` is the revision the document was read
+    /// at, and a `.conflict` answer carries the document that IS current so
+    /// the caller can merge and retry - NEVER re-send its own copy with the
+    /// newer number, which is the silent overwrite the check exists to stop.
+    func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult
+
     // MARK: Calls
 
     /// Hands the server the PushKit token it needs to ring this phone.
@@ -214,6 +234,18 @@ extension ATARUService {
     /// an error, so the screen has to be able to tell the two apart.
     func routine() async throws -> DailyRoutine { .empty }
     func routineSetDone(id: String, done: Bool) async throws -> DailyRoutine { .empty }
+
+    /// A backend with no openGym bridge says so, and the Gym screen renders
+    /// "unavailable" - never an empty plan, and never a rest day. Those are
+    /// claims about Arya's week, and a missing route is not evidence for
+    /// either. (Demo and Live both implement these for real; the default is
+    /// here so the test stubs compile without learning the vocabulary.)
+    func gymRevision() async throws -> Int { throw GymError.disabled }
+    func gymState() async throws -> GymDocument { throw GymError.disabled }
+    func gymToday(date: String?) async throws -> GymToday { throw GymError.disabled }
+    func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
+        throw GymError.disabled
+    }
 
     /// A backend that has no use for the confidence hint answers the question
     /// exactly as it always did. The hint is additive by construction: nothing

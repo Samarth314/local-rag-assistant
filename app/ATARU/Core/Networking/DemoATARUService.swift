@@ -209,6 +209,60 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         return Self.routineState
     }
 
+    // MARK: Gym (in-memory)
+
+    /// A whole openGym profile that answers the same four calls the mini does,
+    /// revision protocol included: a write with a stale `baseRev` comes back
+    /// as a conflict carrying the current document, so the merge path is
+    /// reachable in Demo rather than only against a second live device.
+    private static let gymLock = NSLock()
+    nonisolated(unsafe) private static var gymDocument = GymFixtures.document()
+
+    func gymRevision() async throws -> Int {
+        try await pause()
+        Self.gymLock.lock()
+        defer { Self.gymLock.unlock() }
+        return Self.gymDocument.revision
+    }
+
+    func gymState() async throws -> GymDocument {
+        try await pause()
+        Self.gymLock.lock()
+        defer { Self.gymLock.unlock() }
+        return Self.gymDocument
+    }
+
+    func gymToday(date: String?) async throws -> GymToday {
+        try await pause()
+        Self.gymLock.lock()
+        defer { Self.gymLock.unlock() }
+        let state = Self.gymDocument.state
+        var names = GymNameBook()
+        names.absorb(state)
+        // The same resolution the server runs, against the same document -
+        // and the reason every fixture exercise is a custom one, so the names
+        // are in the document rather than in a catalogue Demo cannot reach.
+        return GymToday.resolve(from: state, on: date ?? GymClock.day(), names: names)
+    }
+
+    func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
+        try await pause()
+        Self.gymLock.lock()
+        defer { Self.gymLock.unlock() }
+        guard baseRev == Self.gymDocument.revision else {
+            return .conflict(Self.gymDocument)
+        }
+        // The three fields the real server owns, set here for the same reason:
+        // whatever a client sends in them is ignored.
+        var raw = state.bodyForWrite
+        let revision = Self.gymDocument.revision + 1
+        raw["_rev"] = .int(revision)
+        raw["_ts"] = .int(GymClock.milliseconds())
+        raw["active"] = nil
+        Self.gymDocument = GymDocument(revision: revision, state: GymState(raw: raw))
+        return .stored(Self.gymDocument)
+    }
+
     private func pause() async throws {
         try await Task.sleep(for: latency)
     }

@@ -348,6 +348,128 @@ final class LiveATARUService: ATARUService, @unchecked Sendable {
         return try decode(CardCatalog.self, from: data)
     }
 
+    // MARK: - Gym
+
+    // openGym's state, reached through the bridge on the mini. See the vault's
+    // records/work/opengym/APP-API.md, and `GymState` for why the document is
+    // carried as JSON rather than as a struct.
+    //
+    // These four are the only methods in this file that look at a status code
+    // themselves. They have to: a 409 is not a failure but an ANSWER that
+    // carries the current document, and a 404 and a 503 are two different
+    // claims about the server that must never both become "no workouts".
+
+    func gymRevision() async throws -> Int {
+        guard let url = endpoints.url("api/gym/rev") else { throw APIError.invalidURL }
+        let (data, http) = try await gymPerform(request(for: url))
+        try Self.refuseGym(status: http.statusCode, data: data)
+        guard let rev = Self.gymReply(from: data)?.rev else {
+            throw APIError.malformedResponse("gym/rev")
+        }
+        return rev
+    }
+
+    func gymState() async throws -> GymDocument {
+        guard let url = endpoints.url("api/gym/state") else { throw APIError.invalidURL }
+        let (data, http) = try await gymPerform(request(for: url))
+        try Self.refuseGym(status: http.statusCode, data: data)
+        guard let reply = Self.gymReply(from: data), let state = reply.state else {
+            throw APIError.malformedResponse("gym/state")
+        }
+        return GymDocument(revision: reply.rev ?? state.revision, state: state)
+    }
+
+    func gymToday(date: String?) async throws -> GymToday {
+        let query = date.map { [URLQueryItem(name: "date", value: $0)] } ?? []
+        guard let url = endpoints.url("api/gym/today", query: query) else {
+            throw APIError.invalidURL
+        }
+        let (data, http) = try await gymPerform(request(for: url))
+        try Self.refuseGym(status: http.statusCode, data: data)
+        guard let today = try? ATARUCoding.decoder.decode(GymToday.self, from: data) else {
+            throw APIError.malformedResponse("gym/today")
+        }
+        return today
+    }
+
+    func gymWrite(state: GymState, baseRev: Int) async throws -> GymWriteResult {
+        guard let url = endpoints.url("api/gym/state") else { throw APIError.invalidURL }
+        var request = self.request(for: url)
+        request.httpMethod = "PUT"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // The whole document, minus the three fields the server owns. See
+        // `GymState.bodyForWrite`.
+        let body: [String: JSONValue] = ["state": .object(state.bodyForWrite),
+                                         "baseRev": .int(baseRev)]
+        request.httpBody = try body.jsonData()
+
+        let (data, http) = try await gymPerform(request)
+        // 409 is the revision check doing its job, not an error: the answer
+        // carries the document that IS current, and the caller merges against
+        // it. Re-sending our own copy with the new number is what this exists
+        // to prevent.
+        if http.statusCode == 409 {
+            guard let reply = Self.gymReply(from: data), let current = reply.state else {
+                throw APIError.malformedResponse("gym/state conflict")
+            }
+            return .conflict(GymDocument(revision: reply.rev ?? current.revision,
+                                         state: current))
+        }
+        try Self.refuseGym(status: http.statusCode, data: data)
+        guard let reply = Self.gymReply(from: data), let stored = reply.state else {
+            throw APIError.malformedResponse("gym/state write")
+        }
+        return .stored(GymDocument(revision: reply.rev ?? stored.revision, state: stored))
+    }
+
+    /// Like `perform`, but hands back non-2xx answers instead of throwing -
+    /// three of the gym's status codes carry a body worth reading.
+    private func gymPerform(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.malformedResponse("not an HTTP response")
+            }
+            return (data, http)
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.from(error)
+        }
+    }
+
+    private struct GymReply: Decodable {
+        let ok: Bool?
+        let rev: Int?
+        let state: GymState?
+        let error: String?
+        let conflict: Bool?
+    }
+
+    private static func gymReply(from data: Data) -> GymReply? {
+        try? ATARUCoding.decoder.decode(GymReply.self, from: data)
+    }
+
+    /// Turns the gym's own failure codes into the two claims the screen is
+    /// allowed to make. Neither may ever be drawn as an empty week.
+    private static func refuseGym(status: Int, data: Data) throws {
+        switch status {
+        case 200...299:
+            return
+        case 404:
+            // Either `ATARU_GYM=1` is unset (the documented body) or the route
+            // is not on this server at all. Both mean the same thing to the
+            // phone: the feature is not there.
+            throw GymError.disabled
+        case 503:
+            let detail = gymReply(from: data)?.error ?? ""
+            throw GymError.unavailable(
+                detail.replacingOccurrences(of: "gym unavailable: ", with: ""))
+        default:
+            throw APIError.from(statusCode: status) ?? APIError.server(status: status)
+        }
+    }
+
     // MARK: - Calls
 
     func registerVoIPToken(_ token: String, environment: String) async throws {
