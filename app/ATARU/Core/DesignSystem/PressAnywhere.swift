@@ -303,11 +303,20 @@ extension View {
     /// Marks this view as somewhere a long press means something other than
     /// "open the launcher" — the orb, which is held to talk, and the composer,
     /// where a hold is how you reach the selection magnifier.
-    func pressMenuExclusion() -> some View {
+    ///
+    /// `expandedBy` grows the reported rect outward. A thumb is about 40pt
+    /// across and lands where it looks, not where the frame is, so a 58pt
+    /// control needs more than 58pt of keep-out - and the cost of getting it
+    /// wrong is asymmetric: too small and a held question opens the launcher
+    /// instead, too large and a hold a few points off a control opens nothing
+    /// until the thumb moves. Default 0, so every existing call site reports
+    /// exactly what it used to.
+    func pressMenuExclusion(expandedBy inset: CGFloat = 0) -> some View {
         background(
             GeometryReader { geo in
-                Color.clear.preference(key: PressExclusionKey.self,
-                                       value: [geo.frame(in: .global)])
+                Color.clear.preference(
+                    key: PressExclusionKey.self,
+                    value: [geo.frame(in: .global).insetBy(dx: -inset, dy: -inset)])
             }
         )
     }

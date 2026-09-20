@@ -55,10 +55,26 @@ struct DockedOrb: View {
                 .padding(-4)
         }
         .contentShape(Circle())
-        // The radial launcher must not open a third of a second into a held
-        // question, exactly as on the Ask page.
-        .pressMenuExclusion()
-        .simultaneousGesture(
+        // THE ORB WINS EVERY HOLD THAT LANDS ON IT.
+        //
+        // "If I hold on top of the surface area covering the orb icon in the
+        // right corner, then it shouldn't launch the orbital launcher." It
+        // did, on every tile page, because the root view sent the launcher an
+        // EMPTY exclusion list whenever a tile was up - so this rect, which
+        // has been reported all along, reached nobody. See `RootView`'s
+        // `tileExclusions` for that half.
+        //
+        // 14pt of margin because the orb is 58pt of frame around a circle
+        // that reads smaller still, and a thumb aims at the picture.
+        .pressMenuExclusion(expandedBy: 14)
+        // `highPriorityGesture`, not `simultaneousGesture`. The docked orb
+        // sits over a scrolling list, and sharing the touch meant a hold that
+        // drifted a few points was also a scroll - which the list could then
+        // claim, cancelling the orb's drag and taking the RELEASE with it.
+        // That is the other half of "sometimes listening starts and keeps
+        // listening": `onEnded` is what stops the microphone, and a cancelled
+        // gesture never sends one.
+        .highPriorityGesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
                     guard !isStartingListen, model.canRecord,
@@ -71,13 +87,13 @@ struct DockedOrb: View {
                         isStartingListen = false
                     }
                 }
-                .onEnded { _ in
-                    isStartingListen = false
-                    model.endListening()
-                    NotificationCenter.default.post(name: .ataruDockedMicReleased,
-                                                    object: nil)
-                }
+                .onEnded { _ in stopListening() }
         )
+        // The backstop for every way a gesture can end without `onEnded`:
+        // the page being closed mid-hold, a call taking the surface, the tile
+        // being swapped by an answer. A microphone that is still open with no
+        // finger on it is the one outcome that must not survive this view.
+        .onDisappear { stopListening() }
         .accessibilityElement()
         .accessibilityLabel("Ask about this page")
         .accessibilityHint("Double tap to start listening, then double tap again to send.")
@@ -103,6 +119,15 @@ struct DockedOrb: View {
             guard exchange.document == nil else { return }
             onAnswer(exchange.answer)
         }
+    }
+
+    /// Give the microphone back. Safe to call when it was never taken -
+    /// `endListening` is a no-op outside `.listening` - which is what lets
+    /// the release and the disappearance share one path.
+    private func stopListening() {
+        isStartingListen = false
+        model.endListening()
+        NotificationCenter.default.post(name: .ataruDockedMicReleased, object: nil)
     }
 }
 

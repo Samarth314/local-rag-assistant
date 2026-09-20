@@ -21,6 +21,26 @@ struct RootView: View {
     /// from whatever is on screen. The orb is the one that matters: holding it
     /// is how you talk to ATARU.
     @State private var pressExclusions: [CGRect] = []
+    /// The same, reported by the TILE on top, and kept separate from the root
+    /// screen's on purpose.
+    ///
+    /// ## Why there are two
+    ///
+    /// The Ask page stays mounted underneath every tile, and its big orb's
+    /// rect is a 260pt band across the middle of the screen - so honouring
+    /// the root's exclusions over a tile killed the launcher on most of every
+    /// tile page. The fix at the time was to send `[]` while a tile was up,
+    /// which was right about the band and wrong about everything else: the
+    /// Files tile has a docked orb of its own in the bottom-right corner, and
+    /// with the exclusions emptied, holding it opened the launcher instead of
+    /// the microphone. Worse, `PressAnywhere` sets `cancelsTouchesInView`, so
+    /// recognising there also cancelled the orb's own drag - which is why
+    /// listening sometimes started and then never stopped: the press was
+    /// delivered, the RELEASE never was.
+    ///
+    /// So a tile reports its own, and they are read in place of the root's
+    /// rather than alongside them.
+    @State private var tileExclusions: [CGRect] = []
     /// The native tile screen currently presented, if any. Every tile is
     /// native now - the radial dial and the accessibility menu are two ways of
     /// opening the same set, and nothing routes to a web page. Gym was the
@@ -148,6 +168,8 @@ struct RootView: View {
             if let tile = presentedTile {
                 TileScreenHost(tile: tile) { close() }
                     .environmentObject(state)
+                    // A docked orb on the page reports its own keep-out here.
+                    .onPreferenceChange(PressExclusionKey.self) { tileExclusions = $0 }
                     // Asymmetric on purpose. Arriving is a crossfade, which is
                     // what stopped the old slide dragging a mismatched
                     // rectangle up the screen. Leaving is a dissolve: the page
@@ -176,13 +198,10 @@ struct RootView: View {
             // already reading.
             RadialPressMenu(
                 isEnabled: !call.state.isLive && !isComposerActive,
-                // Only what is actually on top gets to claim a hold. These
-                // are published by the root screen, which stays mounted
-                // underneath a tile — so leaving them in place meant the Ask
-                // orb's rect, a 260pt band across the middle of the screen,
-                // silently killed the launcher on every tile page. A tile
-                // screen has nothing a hold means something else on.
-                exclusions: presentedTile == nil ? pressExclusions : [],
+                // Only what is actually on top gets to claim a hold: the root
+                // screen's rects when the root is what you are looking at,
+                // and the tile's own when it is not. See `tileExclusions`.
+                exclusions: presentedTile == nil ? pressExclusions : tileExclusions,
                 current: presentedTile ?? .assistant,
                 onSelect: open(tile:)
             )
@@ -228,6 +247,12 @@ struct RootView: View {
                 }
             }
         }
+        // A tile leaving takes its keep-outs with it. `onPreferenceChange`
+        // cannot do this on its own: the modifier that reports them is a
+        // child of the view being removed, so when the tile goes there is
+        // nothing left to publish an empty set - and the last page's orb rect
+        // would go on blocking the launcher over the Ask screen.
+        .onChange(of: presentedTile) { _, _ in tileExclusions = [] }
         // A finished call always comes back expanded. Restoring minimised would
         // hide the next call behind a bar the user has to notice and tap.
         .onChange(of: call.state.isLive) { _, isLive in
