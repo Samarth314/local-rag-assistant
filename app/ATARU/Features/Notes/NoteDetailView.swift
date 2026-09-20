@@ -70,16 +70,22 @@ struct NoteDetailView: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .accessibilityLabel("Note options")
+                // On the MENU rather than on the page, so the sheet comes out
+                // of the control that opened it instead of arriving in the
+                // middle of the screen. Same rule as the Gym screens.
+                .confirmationDialog("Delete this note?",
+                                    isPresented: $isConfirmingDelete,
+                                    titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) {
+                        store.delete(note)
+                        dismiss()
+                    }
+                    Button("Keep it", role: .cancel) {}
+                } message: {
+                    Text("The recording was never kept, so the transcript "
+                         + "goes with it.")
+                }
             }
-        }
-        .confirmationDialog("Delete this note?", isPresented: $isConfirmingDelete,
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                store.delete(note)
-                dismiss()
-            }
-        } message: {
-            Text("The recording was never kept, so the transcript goes with it.")
         }
     }
 

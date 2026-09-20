@@ -159,19 +159,6 @@ struct GymRoutineDetail: View {
             draft = store.state?.routine(id: routineID)?.exercises ?? []
             loadedFor = key
         }
-        .confirmationDialog("Remove this exercise from the routine?",
-                            isPresented: Binding(get: { removing != nil },
-                                                 set: { if !$0 { removing = nil } }),
-                            titleVisibility: .visible) {
-            Button("Remove", role: .destructive) {
-                if let index = removing, draft.indices.contains(index) {
-                    draft.remove(at: index)
-                    expanded = nil
-                }
-                removing = nil
-            }
-            Button("Keep it", role: .cancel) { removing = nil }
-        }
     }
 
     private var key: String { "\(routineID)#\(store.revision)" }
@@ -291,6 +278,23 @@ struct GymRoutineDetail: View {
                 } label: {
                     Label("Remove", systemImage: "minus.circle")
                         .font(.ataruCaption())
+                }
+                // Anchored to THIS row's button, and keyed on this row's
+                // index - a binding of `removing != nil` on a per-row
+                // modifier would fire in every row at once.
+                .confirmationDialog(
+                    "Remove this exercise from the routine?",
+                    isPresented: Binding(get: { removing == index },
+                                         set: { if !$0 { removing = nil } }),
+                    titleVisibility: .visible) {
+                    Button("Remove", role: .destructive) {
+                        if draft.indices.contains(index) {
+                            draft.remove(at: index)
+                            expanded = nil
+                        }
+                        removing = nil
+                    }
+                    Button("Keep it", role: .cancel) { removing = nil }
                 }
             }
             .tint(Theme.cyan)

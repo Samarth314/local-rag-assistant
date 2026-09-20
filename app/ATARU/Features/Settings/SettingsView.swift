@@ -36,6 +36,7 @@ struct SettingsView: View {
     @State private var token: String = ""
     @State private var contactStatus: String?
     @State private var contactFailed = false
+    @State private var isConfirmingPurge = false
     /// The vCard to hand to the share sheet, built on demand. Non-nil is what
     /// presents the sheet - see `ATARUContact`, and note that nothing in that
     /// path touches the address book.
@@ -72,8 +73,19 @@ struct SettingsView: View {
 
             Section("On this device") {
                 Button("Delete downloaded files and cached pages", role: .destructive) {
-                    state.purgeDownloads(includingCachedTiles: true)
-                    Haptics.fire(.success)
+                    isConfirmingPurge = true
+                }
+                .confirmationDialog("Delete what is on this phone?",
+                                    isPresented: $isConfirmingPurge,
+                                    titleVisibility: .visible) {
+                    Button("Delete", role: .destructive) {
+                        state.purgeDownloads(includingCachedTiles: true)
+                        Haptics.fire(.success)
+                    }
+                    Button("Keep it", role: .cancel) {}
+                } message: {
+                    Text("Every tile opens empty until it has been online "
+                         + "again. Nothing in the vault is touched.")
                 }
                 Text("Documents are downloaded only when you preview or send them, and are deleted automatically when ATARU goes to the background. This also clears the last page each tile drew from, which is kept so a tile opens with something on it.")
                     .font(.ataruCaption())

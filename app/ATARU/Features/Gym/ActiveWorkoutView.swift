@@ -25,7 +25,15 @@ struct ActiveWorkoutView: View {
     /// screen count down.
     @State private var now = Date()
     @State private var isFinishing = false
+    /// One flag per TRIGGER, not one per action. A confirmation is anchored to
+    /// the control that opened it, and there are two ways to discard a
+    /// session - the toolbar menu and the button at the foot of the list - so
+    /// there are two flags and two anchors for the one outcome.
     @State private var isConfirmingDiscard = false
+    @State private var isConfirmingDiscardFromMenu = false
+    /// Which exercise is about to lose its last set, when that set has
+    /// already been logged. Nil the rest of the time, which is most of it.
+    @State private var isConfirmingSetRemoval: Int?
 
     private let tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
 
@@ -51,7 +59,7 @@ struct ActiveWorkoutView: View {
             ToolbarItem(placement: .topBarLeading) {
                 Menu {
                     Button("Discard workout", role: .destructive) {
-                        isConfirmingDiscard = true
+                        isConfirmingDiscardFromMenu = true
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -60,6 +68,11 @@ struct ActiveWorkoutView: View {
                 }
                 .accessibilityLabel("Session options")
                 .disabled(store.active == nil)
+                // On the MENU, not on the menu's button: the button is gone
+                // from the hierarchy by the time the menu closes, and a
+                // presentation attached to it has nothing left to come out of.
+                .discardConfirmation(isPresented: $isConfirmingDiscardFromMenu,
+                                     discard: discard)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Finish") { Task { await finish() } }
@@ -94,17 +107,13 @@ struct ActiveWorkoutView: View {
         }
         .onDisappear { store.persistActive() }
         .dismissableNumberPads()
-        .confirmationDialog("Discard this session?",
-                            isPresented: $isConfirmingDiscard,
-                            titleVisibility: .visible) {
-            Button("Discard", role: .destructive) {
-                store.discardWorkout()
-                dismiss()
-            }
-            Button("Keep logging", role: .cancel) {}
-        } message: {
-            Text("Nothing has been sent to openGym yet, so this would be gone.")
-        }
+    }
+
+    /// Throw the session away and leave. Both triggers do exactly this, so it
+    /// is written once.
+    private func discard() {
+        store.discardWorkout()
+        dismiss()
     }
 
     @ViewBuilder
@@ -133,6 +142,8 @@ struct ActiveWorkoutView: View {
                     .padding(.top, Theme.Space.s)
                     // Clear of the rest bar when it is up.
                     .padding(.bottom, Theme.Space.xxl)
+                    .discardConfirmation(isPresented: $isConfirmingDiscard,
+                                         discard: discard)
                 }
                 .padding(Theme.Space.screen)
             }
@@ -235,12 +246,37 @@ struct ActiveWorkoutView: View {
                             .font(.ataruCaption())
                     }
                     Button {
-                        removeSet(from: index)
+                        // A spare set he never got to goes without asking -
+                        // that is tidying, not deleting. A set he has already
+                        // ticked is the only record of it that exists, so
+                        // that one asks.
+                        if entry.sets.last?.done == true {
+                            isConfirmingSetRemoval = index
+                        } else {
+                            removeSet(from: index)
+                        }
                     } label: {
                         Label("Remove set", systemImage: "minus")
                             .font(.ataruCaption())
                     }
                     .disabled(entry.sets.count <= 1)
+                    .confirmationDialog(
+                        "Remove the last set?",
+                        isPresented: Binding(
+                            get: { isConfirmingSetRemoval == index },
+                            set: { if !$0 { isConfirmingSetRemoval = nil } }),
+                        titleVisibility: .visible) {
+                        Button("Remove", role: .destructive) {
+                            removeSet(from: index)
+                            isConfirmingSetRemoval = nil
+                        }
+                        Button("Keep it", role: .cancel) {
+                            isConfirmingSetRemoval = nil
+                        }
+                    } message: {
+                        Text("It is logged, and this phone is the only place "
+                             + "it exists until you finish.")
+                    }
                     Spacer()
                 }
                 .buttonStyle(.bordered)
@@ -417,5 +453,25 @@ private struct ActiveSetRow: View {
         let weight = Double(weightText.replacingOccurrences(of: ",", with: ".")) ?? 0
         let reps = Int(repsText) ?? 0
         onEdit(weight, reps)
+    }
+}
+
+// MARK: - The one confirmation, at two anchors
+
+private extension View {
+    /// "Discard this session?", attached to whichever control asked.
+    ///
+    /// Written once because the copy has to be the same wherever it comes
+    /// from: two confirmations for one action that word it differently read
+    /// as two different actions.
+    func discardConfirmation(isPresented: Binding<Bool>,
+                             discard: @escaping () -> Void) -> some View {
+        confirmationDialog("Discard this session?", isPresented: isPresented,
+                           titleVisibility: .visible) {
+            Button("Discard", role: .destructive, action: discard)
+            Button("Keep logging", role: .cancel) {}
+        } message: {
+            Text("Nothing has been sent to openGym yet, so this would be gone.")
+        }
     }
 }

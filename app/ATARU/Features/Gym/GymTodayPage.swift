@@ -26,15 +26,6 @@ struct GymTodayPage: View {
             .padding(Theme.Space.screen)
         }
         .refreshable { await store.refresh() }
-        .confirmationDialog("Discard the workout in progress?",
-                            isPresented: $isConfirmingDiscard,
-                            titleVisibility: .visible) {
-            Button("Discard", role: .destructive) { store.discardWorkout() }
-            Button("Keep it", role: .cancel) {}
-        } message: {
-            Text("It only exists on this phone and nothing has been sent to "
-                 + "openGym, so it would be gone.")
-        }
     }
 
     // MARK: - The week
@@ -370,6 +361,21 @@ struct GymTodayPage: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Discard workout")
                 .accessibilityHint("Throw away the session in progress.")
+                // ON THE BUTTON, not on the page. A confirmation attached to
+                // the ScrollView has no source to come out of, and what he
+                // saw was a box floating in the middle of the screen with no
+                // relationship to the control he had just pressed. Anchored
+                // here it is the sheet iOS puts under every other destructive
+                // tap: the red verb, and a way out.
+                .confirmationDialog("Discard the workout in progress?",
+                                    isPresented: $isConfirmingDiscard,
+                                    titleVisibility: .visible) {
+                    Button("Discard", role: .destructive) { store.discardWorkout() }
+                    Button("Keep it", role: .cancel) {}
+                } message: {
+                    Text("It only exists on this phone and nothing has been "
+                         + "sent to openGym, so it would be gone.")
+                }
             }
         }
         .padding(.top, Theme.Space.xs)

@@ -328,6 +328,7 @@ private struct CardEditor: View {
     @State private var cycle: BenefitCycle = .quarterly
     @State private var anniversary: Date
     @State private var hasAnniversary: Bool
+    @State private var isConfirmingRemoval = false
 
     init(card: HeldCard, wallet: CardWallet) {
         self.card = card
@@ -399,10 +400,24 @@ private struct CardEditor: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Remove card", role: .destructive) {
-                        wallet.remove(live)
-                        dismiss()
+                        isConfirmingRemoval = true
                     }
                     .foregroundStyle(Theme.amber)
+                    // It took the card and every benefit typed into it on one
+                    // tap, next to Done, with no way back. Same anchored sheet
+                    // the Gym and Notes screens use.
+                    .confirmationDialog("Remove this card?",
+                                        isPresented: $isConfirmingRemoval,
+                                        titleVisibility: .visible) {
+                        Button("Remove", role: .destructive) {
+                            wallet.remove(live)
+                            dismiss()
+                        }
+                        Button("Keep it", role: .cancel) {}
+                    } message: {
+                        Text("The benefits and the anniversary you set for it "
+                             + "go with it.")
+                    }
                 }
             }
         }
