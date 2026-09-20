@@ -34,10 +34,13 @@ Run the tests:
 
 ```bash
 xcodebuild -project ATARU.xcodeproj -scheme ATARU -sdk iphonesimulator \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro' test
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' test
 ```
 
-445 unit tests, 9 UI tests.
+446 unit tests, 9 UI tests.
+
+Name a simulator the machine actually has - `xcodebuild` fails the whole run
+on a destination it cannot match, and the installed set moves with Xcode.
 
 ## Demo and Live
 

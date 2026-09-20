@@ -23,15 +23,24 @@ enum GymFixtures {
 
     // MARK: - The catalogue
 
-    /// id, name, body part, equipment, gif filename. Twenty-four real rows out
-    /// of openGym's 1324, read from the live `/api/gym/library` on 2026-09-19
-    /// and kept in the server's own order (case-folded by name, id as the
+    /// id, name, body part, equipment, gif filename. Real rows out of
+    /// openGym's 1324, read from the live `/api/gym/library` on 2026-09-19 and
+    /// kept in the server's own order (case-folded by name, id as the
     /// tiebreak) so Demo's picker scrolls the way production's does.
     ///
     /// Real ids and real filenames, so a Demo row added to a routine would be
     /// a valid entry and a Demo thumbnail loads the same animation the phone
     /// loads in Live - the media is public static content on openGym's web
     /// container, not something the mini proxies.
+    ///
+    /// THE FOUR `cdemo` ROWS ARE THE OVERLAY, and they are here because
+    /// production has them. openGym stores a custom exercise with no media at
+    /// all, so a split built out of customs is a column of placeholders; the
+    /// bridge's `exercises-extra.json` answers for the handful that ARE a
+    /// dataset movement under another name, by lending them that row's
+    /// animation. Those ids then arrive in `/api/gym/library` like any other
+    /// row - which is also why the store drops a custom the catalogue already
+    /// answers for, instead of listing it twice.
     private static let catalogue: [(String, String, String, String, String)] = [
         ("0001", "3/4 sit-up", "waist", "body weight", "0001-2gPfomN.gif"),
         ("0003", "air bike", "waist", "body weight", "0003-1ZFqTDN.gif"),
@@ -53,13 +62,19 @@ enum GymFixtures {
          "0421-8fgqP5a.gif"),
         ("0473", "hanging pike", "waist", "body weight", "0473-nuBF9MO.gif"),
         ("0508", "janda sit-up", "waist", "body weight", "0508-1GPHRyK.gif"),
+        ("cdemob02", "Kelso Shrug (Dumbbell)", "back", "dumbbell",
+         "0305-cwsAI4G.gif"),
         ("0577", "lever chest press", "chest", "leverage machine", "0577-T0yTjgW.gif"),
         ("0602", "lever seated reverse fly", "shoulders", "leverage machine", "0602-myfUsKf.gif"),
         ("0652", "pull-up", "back", "body weight", "0652-lBDjFxJ.gif"),
         ("0664", "push-up to side plank", "waist", "body weight", "0664-KhHJ338.gif"),
+        ("cdemoc01", "Side Bend (Back Extension)", "waist", "body weight",
+         "0002-Hy9D21L.gif"),
         ("0709", "side hip (on parallel bars)", "waist", "body weight", "0709-jTkSc6o.gif"),
         ("0811", "trap bar deadlift", "upper legs", "trap bar", "0811-jQGwmxN.gif"),
-        ("1460", "walking lunge", "upper legs", "body weight", "1460-IZVHb27.gif")
+        ("cdemoc04", "Tib Raise", "lower legs", "body weight", "1394-Lsqrgh4.gif"),
+        ("1460", "walking lunge", "upper legs", "body weight", "1460-IZVHb27.gif"),
+        ("cdemoa06", "Y-Raise (Cable)", "shoulders", "cable", "1017-aHDy5O5.gif")
     ]
 
     static func library() -> GymLibrary {
@@ -76,7 +91,9 @@ enum GymFixtures {
     /// a document of nothing but customs renders no animation anywhere - which
     /// would make the GIF work unreviewable in Demo. One catalogue id per
     /// routine puts both paths on the same screen: rows with a demo, and rows
-    /// that correctly have none.
+    /// that correctly have none. Four of the customs now have one too, through
+    /// the overlay above; the others still have none, which is the state this
+    /// was written for and is still worth looking at.
     private static let catalogueExtras: [String: (String, Int, Int, Double)] = [
         "a": ("0043", 2, 8, 60),      // barbell full squat
         "b": ("0652", 2, 8, 0),       // pull-up

@@ -370,8 +370,17 @@ final class GymStore: ObservableObject {
     /// Merged here rather than server-side, because the customs live in the
     /// document this store already holds and a day-old cached copy of them
     /// would hide one Arya added two minutes ago in the browser.
+    ///
+    /// A custom the CATALOGUE also answers for is dropped from the custom half
+    /// and kept from the catalogue's. The bridge's `exercises-extra.json`
+    /// overlay gives a handful of custom ids the animation of the dataset row
+    /// for the same movement under another name - so those ids are now in both
+    /// lists, with the same name and the same body part, and only one of the
+    /// two carries a GIF. Concatenating them showed the exercise twice in the
+    /// picker, once with the animation and once without.
     func searchableExercises(matching query: String) -> [GymLibraryEntry] {
-        let customs = state?.customLibraryEntries ?? []
+        let customs = (state?.customLibraryEntries ?? [])
+            .filter { libraryIndex[$0.id] == nil }
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let words = needle.split(separator: " ").map(String.init)
         let matchedCustoms = needle.isEmpty

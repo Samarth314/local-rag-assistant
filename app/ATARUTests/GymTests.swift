@@ -745,6 +745,30 @@ final class GymAddExerciseTests: XCTestCase {
             .contains { $0.id == "0043" })
     }
 
+    /// A custom exercise the CATALOGUE also answers for is listed once, and it
+    /// is the catalogue's row that survives - because that is the one carrying
+    /// the animation.
+    ///
+    /// The bridge's overlay lends a handful of custom ids the GIF of the
+    /// dataset row for the same movement under another name, so those ids are
+    /// in `customEx` AND in `/api/gym/library`. Concatenating the two halves
+    /// put them in the picker twice, once with a demo and once without.
+    func testACustomTheCatalogueAnswersForIsListedOnceWithItsAnimation() async throws {
+        let store = await store()
+        await store.loadLibrary()
+
+        XCTAssertEqual(store.searchableExercises(matching: "tib raise").map(\.id),
+                       ["cdemoc04"])
+        XCTAssertEqual(store.gifURL(forExercise: "cdemoc04")?.absoluteString,
+                       "https://gym.ataru.aryasasikumar.com/gif/1394-Lsqrgh4.gif")
+
+        // And a custom the overlay does NOT cover is untouched: one row, from
+        // the document, with no animation. That is still the normal case.
+        XCTAssertEqual(store.searchableExercises(matching: "zercher squat").map(\.id),
+                       ["cdemoa01"])
+        XCTAssertNil(store.gifURL(forExercise: "cdemoa01"))
+    }
+
     /// Discarding a session removes it from the phone, which is the only copy
     /// there is - openGym deletes `active` on every write, so it was never
     /// sent anywhere.
