@@ -25,10 +25,21 @@ enum DemoFilesIndex {
         let daysAgo: Double
         let kilobytes: Int64
         let away: Bool
+        /// The image's own pixel size, which is what its thumbnail is shaped
+        /// like. Only meaningful for `.image` rows; the default is an
+        /// ordinary 3:2 photo.
+        ///
+        /// It exists because SHAPE IS THE BUG. A row thumbnail that is handed
+        /// a 3200x360 screenshot and asked to fill a square has to crop it,
+        /// and a browser that did not clip spilled the full width of that
+        /// strip across its neighbours. The fixture carries a couple of those
+        /// deliberately so the failure is reachable in Demo.
+        let pixels: CGSize
 
         init(_ name: String, _ umbrella: String, _ project: String?,
              pod: String? = nil, _ kind: FileKind, _ daysAgo: Double,
-             _ kilobytes: Int64, away: Bool = false) {
+             _ kilobytes: Int64, away: Bool = false,
+             pixels: CGSize = CGSize(width: 900, height: 600)) {
             self.name = name
             self.umbrella = umbrella
             self.project = project
@@ -37,6 +48,7 @@ enum DemoFilesIndex {
             self.daysAgo = daysAgo
             self.kilobytes = kilobytes
             self.away = away
+            self.pixels = pixels
         }
     }
 
@@ -50,6 +62,14 @@ enum DemoFilesIndex {
         Row("Robolabs investor update Q2.pptx", "Robolabs", "Business", .slides, 88, 2_410),
         Row("Robolabs 2024 revenue summary.pdf", "Robolabs", "Business", .pdf, 268, 190),
         Row("Field setup diagram.png", "Robolabs", "Tournaments", .image, 47, 1_820),
+        // The two shapes that broke the row. A browser screenshot of a
+        // reviews page is a very long strip, and it is a completely ordinary
+        // thing to have in a folder - these are here so "Robolabs + Images"
+        // reproduces the overflow in Demo, with no server.
+        Row("Google Maps reviews page 1.png", "Robolabs", "Business", .image, 3, 2_640,
+            pixels: CGSize(width: 2_880, height: 420)),
+        Row("Google Maps reviews page 2.png", "Robolabs", "Business", .image, 4, 2_510,
+            pixels: CGSize(width: 3_200, height: 360)),
         Row("Coach onboarding notes.md", "Robolabs", "Camps", .text, 12, 14),
         Row("Robolabs promo reel.mp4", "Robolabs", "Business", .video, 330, 486_000, away: true),
 
@@ -120,6 +140,20 @@ enum DemoFilesIndex {
         Row("Scratch audio memo.m4a", "Experiments", nil, .audio, 65, 1_460)
     ]
 
+    /// The id a row answers to. One place, because the fixture's thumbnails
+    /// are keyed by it as well as its rows.
+    private static func id(at index: Int) -> String {
+        String(format: "file-%03d", index + 1)
+    }
+
+    /// Each row's natural image size, by file id, so a thumbnail can be drawn
+    /// at the shape the file actually is.
+    static let pixelSizes: [String: CGSize] = {
+        var sizes: [String: CGSize] = [:]
+        for (index, row) in rows.enumerated() { sizes[id(at: index)] = row.pixels }
+        return sizes
+    }()
+
     /// The fixture, built once. Dates are relative to first use, so the rows
     /// never age into "two years ago" while the simulator sits open.
     static let hits: [FileHit] = {
@@ -127,7 +161,7 @@ enum DemoFilesIndex {
         return rows.enumerated().map { index, row in
             let folder = [row.umbrella, row.project].compactMap { $0 }.joined(separator: "/")
             return FileHit(
-                id: String(format: "file-%03d", index + 1),
+                id: id(at: index),
                 path: "Projects/\(folder)/\(row.name)",
                 name: row.name,
                 title: (row.name as NSString).deletingPathExtension,
@@ -333,24 +367,53 @@ enum DemoFilesIndex {
         }
     }
 
-    private static func image(for hit: FileHit) -> Data {
-        let size = CGSize(width: 900, height: 600)
+    /// A row thumbnail, exactly as the live server's `/preview` sends one: a
+    /// PNG at the file's OWN aspect ratio, never squared off for the client.
+    ///
+    /// Demo used to answer nil here, which meant the one thing the Files
+    /// browser draws per row that can go wrong - an image of an unexpected
+    /// shape - was unreachable without a server. It is reachable now, and
+    /// `FileThumbnail` is what has to cope.
+    static func preview(id: String) -> Data? {
+        guard let hit = hit(id: id), hit.kind == .image, !hit.location.isAway
+        else { return nil }
+        return image(for: hit, longestSide: 420)
+    }
+
+    private static func image(for hit: FileHit, longestSide: CGFloat? = nil) -> Data {
+        let natural = pixelSizes[hit.id] ?? CGSize(width: 900, height: 600)
+        var size = natural
+        if let longestSide {
+            let longest = max(natural.width, natural.height)
+            if longest > longestSide {
+                let factor = longestSide / longest
+                size = CGSize(width: max(1, (natural.width * factor).rounded()),
+                              height: max(1, (natural.height * factor).rounded()))
+            }
+        }
+        let inset = min(size.width, size.height) * 0.1
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { context in
-            UIColor(red: 0.05, green: 0.08, blue: 0.11, alpha: 1).setFill()
+            // White rather than the old near-black, because the strip that
+            // spilled across its neighbours in the report was a white one and
+            // a fixture that hid the failure is not a fixture.
+            UIColor.white.setFill()
             context.fill(CGRect(origin: .zero, size: size))
             UIColor(red: 0.16, green: 0.78, blue: 0.85, alpha: 1).setStroke()
-            let path = UIBezierPath(roundedRect: CGRect(x: 60, y: 60,
-                                                        width: size.width - 120,
-                                                        height: size.height - 120),
-                                    cornerRadius: 18)
-            path.lineWidth = 3
+            let path = UIBezierPath(
+                roundedRect: CGRect(x: inset, y: inset,
+                                    width: size.width - inset * 2,
+                                    height: size.height - inset * 2),
+                cornerRadius: inset * 0.4)
+            path.lineWidth = max(1, inset * 0.06)
             path.stroke()
+            let pointSize = max(9, min(size.height * 0.16, size.width * 0.06))
             NSAttributedString(
                 string: hit.title,
-                attributes: [.font: UIFont.boldSystemFont(ofSize: 30),
-                             .foregroundColor: UIColor.white]
-            ).draw(in: CGRect(x: 100, y: 240, width: size.width - 200, height: 120))
+                attributes: [.font: UIFont.boldSystemFont(ofSize: pointSize),
+                             .foregroundColor: UIColor.darkGray]
+            ).draw(in: CGRect(x: inset * 1.6, y: (size.height - pointSize * 1.4) / 2,
+                              width: size.width - inset * 3.2, height: pointSize * 1.4))
         }
         return image.pngData() ?? Data()
     }

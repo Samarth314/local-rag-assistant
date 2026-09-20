@@ -81,9 +81,18 @@ final class DemoATARUService: ATARUService, @unchecked Sendable {
         return DocumentPayload(url: url, isReconstructed: false)
     }
 
-    /// Demo has no thumbnailer. Every row draws its kind icon, which is also
-    /// what a live row does whenever the server answers 204.
-    func filePreview(id: String) async -> Data? { nil }
+    /// A thumbnail for the image rows, and nothing for the rest - which is
+    /// exactly the live server's split, and exactly what a 204 looks like to
+    /// the row that asked.
+    ///
+    /// This used to be a flat nil, on the grounds that Demo has no
+    /// thumbnailer. That made the one failure mode a row thumbnail actually
+    /// has - a picture whose shape is nothing like the square it goes in -
+    /// impossible to see without a server, and it went out in a build.
+    func filePreview(id: String) async -> Data? {
+        try? await pause()
+        return DemoFilesIndex.preview(id: id)
+    }
 
     func filesNarrow(q: String, filters: FileFilters,
                      history: [FileNarrowStep]) async throws -> FilesNarrowing {

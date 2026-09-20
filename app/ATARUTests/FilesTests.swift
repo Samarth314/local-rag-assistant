@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import ATARU
 
@@ -432,7 +433,7 @@ final class AnswerPayloadRoutingTests: XCTestCase {
 final class DemoFilesNarrowTests: XCTestCase {
 
     func testFixtureCoversEveryUmbrellaAndEnoughRows() {
-        XCTAssertEqual(DemoFilesIndex.hits.count, 60)
+        XCTAssertEqual(DemoFilesIndex.hits.count, 62)
         let umbrellas = Set(DemoFilesIndex.hits.compactMap(\.umbrella))
         XCTAssertEqual(umbrellas, Set(FileFacets.umbrellaOrder))
         XCTAssertTrue(DemoFilesIndex.hits.contains { $0.location.isAway })
@@ -508,15 +509,19 @@ final class DemoFilesNarrowTests: XCTestCase {
     }
 
     func testPagingWalksTheWholeIndexWithoutRepeating() {
+        // Derived from the fixture rather than pinned to a number, so adding
+        // a row to the index never leaves this walking part of it.
+        let total = DemoFilesIndex.hits.count
+        let pageSize = 10
         var seen: [String] = []
-        for page in 1...6 {
+        for page in 1...((total + pageSize - 1) / pageSize) {
             let result = DemoFilesIndex.search(
                 FileSearchRequest(q: nil, filters: .none, sort: .name,
-                                  page: page, pageSize: 10))
+                                  page: page, pageSize: pageSize))
             seen += result.hits.map(\.id)
         }
-        XCTAssertEqual(seen.count, 60)
-        XCTAssertEqual(Set(seen).count, 60)
+        XCTAssertEqual(seen.count, total)
+        XCTAssertEqual(Set(seen).count, total)
     }
 
     func testSearchScoresAndSnippetsOnlyExistWithAQuery() {
@@ -739,5 +744,126 @@ final class FilesViewModelTests: XCTestCase {
     /// reload spawns a task that awaits the service and then publishes.
     private func settle(_ hops: Int = 8) async {
         for _ in 0..<hops { await Task.yield() }
+    }
+}
+
+// MARK: - Thumbnails
+
+/// The row thumbnail is a fixed square, and what goes in it is decoded to the
+/// size of that square rather than to the size of the file.
+///
+/// Both halves of the September report live here. A 2880x420 screenshot in a
+/// 46pt box used to be laid out 315pt wide and drawn straight across the rows
+/// beside it, and every preview was decoded at its own resolution on the main
+/// thread while the list was moving.
+final class FileThumbnailDecoderTests: XCTestCase {
+
+    private let side: CGFloat = 46
+    private let scale: CGFloat = 3
+
+    /// 138 pixels for a 46pt square at 3x, on the SHORT side, whatever the
+    /// shape - because a `.fill` crop scales until the short side covers.
+    func testSquarePictureAsksForExactlyTheSquare() {
+        let pixels = FileThumbnailDecoder.maxPixelSize(side: side, scale: scale,
+                                                       aspect: 1)
+        XCTAssertEqual(pixels, 138)
+    }
+
+    func testAWidePictureAsksForMoreOnItsLongSide() {
+        let pixels = FileThumbnailDecoder.maxPixelSize(side: side, scale: scale,
+                                                       aspect: 6)
+        // 6x the square, so the SHORT side still lands on 138.
+        XCTAssertEqual(pixels, 138 * 6)
+    }
+
+    /// Tall counts the same as wide. The short side is whichever one it is.
+    func testATallPictureIsTreatedLikeAWideOne() {
+        let wide = FileThumbnailDecoder.maxPixelSize(side: side, scale: scale,
+                                                     aspect: 6)
+        let tall = FileThumbnailDecoder.maxPixelSize(side: side, scale: scale,
+                                                     aspect: 1.0 / 6.0)
+        XCTAssertEqual(wide, tall)
+    }
+
+    /// The ceiling is what stops a panorama asking for a panorama's memory.
+    func testAnExtremePanoramaIsCapped() {
+        let pixels = FileThumbnailDecoder.maxPixelSize(side: side, scale: scale,
+                                                       aspect: 40)
+        XCTAssertEqual(CGFloat(pixels),
+                       side * scale * FileThumbnailDecoder.aspectCeiling,
+                       accuracy: 1)
+    }
+
+    /// The measurement that made this worth doing: an ordinary 3:2 preview
+    /// used to be decoded whole for a 46pt box.
+    func testAnOrdinaryPreviewDecodesToAFractionOfItsOwnPixels() throws {
+        let hit = try XCTUnwrap(DemoFilesIndex.hits.first {
+            $0.name == "Field setup diagram.png"
+        })
+        let data = try XCTUnwrap(DemoFilesIndex.preview(id: hit.id))
+        let whole = try XCTUnwrap(UIImage(data: data))
+        let thumbnail = try XCTUnwrap(
+            FileThumbnailDecoder.thumbnail(from: data, side: side, scale: scale))
+
+        let wholePixels = whole.size.width * whole.size.height * whole.scale * whole.scale
+        let thumbnailPixels = thumbnail.size.width * thumbnail.size.height
+            * thumbnail.scale * thumbnail.scale
+        XCTAssertLessThan(thumbnailPixels, wholePixels / 4)
+    }
+
+    /// The row's own bug, at the decoder: a very wide file still comes back
+    /// with enough pixels on its SHORT side to fill the square it is cropped
+    /// into, rather than being sampled down to a smear.
+    func testAVeryWidePreviewKeepsEnoughOnItsShortSide() throws {
+        let hit = try XCTUnwrap(DemoFilesIndex.hits.first {
+            $0.name == "Google Maps reviews page 1.png"
+        })
+        let data = try XCTUnwrap(DemoFilesIndex.preview(id: hit.id))
+        let thumbnail = try XCTUnwrap(
+            FileThumbnailDecoder.thumbnail(from: data, side: side, scale: scale))
+        let pixelWidth = thumbnail.size.width * thumbnail.scale
+        let pixelHeight = thumbnail.size.height * thumbnail.scale
+        XCTAssertGreaterThan(pixelWidth, pixelHeight, "the fixture is a wide strip")
+        // Never more than the ceiling allows, whatever the source was.
+        XCTAssertLessThanOrEqual(
+            Int(pixelWidth.rounded()),
+            FileThumbnailDecoder.maxPixelSize(side: side, scale: scale, aspect: 40))
+    }
+
+    /// Bytes that are not a picture are an ABSENCE, not a crash and not an
+    /// error: the row draws its kind icon, exactly as it does for a 204.
+    func testUnreadableBytesAreNoThumbnail() {
+        let junk = Data("this is not a picture".utf8)
+        XCTAssertNil(FileThumbnailDecoder.thumbnail(from: junk, side: side, scale: scale))
+    }
+}
+
+/// The Demo fixture has to be able to show the failure, or it is not a
+/// fixture. Two very wide screenshots live in it on purpose.
+final class DemoFilePreviewTests: XCTestCase {
+
+    func testImageRowsHaveAThumbnailAndOtherRowsDoNot() throws {
+        let image = try XCTUnwrap(DemoFilesIndex.hits.first {
+            $0.kind == .image && !$0.location.isAway
+        })
+        XCTAssertNotNil(DemoFilesIndex.preview(id: image.id))
+
+        let pdf = try XCTUnwrap(DemoFilesIndex.hits.first { $0.kind == .pdf })
+        XCTAssertNil(DemoFilesIndex.preview(id: pdf.id))
+    }
+
+    /// A tiered-out file's bytes are on the NAS, so there is nothing on this
+    /// host to render - the same answer the live server gives.
+    func testAnAwayFileHasNoThumbnail() throws {
+        let away = try XCTUnwrap(DemoFilesIndex.hits.first { $0.location.isAway })
+        XCTAssertNil(DemoFilesIndex.preview(id: away.id))
+    }
+
+    func testTheFixtureCarriesAVeryWideScreenshot() {
+        let widest = DemoFilesIndex.pixelSizes.values
+            .map { $0.width / $0.height }
+            .max() ?? 1
+        XCTAssertGreaterThan(widest, 5,
+                             "the overflow only reproduces with a long strip")
     }
 }
