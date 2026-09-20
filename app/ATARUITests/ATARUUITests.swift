@@ -181,15 +181,38 @@ final class ATARUUITests: XCTestCase {
     /// window is happening too easily by accident; I just try to scroll to the
     /// top and it activates the close." Confining the drag to the handle fixed
     /// the accident; this control is what keeps the page closable without one.
+    ///
+    /// ON PLAN RATHER THAN FILES. This used to open Files, which is the one
+    /// page that no longer has an X - he asked for it to come off, and only
+    /// there. So the test moved to another page rather than being deleted:
+    /// what it is actually covering is that the control still exists and
+    /// still works, which is true everywhere else.
     func testATilePageIsClosedByItsCloseButton() {
-        launch(startingOn: "documents")
-        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 8))
+        launch(startingOn: "plan")
+        XCTAssertTrue(app.navigationBars["Plan"].waitForExistence(timeout: 8))
         let close = app.buttons["Close"]
         XCTAssertTrue(close.waitForExistence(timeout: 5),
                       "a tile screen has no explicit way to close it")
         close.tap()
         XCTAssertTrue(app.staticTexts["Hold to ask"].waitForExistence(timeout: 5),
                       "the close button did not put the page away")
+    }
+
+    /// And Files, specifically, does NOT have one.
+    ///
+    /// "No need for the x button in the right." The handle above the page is
+    /// the whole of its visible chrome now, and the test one above is what
+    /// keeps that from quietly becoming true of every other page too.
+    func testTheFilesPageHasNoCloseButton() {
+        launch(startingOn: "documents")
+        XCTAssertTrue(app.navigationBars["Files"].waitForExistence(timeout: 8))
+        // Waits for the page's own chrome to exist before declaring the X
+        // absent, so this cannot pass merely by looking too early.
+        XCTAssertTrue(app.descendants(matching: .any)
+            .matching(identifier: "narrow-field").firstMatch
+            .waitForExistence(timeout: 8))
+        XCTAssertFalse(app.buttons["Close"].exists,
+                       "the Files page has grown its X back")
     }
 
     /// Dragging the CONTENT down no longer closes the page.

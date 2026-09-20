@@ -448,7 +448,21 @@ struct TileScreenHost: View {
         .animation(Theme.quick, value: state.isOffline)
     }
 
-    /// The handle, and an X beside it.
+    /// The handle, and - on every page but Files - an X beside it.
+    ///
+    /// ## Why Files does not have one
+    ///
+    /// "No need for the x button in the right." His page, his call. It is off
+    /// for Files ALONE rather than app-wide, because the reasoning below is
+    /// still true everywhere else and nobody has asked for it to stop being
+    /// true there; `HomeTile.showsCloseButton` is where that list lives, so
+    /// the next page he wants it gone from is one line rather than an edit to
+    /// this view.
+    ///
+    /// Nothing else is lost by it. The handle strip still drags the page
+    /// away, the `.escape` accessibility action still closes it for VoiceOver
+    /// and Switch Control, and the launcher still reaches every other screen
+    /// from here.
     ///
     /// ## Why the X came back
     ///
@@ -477,24 +491,26 @@ struct TileScreenHost: View {
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
 
-            HStack {
-                Spacer()
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Theme.textSecondary)
-                        .frame(width: 30, height: 30)
-                        .background {
-                            Circle().fill(Theme.surfaceElevated)
-                        }
+            if tile.showsCloseButton {
+                HStack {
+                    Spacer()
+                    Button(action: onClose) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(Theme.textSecondary)
+                            .frame(width: 30, height: 30)
+                            .background {
+                                Circle().fill(Theme.surfaceElevated)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                    .accessibilityHint("Close this screen and go back to Ask.")
+                    // A control that owns its own touches: a finger that lands
+                    // here is pressing a button, not starting a drag.
+                    .dismissExclusion()
+                    .padding(.trailing, Theme.Space.screen)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close")
-                .accessibilityHint("Close this screen and go back to Ask.")
-                // A control that owns its own touches: a finger that lands
-                // here is pressing a button, not starting a drag.
-                .dismissExclusion()
-                .padding(.trailing, Theme.Space.screen)
             }
         }
         .frame(height: 34)

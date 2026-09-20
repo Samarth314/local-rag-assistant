@@ -88,3 +88,21 @@ final class TileBackendTests: XCTestCase {
         XCTAssertNil(dev.apiRoot(.media))
     }
 }
+
+// MARK: - Chrome
+
+/// Which tile pages draw the round X beside their grab handle.
+///
+/// One page does not, and that is a decision rather than an oversight: "no
+/// need for the x button in the right" was about Files. The loop is the point
+/// of the test - the easy mistake is to take the control off everywhere while
+/// removing it from one page, and every other page still needs it.
+final class TileCloseButtonTests: XCTestCase {
+
+    func testOnlyFilesHidesTheCloseButton() {
+        XCTAssertFalse(HomeTile.documents.showsCloseButton)
+        for tile in HomeTile.allCases where tile != .documents {
+            XCTAssertTrue(tile.showsCloseButton, "\(tile.rawValue) lost its X")
+        }
+    }
+}

@@ -71,6 +71,17 @@ enum HomeTile: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Whether this page draws the round X next to its grab handle.
+    ///
+    /// True everywhere but Files, which he asked to have taken off: "no need
+    /// for the x button in the right." The handle is still the affordance and
+    /// still closes the page, and `TileDismissal` keeps the `.escape` action
+    /// for anyone who cannot drag.
+    ///
+    /// A property on the tile rather than a branch inside `TileScreenHost`,
+    /// so the answer for a page is written next to that page's name.
+    var showsCloseButton: Bool { self != .documents }
+
     var title: String {
         switch self {
         case .assistant:     return "Ask"
