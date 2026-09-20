@@ -22,11 +22,6 @@ struct FilesScreen: View {
     @StateObject private var model = FilesViewModel()
     @StateObject private var voice = VoiceViewModel(service: DemoATARUService())
 
-    /// The narrow field. Separate from the search field on purpose: search is
-    /// "find me things called X", narrowing is "and only the 2025 ones", and
-    /// typing the second into the first would throw the first away.
-    @State private var narrowText = ""
-    @FocusState private var narrowFocused: Bool
     @State private var caption: String?
     @State private var captionTask: Task<Void, Never>?
 
@@ -43,7 +38,21 @@ struct FilesScreen: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) { sortMenu }
         }
-        .refreshable { model.reload() }
+        // NO `.refreshable`, ON PURPOSE.
+        //
+        // "The horizontal pill rails can be pulled down and that triggers a
+        // reload of the page." `.refreshable` is not attached to a scroll
+        // view, it is published into the ENVIRONMENT, and every scroll view
+        // underneath picks it up - which on this page means the three chip
+        // rails as well as the list. A rail is 30pt tall and scrolls
+        // sideways, so a thumb sweeping across it is always partly vertical,
+        // and the page reloaded under him while he was choosing a filter.
+        //
+        // Scoping it to the list was the other option and buys nothing here:
+        // this page already reloads when it opens, when the connection comes
+        // back, on every chip, on every narrowing and on every search. There
+        // was nothing a pull could fetch that something else was not already
+        // fetching.
         .navigationDestination(for: FileHit.self) { hit in
             FileViewerScreen(hit: hit, service: state.service)
         }
@@ -114,7 +123,11 @@ struct FilesScreen: View {
     @ViewBuilder
     private var header: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
-            narrowField
+            // Its own view, holding its own text. It used to write into a
+            // `@State` on this screen, which meant every keystroke rebuilt
+            // the whole page - the three rails and the list included - to
+            // redraw one field.
+            FilesNarrowField { model.narrow($0) }
 
             if !model.filters.chips.isEmpty {
                 FlowLayout(spacing: Theme.Space.xxs, lineSpacing: Theme.Space.xxs) {
@@ -149,123 +162,14 @@ struct FilesScreen: View {
                     .padding(.horizontal, Theme.Space.screen)
             }
 
-            rails
+            FileFacetRails(facets: model.facets, filters: model.filters,
+                           toggleUmbrella: { model.toggle(umbrella: $0) },
+                           togglePod: { model.toggle(pod: $0) },
+                           toggleKind: { model.toggle(kind: $0) },
+                           toggleYear: { model.toggle(year: $0) })
+                .equatable()
         }
         .padding(.bottom, Theme.Space.xs)
-    }
-
-    /// The narrowing affordance. A field, because a sentence typed with a
-    /// thumb is still faster than six taps - and the docked orb speaks into
-    /// exactly the same path for the times it is not.
-    private var narrowField: some View {
-        HStack(spacing: Theme.Space.xs) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(Theme.cyanSubdued)
-            TextField("Narrow: just the 2025 spreadsheets", text: $narrowText)
-                // Named, like the Ask composer's field, so the UI suite can
-                // reach it without depending on a placeholder string.
-                .accessibilityIdentifier("narrow-field")
-                .font(.ataruCaption())
-                .foregroundStyle(Theme.textPrimary)
-                .focused($narrowFocused)
-                .submitLabel(.go)
-                .onSubmit(submitNarrow)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            if !narrowText.isEmpty {
-                Button(action: submitNarrow) {
-                    Image(systemName: "arrow.forward.circle.fill")
-                        .foregroundStyle(Theme.cyan)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Narrow the list")
-            }
-        }
-        .padding(.horizontal, Theme.Space.s)
-        .frame(height: 36)
-        .background {
-            Capsule().fill(Theme.surfaceElevated)
-                .overlay { Capsule().strokeBorder(Theme.border, lineWidth: 1) }
-        }
-        .padding(.horizontal, Theme.Space.screen)
-    }
-
-    /// Umbrella first, then pods when the vault is in play, then kinds.
-    ///
-    /// One horizontal line each rather than a wrapping block: three wrapping
-    /// rails would push the first file most of a screen down, and these are
-    /// browsed by sweeping rather than read all at once.
-    @ViewBuilder
-    private var rails: some View {
-        let umbrellas = model.facets.orderedUmbrellas
-        let pods = model.facets.orderedPods
-        let kinds = model.facets.orderedKinds
-        let years = model.facets.orderedYears
-
-        if !umbrellas.isEmpty {
-            rail {
-                // A destination, not a filter: the vault records are a
-                // different index with different ids, so this pushes the
-                // library rather than narrowing the list.
-                NavigationLink(value: FilesDestination.vaultRecords) {
-                    FacetChipLabel(label: "Vault records", symbol: "tray.full")
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Vault records")
-                .accessibilityHint("Opens the vault document library.")
-                ForEach(umbrellas, id: \.name) { entry in
-                    FileFacetChip(label: entry.name, count: entry.count,
-                                  symbol: nil,
-                                  isSelected: model.filters.umbrellas.contains(entry.name)) {
-                        model.toggle(umbrella: entry.name)
-                        Haptics.fire(.selection)
-                    }
-                }
-            }
-        }
-
-        if !pods.isEmpty {
-            rail {
-                ForEach(pods, id: \.name) { entry in
-                    FileFacetChip(label: entry.name.capitalized, count: entry.count,
-                                  symbol: nil,
-                                  isSelected: model.filters.pods.contains(entry.name)) {
-                        model.toggle(pod: entry.name)
-                        Haptics.fire(.selection)
-                    }
-                }
-            }
-        }
-
-        if !kinds.isEmpty || !years.isEmpty {
-            rail {
-                ForEach(kinds, id: \.kind) { entry in
-                    FileFacetChip(label: entry.kind.title, count: entry.count,
-                                  symbol: entry.kind.symbol,
-                                  isSelected: model.filters.kinds.contains(entry.kind)) {
-                        model.toggle(kind: entry.kind)
-                        Haptics.fire(.selection)
-                    }
-                }
-                ForEach(years.prefix(6), id: \.year) { entry in
-                    FileFacetChip(label: "\(entry.year)", count: entry.count,
-                                  symbol: "calendar",
-                                  isSelected: model.filters.year == entry.year) {
-                        model.toggle(year: entry.year)
-                        Haptics.fire(.selection)
-                    }
-                }
-            }
-        }
-    }
-
-    private func rail<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: Theme.Space.xxs) { content() }
-                .padding(.horizontal, Theme.Space.screen)
-        }
-        .scrollClipDisabled()
     }
 
     private var list: some View {
@@ -381,12 +285,6 @@ struct FilesScreen: View {
         }
     }
 
-    private func submitNarrow() {
-        let text = narrowText
-        narrowText = ""
-        narrowFocused = false
-        model.narrow(text)
-    }
 }
 
 /// The one non-file destination this screen pushes.

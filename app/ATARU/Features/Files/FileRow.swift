@@ -172,3 +172,175 @@ struct AppliedFilterChip: View {
         .accessibilityHint("Double tap to remove this filter.")
     }
 }
+
+/// The narrowing affordance. A field, because a sentence typed with a thumb
+/// is still faster than six taps - and the docked orb speaks into exactly the
+/// same path for the times it is not.
+///
+/// ## Why it owns its own text
+///
+/// It used to write into a `@State` on `FilesScreen`, and SwiftUI re-runs the
+/// body that OWNS the state. So every character typed here rebuilt the whole
+/// browser: three chip rails, the applied-filter row, the count line and the
+/// list's `ForEach`. Keeping the text down here means a keystroke redraws a
+/// field, and the utterance only leaves when it is submitted.
+struct FilesNarrowField: View {
+    let submit: (String) -> Void
+
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: Theme.Space.xs) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Theme.cyanSubdued)
+            TextField("Narrow: just the 2025 spreadsheets", text: $text)
+                // Named, like the Ask composer's field, so the UI suite can
+                // reach it without depending on a placeholder string.
+                .accessibilityIdentifier("narrow-field")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.textPrimary)
+                .focused($isFocused)
+                .submitLabel(.go)
+                .onSubmit(send)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+            if !text.isEmpty {
+                Button(action: send) {
+                    Image(systemName: "arrow.forward.circle.fill")
+                        .foregroundStyle(Theme.cyan)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Narrow the list")
+            }
+        }
+        .padding(.horizontal, Theme.Space.s)
+        .frame(height: 36)
+        .background {
+            Capsule().fill(Theme.surfaceElevated)
+                .overlay { Capsule().strokeBorder(Theme.border, lineWidth: 1) }
+        }
+        .padding(.horizontal, Theme.Space.screen)
+    }
+
+    private func send() {
+        let utterance = text
+        text = ""
+        isFocused = false
+        submit(utterance)
+    }
+}
+
+/// Umbrella first, then pods when the vault is in play, then kinds and years.
+///
+/// One horizontal line each rather than a wrapping block: three wrapping
+/// rails would push the first file most of a screen down, and these are
+/// browsed by sweeping rather than read all at once.
+///
+/// ## Why it is `Equatable` and its own view
+///
+/// The rails were a computed property of `FilesScreen`, so they were rebuilt
+/// every single time anything on the view model published - a page arriving,
+/// a "load more" starting, a cached-at label ticking, a character typed into
+/// the narrow field. Measured on the fixture that was one full rebuild of all
+/// three rails per screen body pass, and the screen body ran fifteen times in
+/// a six-swipe sweep.
+///
+/// The facets and the filters are the ONLY things a rail draws from, and both
+/// are value types that compare cheaply, so `.equatable()` lets SwiftUI skip
+/// the rebuild outright when neither has moved. The closures are deliberately
+/// left out of the comparison: they capture the view model, which is a
+/// reference and does not change identity for the life of the screen.
+struct FileFacetRails: View, Equatable {
+    let facets: FileFacets
+    let filters: FileFilters
+    let toggleUmbrella: (String) -> Void
+    let togglePod: (String) -> Void
+    let toggleKind: (FileKind) -> Void
+    let toggleYear: (Int) -> Void
+
+    static func == (lhs: FileFacetRails, rhs: FileFacetRails) -> Bool {
+        lhs.facets == rhs.facets && lhs.filters == rhs.filters
+    }
+
+    var body: some View {
+        let umbrellas = facets.orderedUmbrellas
+        let pods = facets.orderedPods
+        let kinds = facets.orderedKinds
+        let years = facets.orderedYears
+
+        VStack(alignment: .leading, spacing: Theme.Space.xs) {
+            if !umbrellas.isEmpty {
+                rail {
+                    // A destination, not a filter: the vault records are a
+                    // different index with different ids, so this pushes the
+                    // library rather than narrowing the list.
+                    NavigationLink(value: FilesDestination.vaultRecords) {
+                        FacetChipLabel(label: "Vault records", symbol: "tray.full")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Vault records")
+                    .accessibilityHint("Opens the vault document library.")
+                    ForEach(umbrellas, id: \.name) { entry in
+                        FileFacetChip(label: entry.name, count: entry.count,
+                                      symbol: nil,
+                                      isSelected: filters.umbrellas.contains(entry.name)) {
+                            Haptics.fire(.selection)
+                            toggleUmbrella(entry.name)
+                        }
+                    }
+                }
+            }
+
+            if !pods.isEmpty {
+                rail {
+                    ForEach(pods, id: \.name) { entry in
+                        FileFacetChip(label: entry.name.capitalized, count: entry.count,
+                                      symbol: nil,
+                                      isSelected: filters.pods.contains(entry.name)) {
+                            Haptics.fire(.selection)
+                            togglePod(entry.name)
+                        }
+                    }
+                }
+            }
+
+            if !kinds.isEmpty || !years.isEmpty {
+                rail {
+                    ForEach(kinds, id: \.kind) { entry in
+                        FileFacetChip(label: entry.kind.title, count: entry.count,
+                                      symbol: entry.kind.symbol,
+                                      isSelected: filters.kinds.contains(entry.kind)) {
+                            Haptics.fire(.selection)
+                            toggleKind(entry.kind)
+                        }
+                    }
+                    ForEach(years.prefix(6), id: \.year) { entry in
+                        FileFacetChip(label: "\(entry.year)", count: entry.count,
+                                      symbol: "calendar",
+                                      isSelected: filters.year == entry.year) {
+                            Haptics.fire(.selection)
+                            toggleYear(entry.year)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A rail scrolls SIDEWAYS AND NOTHING ELSE.
+    ///
+    /// `.scrollBounceBehavior(.basedOnSize)` is the half that matters: a rail
+    /// whose chips fit has nothing to scroll, and a scroll view with nothing
+    /// to scroll still rubber-bands - which is a vertical-looking gesture
+    /// starting on a horizontal control, and was half of why a downward sweep
+    /// here felt like it was pulling the page.
+    private func rail<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: Theme.Space.xxs) { content() }
+                .padding(.horizontal, Theme.Space.screen)
+        }
+        .scrollClipDisabled()
+    }
+}
