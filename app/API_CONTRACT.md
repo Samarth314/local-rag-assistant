@@ -224,6 +224,12 @@ A PNG thumbnail, or **204** when there is none. Never an error: a missing
 thumbnail is cosmetic and the row draws its kind icon instead. The client
 caches the absence as well as the image.
 
+**Any aspect ratio is fine, and it does not have to be small.** The row is a
+fixed square and the client crops to it, downsampling to the size of that
+square on a background thread - so a 3200x360 screenshot of a web page is a
+correct answer here. What the server must NOT do is pad or letterbox a
+thumbnail into a square itself: the client would then crop the padding.
+
 ### `POST /api/files/narrow`
 
 ```json
