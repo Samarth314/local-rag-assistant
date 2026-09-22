@@ -100,80 +100,11 @@ private struct AnimatedImage: UIViewRepresentable {
 }
 
 // MARK: - Fetching one
-
-/// Exercise animations, held in memory and nowhere else.
-///
-/// ## Why nothing is written to disk
-///
-/// The GIFs themselves are public static files on openGym's own web container
-/// and are not Arya's data. WHICH ones this phone asked for is: a folder of
-/// cached animations is a readable list of the exercises he trains, which the
-/// vault's CLAUDE.md puts in the same class as `records/health/`. The app's
-/// standing rule is that server responses do not accumulate on the phone, and
-/// an in-memory cache keeps that rule without giving up the second view of the
-/// same exercise.
-///
-/// So: an ephemeral session (no URL cache, no cookies, no credential store)
-/// and an `NSCache` that the system empties under pressure and the app loses
-/// on every launch.
-@MainActor
-final class GymGIFCache: ObservableObject {
-
-    static let shared = GymGIFCache()
-
-    private let cache: NSCache<NSURL, UIImage> = {
-        let cache = NSCache<NSURL, UIImage>()
-        // About sixty animations, or 32MB, whichever comes first.
-        cache.countLimit = 60
-        cache.totalCostLimit = 32 * 1024 * 1024
-        return cache
-    }()
-
-    private let session: URLSession = {
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.urlCache = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        configuration.httpShouldSetCookies = false
-        configuration.httpCookieStorage = nil
-        configuration.timeoutIntervalForRequest = 20
-        return URLSession(configuration: configuration)
-    }()
-
-    /// In-flight requests, so eight rows appearing at once fetch each distinct
-    /// animation exactly once.
-    private var inFlight: [URL: Task<UIImage?, Never>] = [:]
-
-    func cached(_ url: URL) -> UIImage? { cache.object(forKey: url as NSURL) }
-
-    func image(for url: URL) async -> UIImage? {
-        if let hit = cached(url) { return hit }
-        if let running = inFlight[url] { return await running.value }
-        let task = Task<UIImage?, Never> { [session] in
-            guard let (data, response) = try? await session.data(from: url),
-                  let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let image = GymGIF.animatedImage(from: data)
-            else { return nil }
-            return image
-        }
-        inFlight[url] = task
-        let image = await task.value
-        inFlight[url] = nil
-        if let image {
-            // Frame count times one frame's bytes: the repeated frames share
-            // one CGImage, so this over-counts on purpose rather than
-            // under-counting and letting the cache grow past its limit.
-            let cost = (image.images?.first?.cgImage).map {
-                $0.bytesPerRow * $0.height
-            } ?? 1
-            cache.setObject(image, forKey: url as NSURL, cost: cost)
-        }
-        return image
-    }
-
-    /// Part of "delete what ATARU has put on this phone", alongside the tile
-    /// caches. There is no file to remove - this is the whole of it.
-    func purge() { cache.removeAllObjects() }
-}
+//
+// See `GymMediaCache` (this directory) for the actor that actually fetches
+// and caches an animation - disk first, then the network, on-disk copy
+// written before the image is handed back. `GymGIFView` below is its only
+// caller.
 
 // MARK: - The views
 
@@ -230,15 +161,21 @@ struct GymGIFView: View {
             .foregroundStyle(Theme.textTertiary)
     }
 
+    /// Disk (or an already-decoded copy in memory) shows immediately, with no
+    /// spinner - `quickImage` never touches the network, so there is nothing
+    /// to wait on. Only a genuine fetch shows the spinner, and only while it
+    /// runs; a fetch that fails leaves `image` nil, which draws the same
+    /// neutral placeholder as an exercise with no animation at all - never an
+    /// error.
     private func load() async {
         image = nil
         guard let url else { return }
-        if let hit = GymGIFCache.shared.cached(url) {
+        if let hit = await GymMediaCache.shared.quickImage(for: url) {
             image = hit
             return
         }
         isLoading = true
-        let fetched = await GymGIFCache.shared.image(for: url)
+        let fetched = await GymMediaCache.shared.image(for: url)
         isLoading = false
         image = fetched
     }

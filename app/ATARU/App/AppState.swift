@@ -466,6 +466,9 @@ final class AppState: ObservableObject {
             // still something ATARU put on this phone, so the button that
             // deletes that has to reach it. See ActiveWorkoutStore.
             ActiveWorkoutStore.purge()
+            // The on-disk exercise animations, alongside the session file -
+            // same reasoning, same health-class bar. See GymMediaCache.
+            Task { await GymMediaCache.shared.purge() }
         }
         Task { await DocumentDownloadStore.shared.purge() }
     }

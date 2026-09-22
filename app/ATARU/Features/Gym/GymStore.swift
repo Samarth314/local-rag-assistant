@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 // MARK: - Sync state
 
@@ -341,6 +342,7 @@ final class GymStore: ObservableObject {
         self.library = library
         libraryIndex = library.index()
         libraryFetchedAt = fetchedAt
+        prefetchMedia()
     }
 
     // MARK: Units and the rotation
@@ -612,7 +614,7 @@ final class GymStore: ObservableObject {
         // A custom exercise reaching this path would silently lose its
         // customEx row; it has its own method and its own id namespace.
         guard !entry.id.isEmpty else { return false }
-        return await commit { state in
+        let stored = await commit { state in
             guard var routine = state.routine(id: routineID) else { return }
             var list = routine.exercises
             list.append(GymExerciseConfig(raw: ["id": .string(entry.id),
@@ -622,6 +624,11 @@ final class GymStore: ObservableObject {
             routine.setExercises(list)
             state.replaceRoutine(routine)
         }
+        // The general sweep in `adopt(_:)` already covers this exercise, but
+        // not before the routine detail row it was just added to draws it -
+        // this is what makes that first draw a disk hit rather than a fetch.
+        if stored { prefetchMedia(forExercise: entry.id) }
+        return stored
     }
 
     // MARK: A session
@@ -653,6 +660,7 @@ final class GymStore: ObservableObject {
         guard let state, let routine = state.routine(id: routineID) else { return }
         setActive(buildSession(routine: routine, in: state, on: GymClock.day(),
                                startedAt: GymClock.milliseconds()))
+        prefetchMedia(forRoutine: routineID)
     }
 
     /// One session builder, for a workout about to be done and for one being
@@ -866,6 +874,57 @@ final class GymStore: ObservableObject {
         if today != nil {
             today = GymToday.resolve(from: document.state, on: GymClock.day(),
                                      names: names)
+        }
+        prefetchMedia()
+    }
+
+    // MARK: Media
+
+    /// Warms the on-disk GIF cache for the working set - every exercise in
+    /// every routine, plus the last month of history - whenever the document
+    /// or the catalogue moves under it. See `GymMediaPrefetch.targetURLs` for
+    /// what "working set" means and why it is never the rest of the 1,324.
+    ///
+    /// Only while ATARU is the thing actually on screen: this store is driven
+    /// entirely from the Gym tile's own `.task`s today, so this guard is
+    /// belt-and-braces against a future caller (a widget, a background
+    /// refresh) firing a fetch nobody at the gym is waiting on.
+    private func prefetchMedia() {
+        guard UIApplication.shared.applicationState == .active else { return }
+        let urls = GymMediaPrefetch.targetURLs(state: state, library: library)
+        guard !urls.isEmpty else { return }
+        Task.detached(priority: .background) {
+            await GymMediaCache.shared.prefetch(urls)
+        }
+    }
+
+    /// The same, narrowed to one routine's own exercises - fired the moment a
+    /// session on it starts, so what `ActiveWorkoutView` is about to show
+    /// does not wait on the broader sweep above to get to it first. A no-op
+    /// for anything the broader sweep already reached.
+    private func prefetchMedia(forRoutine routineID: String) {
+        guard UIApplication.shared.applicationState == .active else { return }
+        guard let library, let routine = state?.routine(id: routineID) else { return }
+        let index = library.index()
+        let urls = Set(routine.exercises.compactMap { config in
+            index[config.id].flatMap(library.gifURL(for:))
+        })
+        guard !urls.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            await GymMediaCache.shared.prefetch(urls)
+        }
+    }
+
+    /// One exercise's animation, fetched the moment it is added to a routine
+    /// - so the picker's own thumbnail (already on screen) and the routine
+    /// detail row it is about to appear in are both warm before either draws
+    /// it again.
+    private func prefetchMedia(forExercise id: String) {
+        guard UIApplication.shared.applicationState == .active else { return }
+        guard let library, let entry = library.index()[id],
+              let url = library.gifURL(for: entry) else { return }
+        Task.detached(priority: .utility) {
+            await GymMediaCache.shared.prefetch([url])
         }
     }
 
