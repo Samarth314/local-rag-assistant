@@ -1,14 +1,39 @@
 import SwiftUI
 
-/// Page one: what is on today, and the one button that starts it.
+/// Page one: what to do next, and the one button that starts it.
 ///
-/// The order is the order of the morning - what day it is, what is planned,
-/// start, and the weigh-in. Everything else about openGym is a swipe away.
+/// ## Why this page leads with a routine and not with the calendar
+///
+/// It used to render the day's plan: whatever `week` said, and on a day the
+/// week said nothing about, a sentence saying so and no button at all. Then
+/// Arya trained on a Sunday.
+///
+/// "I worked out yesterday but the app had no way of me selecting a routine
+/// and doing it today. I ended up doing Ayush A yesterday."
+///
+/// Sunday is the split's rest day, so the page showed rest and offered him
+/// nothing - not the planned routine, because there wasn't one, and not any
+/// other routine, because the screen had never had a way to name one. He
+/// trained anyway and the app recorded none of it.
+///
+/// So the card leads with ONE routine and a button that starts it, every day
+/// of the week. A rest day is a NOTE on that card and never a lock: the
+/// calendar can say what it likes about Sunday, and a man standing in a gym
+/// on a Sunday is still standing in a gym.
+///
+/// The order is the order of the morning - what the week looks like, what is
+/// next, start, and the weigh-in. Everything else about openGym is a swipe
+/// away.
 struct GymTodayPage: View {
     @ObservedObject var store: GymStore
-    let startWorkout: () -> Void
+    /// Starts (or resumes) a session for a routine and pushes the session
+    /// screen. Takes the routine, because the page now decides which one -
+    /// see the class comment.
+    let startWorkout: (String) -> Void
 
     @State private var isConfirmingDiscard = false
+    @State private var isPickingRoutine = false
+    @State private var isLoggingPast = false
 
     var body: some View {
         ScrollView {
@@ -20,12 +45,24 @@ struct GymTodayPage: View {
                 }
 
                 weekStrip
-                todayCard
+                nextUpCard
                 bodyweightCard
             }
             .padding(Theme.Space.screen)
         }
         .refreshable { await store.refresh() }
+        // Sheets rather than pushes: both are a detour from the page, both are
+        // finished in one action, and neither belongs in the back stack of a
+        // pager whose three pages share one navigation bar.
+        .sheet(isPresented: $isPickingRoutine) {
+            GymRoutinePicker(store: store) { routineID in
+                isPickingRoutine = false
+                startWorkout(routineID)
+            }
+        }
+        .sheet(isPresented: $isLoggingPast) {
+            GymPastWorkoutForm(store: store)
+        }
     }
 
     // MARK: - The week
@@ -129,15 +166,19 @@ struct GymTodayPage: View {
     private static let cellHeight: CGFloat = weekdayRowHeight + 6 + ringSize
     static let restToken = "-"
 
-    /// Today's routine, written out - or why there isn't one.
+    /// What the CALENDAR has on today, written out - or that it has nothing.
+    ///
+    /// This strip is the week as it is written down. It is no longer what
+    /// decides what can be started (see the card), so the line says "planned"
+    /// rather than stating the day's routine as a fact.
     private var todayLine: String {
         guard let state = store.state else { return "" }
         guard let id = state.routineID(on: GymClock.day()),
               let routine = state.routine(id: id), !routine.name.isEmpty else {
             return state.isDeclaredRest(on: GymClock.day())
-                ? "Today: rest day" : "Today: nothing planned"
+                ? "Planned today: rest day" : "Planned today: nothing"
         }
-        return "Today: \(routine.name)"
+        return "Planned today: \(routine.name)"
     }
 
     /// Monday first, Sunday last, in Javascript's numbering.
@@ -163,45 +204,68 @@ struct GymTodayPage: View {
         return "\(name), \(routine.name)"
     }
 
-    // MARK: - Today
+    // MARK: - Next up
 
     @ViewBuilder
-    private var todayCard: some View {
+    private var nextUpCard: some View {
         ATCard {
             VStack(alignment: .leading, spacing: Theme.Space.s) {
                 header
 
                 if case .unavailable(let detail) = store.sync, store.state == nil {
-                    // NEVER a rest day. "openGym is off" and "the orin is
-                    // down" are claims about the server, and drawing either as
-                    // an empty plan is a claim about Arya's week.
+                    // NEVER a rest day, and never an empty card. "openGym is
+                    // off" and "the orin is down" are claims about the server,
+                    // and drawing either as a plan is a claim about Arya's
+                    // week.
                     Text(detail)
                         .font(.ataruCaption())
                         .foregroundStyle(Theme.amber)
-                } else if let today = store.today {
-                    if let routine = today.routine {
-                        exercises(routine)
-                        startButton(routine)
-                    } else {
-                        Text(restLine)
+                } else if let routine = shownRoutine {
+                    if let note = restNote {
+                        // Quiet, and one line. A rest day is worth saying and
+                        // is not worth a colour, an icon or a disabled button.
+                        Text(note)
                             .font(.ataruCaption())
                             .foregroundStyle(Theme.textTertiary)
                     }
+                    exercises(routine)
+                    startButton(routine)
                 } else if store.state == nil {
                     ProgressView()
                         .tint(Theme.cyan)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, Theme.Space.s)
+                } else {
+                    // A profile with no routines at all. Not a rest day
+                    // either - there is nothing to rest from yet.
+                    Text("No routines yet. Create one in openGym and it shows "
+                         + "up here.")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
             .padding(Theme.Space.m)
         }
     }
 
+    /// The routine the card is about: the session already in progress if there
+    /// is one, otherwise whatever is next up.
+    ///
+    /// Resume wins over next-up deliberately. A session in progress lives only
+    /// on this phone, so a card that quietly offered a different routine over
+    /// the top of it would be offering to lose it.
+    private var shownRoutine: GymRoutine? {
+        if let active = store.active,
+           let routine = store.state?.routine(id: active.routineID) {
+            return routine
+        }
+        return store.nextRoutine
+    }
+
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
-                SectionHeader(text: store.today?.weekday ?? "Today")
+                SectionHeader(text: store.active == nil ? "Next up" : "In progress")
                 Text(title)
                     .font(.ataruTitle())
                     .foregroundStyle(Theme.textPrimary)
@@ -212,39 +276,59 @@ struct GymTodayPage: View {
                     .font(.ataruCaption())
                     .foregroundStyle(Theme.textTertiary)
             }
+            overflow
         }
+    }
+
+    /// The one thing on this card that is not about starting a workout.
+    private var overflow: some View {
+        Menu {
+            Button {
+                isLoggingPast = true
+            } label: {
+                Label("Log a past workout", systemImage: "calendar.badge.plus")
+            }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 16, weight: .light))
+                .foregroundStyle(Theme.textSecondary)
+                .hitTarget()
+        }
+        .accessibilityLabel("More")
     }
 
     private var title: String {
-        guard let today = store.today else { return "-" }
-        guard let routine = today.routine else {
-            return isDeclaredRest ? "Rest day" : "Nothing planned"
-        }
-        // A plan pointing at a routine that has been deleted: say so rather
-        // than drawing an empty day, which reads as a rest day.
-        return routine.name ?? "Routine \(routine.id) is missing"
+        guard store.state != nil else { return "-" }
+        guard let routine = shownRoutine else { return "Nothing to do yet" }
+        return routine.name.isEmpty ? "Routine \(routine.id)" : routine.name
     }
 
-    private var isDeclaredRest: Bool {
-        guard let state = store.state, let today = store.today else { return false }
-        return state.isDeclaredRest(on: today.date)
-    }
-
-    private var restLine: String {
-        isDeclaredRest
-            ? "A rest day, on purpose."
-            : "Nothing on the plan for today."
+    /// The rest-day line, or nil on a day the week has something on.
+    ///
+    /// This is the ONLY thing `week` is still consulted for on this card, and
+    /// it is a sentence rather than a state: the button below it is identical
+    /// either way. `dayPlan`'s deliberate "rest" and a weekday the split
+    /// simply leaves out are worded differently, because they are different
+    /// things - one is a decision and the other is the shape of the split.
+    private var restNote: String? {
+        guard let state = store.state, store.active == nil else { return nil }
+        let day = GymClock.day()
+        guard state.routineID(on: day) == nil else { return nil }
+        let weekday = GymClock.date(fromDay: day)
+            .map { GymToday.weekdayNames[GymClock.jsWeekday($0)] } ?? "Today"
+        return state.isDeclaredRest(on: day)
+            ? "\(weekday) is a rest day."
+            : "Nothing on the plan for \(weekday.lowercased())."
     }
 
     private var lastTrained: String? {
-        guard let workout = store.today?.lastWorkout, !workout.day.isEmpty else {
-            return nil
-        }
-        return "last \(GymFormat.day(workout.day))"
+        guard let routine = shownRoutine, let state = store.state else { return nil }
+        guard let day = state.lastDay(forRoutine: routine.id) else { return "never done" }
+        return "last \(GymFormat.day(day))"
     }
 
     @ViewBuilder
-    private func exercises(_ routine: GymToday.Routine) -> some View {
+    private func exercises(_ routine: GymRoutine) -> some View {
         if routine.exercises.isEmpty {
             Text("This routine has no exercises yet.")
                 .font(.ataruCaption())
@@ -254,35 +338,32 @@ struct GymTodayPage: View {
                 // Keyed by position: an exercise can legitimately appear twice
                 // in a routine, and a ForEach handed the same id twice draws
                 // one row.
-                ForEach(Array(routine.exercises.enumerated()), id: \.offset) { _, exercise in
+                ForEach(Array(routine.exercises.enumerated()), id: \.offset) { _, config in
                     HStack(spacing: Theme.Space.s) {
                         // Tap the demo, not the row: the row itself is a
-                        // reading of today's plan and has nowhere else to go.
+                        // reading of the plan and has nowhere else to go.
                         NavigationLink {
                             GymExerciseDetail(
-                                name: store.displayName(for: exercise.id,
-                                                        fallback: exercise.name),
-                                entry: store.libraryEntry(for: exercise.id),
-                                gifURL: store.gifURL(forExercise: exercise.id))
+                                name: store.displayName(for: config.id),
+                                entry: store.libraryEntry(for: config.id),
+                                gifURL: store.gifURL(forExercise: config.id))
                         } label: {
-                            GymExerciseThumbnail(url: store.gifURL(forExercise: exercise.id),
+                            GymExerciseThumbnail(url: store.gifURL(forExercise: config.id),
                                                  side: 36)
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Show \(store.displayName(for: exercise.id, fallback: exercise.name))")
+                        .accessibilityLabel("Show \(store.displayName(for: config.id))")
 
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(store.displayName(for: exercise.id,
-                                                   fallback: exercise.name))
+                            Text(store.displayName(for: config.id))
                                 .font(.ataruBody())
                                 .foregroundStyle(Theme.textPrimary)
-                            Text(GymFormat.target(sets: exercise.sets,
-                                                  reps: exercise.reps))
+                            Text(GymFormat.target(sets: config.sets, reps: config.reps))
                                 .font(.ataruCaption())
                                 .foregroundStyle(Theme.textTertiary)
                         }
                         Spacer(minLength: Theme.Space.s)
-                        Text(lastWeightLine(exercise))
+                        Text(lastWeightLine(routine: routine, config: config))
                             .font(.ataruMono(11))
                             .foregroundStyle(Theme.textSecondary)
                     }
@@ -294,91 +375,126 @@ struct GymTodayPage: View {
 
     /// What was actually lifted last time, not what the routine says. The
     /// routine's weight is a plan; this is the number he beat or did not.
-    private func lastWeightLine(_ exercise: GymToday.Exercise) -> String {
-        if let entry = store.today?.lastWorkout?.entry(forExercise: exercise.id),
+    ///
+    /// In pounds, whatever the document stores - see `GymUnits`.
+    private func lastWeightLine(routine: GymRoutine,
+                                config: GymExerciseConfig) -> String {
+        let unit = store.documentUnit
+        if let entry = store.state?.lastWorkout(forRoutine: routine.id)?
+            .entry(forExercise: config.id),
            let weight = entry.heaviestCompleted {
-            return GymFormat.weight(weight, unit: unit)
+            return GymFormat.weightInPounds(weight, storedIn: unit)
         }
-        if let weight = exercise.weight {
-            return GymFormat.weight(weight, unit: unit)
+        if let weight = config.weight {
+            return GymFormat.weightInPounds(weight, storedIn: unit)
         }
         return "-"
     }
 
-    private var unit: String { store.state?.unit ?? "kg" }
-
-    /// Start, or resume - and, when there is something to resume, a way to end
-    /// it for good.
+    /// Start, resume, and a way to something else.
     ///
-    /// "He started Ayush C, backed out, and now sees Resume workout with no
-    /// way to abandon it." A session in progress lives only on this phone
-    /// (openGym deletes `active` on every write), so the only control that can
-    /// end one is here, and until now there wasn't one: backing out of the
-    /// session screen left the file, and the card offered Resume forever.
+    /// ## Three controls and why each is where it is
     ///
-    /// Side by side rather than a menu, because Resume is the thing he wants
-    /// in the gym and Discard is the thing he wants exactly once - and behind
-    /// a confirmation, because a discard cannot be undone from anywhere.
+    /// `Start <routine>` names the routine on the button, because the whole
+    /// point of the card is that the routine is a choice now rather than a
+    /// consequence of the date - and a button that says "Start workout" over a
+    /// title that says "Ayush B" makes him check which one it means.
+    ///
+    /// `Different routine` is a secondary control beside it rather than a menu
+    /// item: it is the thing that was missing on Sunday, and it should be one
+    /// tap from the card. It is hidden while a session is in progress, because
+    /// starting another one would silently throw that one away.
+    ///
+    /// Discard appears only when there is something to discard. "He started
+    /// Ayush C, backed out, and now sees Resume workout with no way to abandon
+    /// it": a session in progress lives only on this phone (openGym deletes
+    /// `active` on every write), so this is the only control anywhere that can
+    /// end one - and it asks first, because a discard cannot be undone.
     @ViewBuilder
-    private func startButton(_ routine: GymToday.Routine) -> some View {
+    private func startButton(_ routine: GymRoutine) -> some View {
         let resuming = store.active != nil
-        HStack(spacing: Theme.Space.s) {
-            Button(action: startWorkout) {
-                HStack(spacing: Theme.Space.xs) {
-                    Image(systemName: resuming ? "arrow.clockwise" : "play.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                    Text(resuming ? "Resume workout" : "Start workout")
-                        .font(.ataruBody())
+        VStack(spacing: Theme.Space.xs) {
+            HStack(spacing: Theme.Space.s) {
+                Button {
+                    startWorkout(routine.id)
+                } label: {
+                    HStack(spacing: Theme.Space.xs) {
+                        Image(systemName: resuming ? "arrow.clockwise" : "play.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(resuming ? "Resume workout" : startLabel(routine))
+                            .font(.ataruBody())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .foregroundStyle(Theme.onAccent)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 48)
+                    .background {
+                        RoundedRectangle(cornerRadius: Theme.Radius.card,
+                                         style: .continuous)
+                            .fill(Theme.cyan)
+                    }
                 }
-                .foregroundStyle(Theme.onAccent)
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .background {
-                    RoundedRectangle(cornerRadius: Theme.Radius.card, style: .continuous)
-                        .fill(Theme.cyan)
+                .buttonStyle(.atPress)
+                .disabled(routine.exercises.isEmpty)
+                .accessibilityHint(resuming
+                    ? "Go back to the session already in progress."
+                    : "Log sets for \(routine.name).")
+
+                if resuming {
+                    Button(role: .destructive) {
+                        isConfirmingDiscard = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 15, weight: .light))
+                            .foregroundStyle(Theme.red)
+                            .frame(width: 48, height: 48)
+                            .background {
+                                RoundedRectangle(cornerRadius: Theme.Radius.card,
+                                                 style: .continuous)
+                                    .fill(Theme.surfaceElevated)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Discard workout")
+                    .accessibilityHint("Throw away the session in progress.")
+                    // ON THE BUTTON, not on the page. A confirmation attached
+                    // to the ScrollView has no source to come out of, and what
+                    // he saw was a box floating in the middle of the screen
+                    // with no relationship to the control he had just pressed.
+                    .confirmationDialog("Discard the workout in progress?",
+                                        isPresented: $isConfirmingDiscard,
+                                        titleVisibility: .visible) {
+                        Button("Discard", role: .destructive) { store.discardWorkout() }
+                        Button("Keep it", role: .cancel) {}
+                    } message: {
+                        Text("It only exists on this phone and nothing has been "
+                             + "sent to openGym, so it would be gone.")
+                    }
                 }
             }
-            .buttonStyle(.atPress)
-            .disabled(routine.exercises.isEmpty)
-            .accessibilityHint(resuming
-                ? "Go back to the session already in progress."
-                : "Log sets for \(routine.name ?? "this routine").")
 
-            if resuming {
-                Button(role: .destructive) {
-                    isConfirmingDiscard = true
+            if !resuming {
+                Button {
+                    isPickingRoutine = true
                 } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 15, weight: .light))
-                        .foregroundStyle(Theme.red)
-                        .frame(width: 48, height: 48)
-                        .background {
-                            RoundedRectangle(cornerRadius: Theme.Radius.card,
-                                             style: .continuous)
-                                .fill(Theme.surfaceElevated)
-                        }
+                    Text("Different routine")
+                        .font(.ataruCaption())
+                        .foregroundStyle(Theme.cyan)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: Theme.minHitTarget)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Discard workout")
-                .accessibilityHint("Throw away the session in progress.")
-                // ON THE BUTTON, not on the page. A confirmation attached to
-                // the ScrollView has no source to come out of, and what he
-                // saw was a box floating in the middle of the screen with no
-                // relationship to the control he had just pressed. Anchored
-                // here it is the sheet iOS puts under every other destructive
-                // tap: the red verb, and a way out.
-                .confirmationDialog("Discard the workout in progress?",
-                                    isPresented: $isConfirmingDiscard,
-                                    titleVisibility: .visible) {
-                    Button("Discard", role: .destructive) { store.discardWorkout() }
-                    Button("Keep it", role: .cancel) {}
-                } message: {
-                    Text("It only exists on this phone and nothing has been "
-                         + "sent to openGym, so it would be gone.")
-                }
+                .accessibilityHint("Pick any routine and start it.")
             }
         }
         .padding(.top, Theme.Space.xs)
+    }
+
+    /// "Start Ayush B" - and just "Start workout" for a routine with no name
+    /// worth putting on a button.
+    private func startLabel(_ routine: GymRoutine) -> String {
+        routine.name.isEmpty ? "Start workout" : "Start \(routine.name)"
     }
 
     // MARK: - Bodyweight
@@ -407,7 +523,8 @@ struct GymBodyweightRow: View {
                 SectionHeader(text: "Body weight")
                 Spacer()
                 if let latest = store.state?.bodyweight.first {
-                    Text("\(GymFormat.number(latest.weight)) \(unit) · \(GymFormat.day(latest.day))")
+                    Text("\(GymFormat.numberInPounds(latest.weight, storedIn: storedUnit)) "
+                         + "\(unit) · \(GymFormat.day(latest.day))")
                         .font(.ataruCaption())
                         .foregroundStyle(Theme.textTertiary)
                 }
@@ -436,7 +553,11 @@ struct GymBodyweightRow: View {
         }
     }
 
-    private var unit: String { store.state?.unit ?? "kg" }
+    /// Always pounds - what the field is labelled and what it accepts.
+    private var unit: String { GymUnits.display }
+
+    /// What the DOCUMENT holds, which the reading above is converted out of.
+    private var storedUnit: String { store.documentUnit }
 
     private var value: Double? {
         Double(draft.replacingOccurrences(of: ",", with: "."))
@@ -444,14 +565,16 @@ struct GymBodyweightRow: View {
 
     private var canSave: Bool {
         guard let value else { return false }
-        // A plain sanity bound, not a health judgement: it exists to catch a
-        // fat-fingered 700 before it reaches the log.
-        return value > 0 && value < 500 && !store.isSaving && !store.sync.isReadOnly
+        // A plain sanity bound in POUNDS, not a health judgement: it exists to
+        // catch a fat-fingered 1500 before it reaches the log. The old bound
+        // was 500, which was a kilogram bound and would have refused any
+        // reading over 500 lb on a scale that reads pounds.
+        return value > 0 && value < 1200 && !store.isSaving && !store.sync.isReadOnly
     }
 
     private func save() async {
         guard let value else { return }
         isEditing = false
-        if await store.recordBodyweight(value) { draft = "" }
+        if await store.recordBodyweight(pounds: value) { draft = "" }
     }
 }

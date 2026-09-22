@@ -96,8 +96,14 @@ struct GymScreen: View {
         }
     }
 
-    private func openWorkout() {
-        if store.active == nil { store.startWorkout() }
+    /// Start a routine, or go back to the one already running.
+    ///
+    /// The routine comes from the page, because the page is what now decides
+    /// which one - next up, or whatever the picker returned. A session already
+    /// in progress is never rebuilt: whatever is on this phone is the only
+    /// copy of it, and the card's Resume has to mean resume.
+    private func openWorkout(_ routineID: String) {
+        if store.active == nil { store.startWorkout(routineID: routineID) }
         isWorkingOut = true
     }
 }
@@ -167,6 +173,52 @@ enum GymFormat {
         guard let value else { return "-" }
         if value == 0 { return "bodyweight" }
         return "\(number(value)) \(unit)"
+    }
+
+    /// A weight out of the document, written in POUNDS.
+    ///
+    /// Conversion and formatting in ONE call on purpose. The document's unit
+    /// is whatever openGym's settings last left it at, so every weight on
+    /// every screen needs the same two steps in the same order - and a pair of
+    /// separate helpers is an invitation to convert twice on one screen and
+    /// not at all on the next. There is no call site in this app that formats
+    /// a weight without converting it.
+    static func weightInPounds(_ value: Double?, storedIn unit: String) -> String {
+        weight(GymUnits.toDisplay(value, storedIn: unit), unit: GymUnits.display)
+    }
+
+    /// The same, for the places that write the unit themselves - a bodyweight
+    /// row, a chart's caption - where zero is a real reading rather than
+    /// openGym's "bodyweight" sentinel.
+    static func numberInPounds(_ value: Double, storedIn unit: String) -> String {
+        number(GymUnits.toDisplay(value, storedIn: unit) ?? value)
+    }
+
+    /// How long ago a routine was last trained: "today", "yesterday", "3 d
+    /// ago" - and "never" for one that has not been.
+    ///
+    /// "never" is a real answer and is said plainly. A dash, or an empty cell,
+    /// reads as missing data on a picker whose whole job is to say which
+    /// routine is overdue.
+    ///
+    /// Whole days apart in the phone's own calendar, not hours divided by 24:
+    /// a session at 21:00 yesterday and a glance at 08:00 today is one day
+    /// apart to a human and zero to the arithmetic.
+    static func since(_ day: String?, now: Date = Date()) -> String {
+        guard let day, let date = GymClock.date(fromDay: day) else { return "never" }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let from = calendar.startOfDay(for: date)
+        let to = calendar.startOfDay(for: now)
+        guard let days = calendar.dateComponents([.day], from: from, to: to).day else {
+            return "never"
+        }
+        switch days {
+        case ..<0:  return "ahead"      // a day in the future: say so, do not lie about it
+        case 0:     return "today"
+        case 1:     return "yesterday"
+        default:    return "\(days) d ago"
+        }
     }
 
     /// "3 x 10", the way a routine reads on paper.

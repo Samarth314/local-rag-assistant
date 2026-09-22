@@ -95,44 +95,51 @@ enum GymFixtures {
     /// the overlay above; the others still have none, which is the state this
     /// was written for and is still worth looking at.
     private static let catalogueExtras: [String: (String, Int, Int, Double)] = [
-        "a": ("0043", 2, 8, 60),      // barbell full squat
+        "a": ("0043", 2, 8, 135),     // barbell full squat
         "b": ("0652", 2, 8, 0),       // pull-up
         "c": ("0003", 2, 20, 0)       // air bike
     ]
 
     // MARK: - The split
 
-    /// name, sets, reps, weight (kg). Structure from Arya's split; numbers
-    /// invented.
+    /// name, sets, reps, weight in POUNDS. Structure from Arya's split;
+    /// numbers invented.
+    ///
+    /// Pounds because the fixture's `unit` is `"lb"`, and openGym stores a
+    /// bare number whose meaning is whatever `unit` says - there is no
+    /// canonical kilogram in the document (see `GymUnits`). A fixture holding
+    /// kilogram-shaped numbers under a pound label would render a 71 lb
+    /// bodyweight and a 5 lb shoulder raise, which is exactly the kind of
+    /// plausible-but-wrong screen a fixture exists to prevent.
     private static let dayA: [(String, Int, Int, Double)] = [
-        ("Leg Extension (Machine)", 2, 12, 45),
-        ("Zercher Squat", 2, 8, 60),
-        ("Bench Press (Dumbbell)", 2, 10, 24),
-        ("Incline Bench Press (Dumbbell)", 2, 10, 20),
-        ("Tricep Pushdown (Cable)", 2, 12, 25),
-        ("Lateral Raise (Cable)", 1, 15, 7.5),
-        ("Y-Raise (Cable)", 1, 15, 5),
-        ("Shoulder Press (Plate Loaded)", 1, 10, 40)
+        ("Leg Extension (Machine)", 2, 12, 100),
+        ("Zercher Squat", 2, 8, 135),
+        ("Bench Press (Dumbbell)", 2, 10, 55),
+        ("Incline Bench Press (Dumbbell)", 2, 10, 45),
+        ("Tricep Pushdown (Cable)", 2, 12, 55),
+        ("Lateral Raise (Cable)", 1, 15, 15),
+        ("Y-Raise (Cable)", 1, 15, 10),
+        ("Shoulder Press (Plate Loaded)", 1, 10, 90)
     ]
 
     private static let dayB: [(String, Int, Int, Double)] = [
-        ("Lat Pulldown (Cable)", 2, 10, 55),
-        ("SA Lat Row (Cable)", 2, 10, 30),
-        ("Kelso Shrug (Dumbbell)", 2, 12, 22),
-        ("Seated Bicep Curl (Dumbbell)", 2, 10, 14),
-        ("Reverse Curl (EZ Bar)", 2, 12, 20),
-        ("Seated Leg Curl (Machine)", 2, 12, 40),
+        ("Lat Pulldown (Cable)", 2, 10, 120),
+        ("SA Lat Row (Cable)", 2, 10, 65),
+        ("Kelso Shrug (Dumbbell)", 2, 12, 50),
+        ("Seated Bicep Curl (Dumbbell)", 2, 10, 30),
+        ("Reverse Curl (EZ Bar)", 2, 12, 45),
+        ("Seated Leg Curl (Machine)", 2, 12, 90),
         ("Back Extension", 2, 12, 0)
     ]
 
     private static let dayC: [(String, Int, Int, Double)] = [
         ("Decline Crunch", 2, 15, 0),
-        ("Side Bend (Back Extension)", 2, 15, 10),
-        ("Wrist Curl (Dumbbell)", 2, 15, 8),
-        ("Forearm Extensor (Dumbbell)", 2, 15, 6),
+        ("Side Bend (Back Extension)", 2, 15, 25),
+        ("Wrist Curl (Dumbbell)", 2, 15, 20),
+        ("Forearm Extensor (Dumbbell)", 2, 15, 15),
         ("Tib Raise", 2, 20, 0),
-        ("Calf Press (Machine)", 2, 15, 70),
-        ("Rear Delt Fly (Cable)", 2, 15, 9)
+        ("Calf Press (Machine)", 2, 15, 155),
+        ("Rear Delt Fly (Cable)", 2, 15, 20)
     ]
 
     /// Deterministic, and openGym-shaped: a custom id is "c" plus a uid. Fixed
@@ -191,7 +198,8 @@ enum GymFixtures {
     private static func session(daysAgo: Int, routineID: String, tag: String,
                                 name: String,
                                 exercises: [(String, Int, Int, Double)],
-                                bodyweight: Double) -> JSONValue {
+                                bodyweight: Double,
+                                loggedLater: Bool = false) -> JSONValue {
         let day = GymClock.day(Date().addingTimeInterval(-Double(daysAgo) * 86_400))
         let start = GymClock.milliseconds(
             Date().addingTimeInterval(-Double(daysAgo) * 86_400 - 3_600))
@@ -209,7 +217,7 @@ enum GymFixtures {
                                    "weight": .number(exercise.3)])
             ])
         }
-        return .object([
+        var raw: [String: JSONValue] = [
             "id": .string("wdemo\(tag)\(daysAgo)"),
             "d": .string(day),
             "start": .int(start),
@@ -220,12 +228,16 @@ enum GymFixtures {
             "bw": .number(bodyweight),
             "entries": .array(entries),
             "prs": .array([])
-        ])
+        ]
+        // Only when true, as `ActiveWorkout.finishedWorkout` writes it.
+        if loggedLater { raw["loggedLater"] = .bool(true) }
+        return .object(raw)
     }
 
     private static func bodyweightSeries() -> [JSONValue] {
         // Eight days, invented, gently trending.
-        let values: [Double] = [71.8, 71.6, 71.9, 71.4, 71.2, 71.3, 70.9, 70.8]
+        let values: [Double] = [158.2, 157.8, 158.4, 157.4, 157.0,
+                                157.2, 156.4, 156.2]
         return values.enumerated().map { index, weight in
             let offset = Double(values.count - 1 - index) * 86_400
             let date = Date().addingTimeInterval(-offset)
@@ -244,7 +256,11 @@ enum GymFixtures {
         return [
             "_rev": .int(7),
             "_ts": .int(GymClock.milliseconds(Date().addingTimeInterval(-7_200))),
-            "unit": .string("kg"),
+            // POUNDS. The app shows pounds whatever this says (it converts -
+            // see `GymUnits`), but Demo is also what the screens are reviewed
+            // and screenshotted against, so it holds the unit Arya's own
+            // profile holds rather than a second one nobody uses.
+            "unit": .string("lb"),
             // `emoji` holds openGym's ICON NAME, not an emoji: these three
             // strings are the ones in Arya's own document, read from the live
             // `/api/gym/state` on 2026-09-19. They are here verbatim BECAUSE
@@ -273,13 +289,22 @@ enum GymFixtures {
                 "5": .string(b), "6": .string(c)
             ]),
             "dayPlan": .object([:]),
+            // ASCENDING by day, which is the order openGym keeps this array
+            // in and the order a backdated insert has to respect. The oldest
+            // one is flagged `loggedLater` so the History mark and the "logged
+            // later" line in a session's detail are on screen in Demo rather
+            // than only in a test - and it is the OLDEST on purpose, so the
+            // most recent session is still Ayush C and Demo's next-up is still
+            // Ayush A.
             "workouts": .array([
+                session(daysAgo: 5, routineID: c, tag: "c", name: "Ayush C",
+                        exercises: dayC, bodyweight: 157.4, loggedLater: true),
                 session(daysAgo: 4, routineID: a, tag: "a", name: "Ayush A",
-                        exercises: dayA, bodyweight: 71.4),
+                        exercises: dayA, bodyweight: 157.4),
                 session(daysAgo: 3, routineID: b, tag: "b", name: "Ayush B",
-                        exercises: dayB, bodyweight: 71.2),
+                        exercises: dayB, bodyweight: 157.0),
                 session(daysAgo: 2, routineID: c, tag: "c", name: "Ayush C",
-                        exercises: dayC, bodyweight: 71.3)
+                        exercises: dayC, bodyweight: 157.2)
             ]),
             "customEx": .array(customExercises()),
             "bodyweight": .array(bodyweightSeries()),
@@ -297,7 +322,7 @@ enum GymFixtures {
             "accent": .string("cyan"),
             "lang": .string("en"),
             "body": .string("metric"),
-            "targetW": .number(70),
+            "targetW": .number(155),
             "checkIn": .bool(true),
             "weighIn": .bool(true),
             "equipProfiles": .array([]),

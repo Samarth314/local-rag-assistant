@@ -326,7 +326,8 @@ final class GymDemoTests: XCTestCase {
         XCTAssertEqual(planned.count, 6, "six sessions a week, Sunday absent")
         XCTAssertNil(document.state.weekRoutineID(weekday: 0))
         XCTAssertFalse(document.state.bodyweight.isEmpty)
-        XCTAssertEqual(document.state.unit, "kg")
+        XCTAssertEqual(document.state.unit, "lb",
+                       "Demo holds the unit Arya's own profile holds")
     }
 
     /// The last-logged column comes from the most recent SESSION, not from the
@@ -397,6 +398,40 @@ final class GymFormatTests: XCTestCase {
         // Zero is openGym's spelling for a bodyweight-only movement, and "0
         // kg" is not what that means.
         XCTAssertEqual(GymFormat.weight(0, unit: "kg"), "bodyweight")
+    }
+
+    /// The pounds path: ONE call that converts and formats, so no screen can
+    /// do one without the other.
+    func testAWeightIsWrittenInPoundsWhateverTheDocumentHolds() {
+        // Already pounds - nothing is touched, and nothing is rounded away.
+        XCTAssertEqual(GymFormat.weightInPounds(185, storedIn: "lb"), "185 lb")
+        XCTAssertEqual(GymFormat.weightInPounds(182.5, storedIn: "lb"), "182.5 lb")
+        // Stored in kilograms - converted, and labelled lb either way.
+        XCTAssertEqual(GymFormat.weightInPounds(100, storedIn: "kg"), "220.5 lb")
+        XCTAssertEqual(GymFormat.weightInPounds(20, storedIn: "kg"), "44 lb")
+        // openGym's sentinel survives the conversion: zero is a bodyweight
+        // movement, not a light one, in either unit.
+        XCTAssertEqual(GymFormat.weightInPounds(0, storedIn: "kg"), "bodyweight")
+        XCTAssertEqual(GymFormat.weightInPounds(nil, storedIn: "kg"), "-")
+        // A bodyweight reading, where zero would be a real number.
+        XCTAssertEqual(GymFormat.numberInPounds(157.4, storedIn: "lb"), "157.4")
+        XCTAssertEqual(GymFormat.numberInPounds(71.4, storedIn: "kg"), "157.5")
+    }
+
+    /// "never" is a real answer and is said plainly - a picker whose job is to
+    /// show which routine is overdue cannot leave that cell blank.
+    func testHowLongAgoReadsInDaysAndSaysNever() {
+        let now = try? XCTUnwrap(GymClock.date(fromDay: "2026-09-21"))
+        let today = now ?? Date()
+        XCTAssertEqual(GymFormat.since(nil, now: today), "never")
+        XCTAssertEqual(GymFormat.since("not-a-day", now: today), "never")
+        XCTAssertEqual(GymFormat.since("2026-09-21", now: today), "today")
+        XCTAssertEqual(GymFormat.since("2026-09-20", now: today), "yesterday")
+        XCTAssertEqual(GymFormat.since("2026-09-18", now: today), "3 d ago")
+        // WHOLE DAYS in the phone's calendar, not hours over 24: a session at
+        // 21:00 yesterday read at 08:00 today is one day ago to a human.
+        let morning = today.addingTimeInterval(8 * 3600)
+        XCTAssertEqual(GymFormat.since("2026-09-20", now: morning), "yesterday")
     }
 
     func testTargetsReadAsTheyAreWrittenDown() {
@@ -779,5 +814,446 @@ final class GymAddExerciseTests: XCTestCase {
         store.discardWorkout()
         XCTAssertNil(store.active)
         XCTAssertNil(ActiveWorkoutStore.load())
+    }
+}
+
+
+// MARK: - Pounds
+
+/// openGym stores a bare number and one `unit` string beside it - there is no
+/// canonical kilogram in the document - so every weight this app shows or
+/// accepts has to be converted against that string. These are the sums.
+final class GymUnitsTests: XCTestCase {
+
+    func testTheAppsUnitIsPounds() {
+        XCTAssertEqual(GymUnits.display, "lb")
+    }
+
+    /// openGym's own factor and openGym's own rounding, to the digit: pounds
+    /// to the nearest 0.5, kilograms to the nearest 0.25
+    /// (`frontend/src/lib/units.js`). A different one would mean a weight
+    /// typed on the phone and read in the browser disagree in the last place.
+    func testTheFactorAndTheRoundingAreOpenGyms() {
+        XCTAssertEqual(GymUnits.poundsPerKilogram, 2.2046226218)
+        XCTAssertEqual(GymUnits.convert(100, from: "kg", to: "lb"), 220.5)
+        XCTAssertEqual(GymUnits.convert(20, from: "kg", to: "lb"), 44)
+        XCTAssertEqual(GymUnits.convert(2.5, from: "kg", to: "lb"), 5.5)
+        XCTAssertEqual(GymUnits.convert(220.5, from: "lb", to: "kg"), 100)
+        XCTAssertEqual(GymUnits.convert(45, from: "lb", to: "kg"), 20.5)
+    }
+
+    /// Zero is openGym's spelling for a set with no external load. If a
+    /// conversion moved it, every bodyweight movement in the profile would
+    /// quietly acquire a weight.
+    func testZeroIsZeroInBothDirections() {
+        XCTAssertEqual(GymUnits.convert(0, from: "kg", to: "lb"), 0)
+        XCTAssertEqual(GymUnits.convert(0, from: "lb", to: "kg"), 0)
+        XCTAssertEqual(GymUnits.toDisplay(0, storedIn: "kg"), 0)
+        XCTAssertEqual(GymUnits.fromDisplay(0, storedIn: "kg"), 0)
+    }
+
+    func testTheSameUnitAndNoValueAreLeftAlone() {
+        XCTAssertEqual(GymUnits.convert(82.5, from: "lb", to: "lb"), 82.5)
+        XCTAssertNil(GymUnits.convert(nil, from: "kg", to: "lb"))
+        XCTAssertEqual(GymUnits.toDisplay(185, storedIn: "lb"), 185)
+    }
+
+    /// A unit neither side is defined for passes through UNSCALED. Guessing a
+    /// factor for "stone" would be worse than showing the number as it is.
+    func testAnUnknownUnitIsNotScaledByAGuess() {
+        XCTAssertEqual(GymUnits.convert(60, from: "stone", to: "lb"), 60)
+        XCTAssertEqual(GymUnits.convert(60, from: "kg", to: "pood"), 60)
+        XCTAssertEqual(GymUnits.toDisplay(60, storedIn: ""), 60)
+    }
+
+    /// The reason the rounding is 0.5 and 0.25 rather than something tidier:
+    /// a plate-loadable number converted there and back has to land where it
+    /// started, because that round trip happens every time a field is redrawn.
+    func testAPlateLoadableNumberSurvivesTheRoundTrip() {
+        for pounds in [10.0, 15, 25, 45, 55, 90, 95, 135, 155, 185, 225, 315] {
+            let stored = try? XCTUnwrap(GymUnits.fromDisplay(pounds, storedIn: "kg"))
+            let back = GymUnits.toDisplay(stored ?? 0, storedIn: "kg")
+            XCTAssertEqual(back ?? -1, pounds, accuracy: 0.5,
+                           "\(pounds) lb did not survive kg and back")
+        }
+    }
+
+    /// The document's default is openGym's default, which is kilograms - an
+    /// ABSENT `unit` key is not pounds just because this app shows pounds.
+    /// Getting that backwards would read every stored number 2.2x too small.
+    func testAnAbsentUnitKeyMeansKilogramsLikeOpenGym() {
+        XCTAssertEqual(GymState(raw: [:]).unit, "kg")
+        XCTAssertEqual(GymState(raw: ["unit": .string("lb")]).unit, "lb")
+    }
+}
+
+// MARK: - The rotation
+
+/// "Next up" follows what was COMPLETED, not the calendar. This is the whole
+/// of that rule.
+final class GymRotationTests: XCTestCase {
+
+    private func loop(workouts: [JSONValue] = []) -> GymState {
+        GymState(raw: [
+            "routines": .array([
+                .object(["id": .string("a"), "name": .string("Ayush A")]),
+                .object(["id": .string("b"), "name": .string("Ayush B")]),
+                .object(["id": .string("c"), "name": .string("Ayush C")])
+            ]),
+            "workouts": .array(workouts)
+        ])
+    }
+
+    private func session(_ id: String, routine: String, day: String,
+                         start: Int = 0, loggedLater: Bool = false) -> JSONValue {
+        var raw: [String: JSONValue] = [
+            "id": .string(id), "d": .string(day), "start": .int(start),
+            "routineIds": .array([.string(routine)]),
+            "routineId": .string(routine)
+        ]
+        if loggedLater { raw["loggedLater"] = .bool(true) }
+        return .object(raw)
+    }
+
+    /// Where Arya's own document starts: three routines and nothing ever
+    /// finished. A program with routines in it always has a next one.
+    func testNothingCompletedMeansTheFirstRoutine() {
+        XCTAssertEqual(loop().nextRoutineID, "a")
+    }
+
+    func testTheRoutineAfterTheLastCompletedOne() {
+        XCTAssertEqual(loop(workouts: [session("1", routine: "a",
+                                               day: "2026-09-20")]).nextRoutineID, "b")
+        XCTAssertEqual(loop(workouts: [session("1", routine: "b",
+                                               day: "2026-09-20")]).nextRoutineID, "c")
+    }
+
+    /// The loop wraps, and it wraps on the ROUTINES' own order rather than on
+    /// anything the week says.
+    func testTheLoopWrapsAtTheEnd() {
+        XCTAssertEqual(loop(workouts: [session("1", routine: "c",
+                                               day: "2026-09-20")]).nextRoutineID, "a")
+    }
+
+    /// The exact case this pass exists for: he did Ayush A on Sunday the 20th,
+    /// the split's rest day. Monday's next up is B, not A again.
+    func testAWorkoutOnTheRestDayStillMovesTheLoop() {
+        let state = loop(workouts: [
+            session("1", routine: "c", day: "2026-09-17"),
+            session("2", routine: "a", day: "2026-09-20", loggedLater: true)
+        ])
+        XCTAssertEqual(state.mostRecentWorkout?.id, "2")
+        XCTAssertEqual(state.nextRoutineID, "b")
+    }
+
+    /// A session logged after the fact counts, and counts at the day it
+    /// HAPPENED on - not the day it was typed in.
+    func testABackdatedSessionDoesNotBecomeTheMostRecentOne() {
+        let state = loop(workouts: [
+            session("recent", routine: "a", day: "2026-09-20"),
+            session("older", routine: "c", day: "2026-09-14", loggedLater: true)
+        ])
+        XCTAssertEqual(state.mostRecentWorkout?.id, "recent")
+        XCTAssertEqual(state.nextRoutineID, "b")
+    }
+
+    /// Two sessions on one day are ordered by `start`, which is the only thing
+    /// that can tell them apart.
+    func testTwoSessionsOnOneDayAreOrderedByStart() {
+        let state = loop(workouts: [
+            session("morning", routine: "a", day: "2026-09-20", start: 1_000),
+            session("evening", routine: "b", day: "2026-09-20", start: 9_000)
+        ])
+        XCTAssertEqual(state.mostRecentWorkout?.id, "evening")
+        XCTAssertEqual(state.nextRoutineID, "c")
+    }
+
+    /// Last trained a routine that has since been deleted: start the loop
+    /// again rather than guess at a gap, and never answer nil while there are
+    /// routines to do.
+    func testADeletedRoutineRestartsTheLoop() {
+        let state = loop(workouts: [session("1", routine: "gone",
+                                            day: "2026-09-20")])
+        XCTAssertEqual(state.nextRoutineID, "a")
+    }
+
+    func testAProfileWithNoRoutinesHasNoNextUp() {
+        XCTAssertNil(GymState(raw: [:]).nextRoutineID)
+    }
+
+    func testTheDayARoutineWasLastTrained() {
+        let state = loop(workouts: [
+            session("1", routine: "a", day: "2026-09-14"),
+            session("2", routine: "a", day: "2026-09-20")
+        ])
+        XCTAssertEqual(state.lastDay(forRoutine: "a"), "2026-09-20")
+        XCTAssertNil(state.lastDay(forRoutine: "b"))
+    }
+}
+
+// MARK: - Filing a session
+
+/// openGym keeps `workouts` ascending and reverses it for History, so a
+/// backdated session cannot be pushed onto the end
+/// (`frontend/src/lib/backfill.js`).
+final class GymWorkoutInsertTests: XCTestCase {
+
+    private func workout(_ id: String, day: String, start: Int = 0) -> GymWorkout {
+        GymWorkout(raw: ["id": .string(id), "d": .string(day), "start": .int(start)])
+    }
+
+    private func ids(_ state: GymState) -> [String] {
+        (state.raw["workouts"]?.arrayValue ?? [])
+            .compactMap { $0.objectValue?["id"]?.stringValue }
+    }
+
+    func testASessionFinishedNowIsAnAppend() {
+        var state = GymState(raw: ["workouts": .array([])])
+        state.insertWorkout(workout("old", day: "2026-09-18"))
+        state.insertWorkout(workout("new", day: "2026-09-21"))
+        XCTAssertEqual(ids(state), ["old", "new"])
+    }
+
+    func testABackdatedSessionGoesWhereItsDayPutsIt() {
+        var state = GymState(raw: ["workouts": .array([])])
+        state.insertWorkout(workout("mon", day: "2026-09-21"))
+        state.insertWorkout(workout("fri", day: "2026-09-18"))
+        state.insertWorkout(workout("sun", day: "2026-09-20"))
+        XCTAssertEqual(ids(state), ["fri", "sun", "mon"])
+    }
+
+    /// After anything sharing the same instant, which is what openGym's own
+    /// `<=` means - so two sessions filed for one moment keep the order they
+    /// were filed in.
+    func testASessionGoesAfterOneAtTheSameInstant() {
+        var state = GymState(raw: ["workouts": .array([])])
+        state.insertWorkout(workout("first", day: "2026-09-20", start: 500))
+        state.insertWorkout(workout("second", day: "2026-09-20", start: 500))
+        XCTAssertEqual(ids(state), ["first", "second"])
+    }
+
+    /// The array is never REPLACED. That is how a phone deletes a month of
+    /// training in one PUT.
+    func testNothingAlreadyThereIsLost() {
+        var state = GymState(raw: ["workouts": .array([
+            .object(["id": .string("a"), "d": .string("2026-09-01")]),
+            .object(["id": .string("b"), "d": .string("2026-09-02")])
+        ])])
+        state.insertWorkout(workout("c", day: "2026-09-03"))
+        XCTAssertEqual(ids(state), ["a", "b", "c"])
+    }
+}
+
+// MARK: - Logged later
+
+/// A workout recorded after the fact. The mark is ATARU's own key, so the two
+/// things worth pinning are that it is written only when true and that it is
+/// read back.
+final class GymLoggedLaterTests: XCTestCase {
+
+    func testTheFlagIsWrittenOnlyWhenTrue() {
+        let entry = ActiveWorkout.Entry(
+            exerciseID: "0043", name: "squat", target: [:],
+            sets: [ActiveWorkout.SetEntry(weight: 185, reps: 5, done: true)])
+        var session = ActiveWorkout(
+            id: "w", routineID: "a", routineName: "Ayush A", day: "2026-09-20",
+            startedAt: 1_000, restSeconds: 90, entries: [entry])
+
+        let live = session.finishedWorkout(endedAt: 2_000, bodyweight: nil)
+        XCTAssertNil(live.raw["loggedLater"],
+                     "a session logged at the rack keeps the shape it always had")
+        XCTAssertFalse(live.isLoggedLater)
+        XCTAssertNil(session.loggedLater)
+
+        session.loggedLater = true
+        let recorded = session.finishedWorkout(endedAt: 2_000, bodyweight: nil)
+        XCTAssertEqual(recorded.raw["loggedLater"]?.boolValue, true)
+        XCTAssertTrue(recorded.isLoggedLater)
+    }
+
+    func testAWorkoutWithoutTheKeyIsNotFlagged() {
+        XCTAssertFalse(GymWorkout(raw: [:]).isLoggedLater)
+        XCTAssertFalse(GymWorkout(raw: ["loggedLater": .bool(false)]).isLoggedLater)
+    }
+
+    /// A session file written before the flag existed still decodes - the
+    /// field is defaulted for exactly this reason.
+    func testAnOlderSessionFileStillDecodesWithoutTheFlag() throws {
+        let json = """
+        {"id":"w","routineID":"a","routineName":"Ayush A","day":"2026-09-20",
+         "startedAt":1000,"restSeconds":90,"entries":[]}
+        """
+        let decoded = try JSONDecoder().decode(ActiveWorkout.self,
+                                               from: Data(json.utf8))
+        XCTAssertNil(decoded.loggedLater,
+                     "an absent flag must not make the file undecodable")
+    }
+
+    /// Midday, so no reader mistakes it for a recorded time and no zone can
+    /// move the session onto the neighbouring day.
+    func testAPastSessionStartsAtMiddayOnItsOwnDay() throws {
+        let stamp = try XCTUnwrap(GymClock.middayMilliseconds(onDay: "2026-09-20"))
+        let date = Date(timeIntervalSince1970: Double(stamp) / 1000)
+        XCTAssertEqual(GymClock.day(date), "2026-09-20")
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        XCTAssertEqual(calendar.component(.hour, from: date), 12)
+        XCTAssertNil(GymClock.middayMilliseconds(onDay: "not-a-day"))
+    }
+}
+
+// MARK: - Starting anything, on any day
+
+@MainActor
+final class GymStartAndLogTests: XCTestCase {
+
+    private func store() async -> GymStore {
+        let store = GymStore()
+        store.configure(service: DemoATARUService(latency: .zero), cacheRoot: nil)
+        await store.refresh()
+        return store
+    }
+
+    override func tearDown() {
+        ActiveWorkoutStore.purge()
+        super.tearDown()
+    }
+
+    /// The bug in one test. Demo's Sunday has no routine in the week, and a
+    /// session must still start - the rest day is a note on the card, not a
+    /// lock on the button.
+    func testARoutineStartsOnADayTheWeekPlansNothingFor() async throws {
+        let store = await store()
+        let sunday = try XCTUnwrap(store.state?.weekRoutineID(weekday: 0) == nil
+                                   ? true : nil)
+        XCTAssertTrue(sunday, "Demo's Sunday is meant to be unplanned")
+        let routineID = try XCTUnwrap(store.state?.routines.last?.id)
+        store.startWorkout(routineID: routineID)
+        XCTAssertEqual(store.active?.routineID, routineID)
+        XCTAssertFalse(store.active?.entries.isEmpty ?? true)
+        store.discardWorkout()
+    }
+
+    /// The no-argument form starts whatever is next up rather than whatever
+    /// the calendar planned.
+    func testTheDefaultStartIsNextUp() async throws {
+        let store = await store()
+        let next = try XCTUnwrap(store.nextRoutineID)
+        store.startWorkout()
+        XCTAssertEqual(store.active?.routineID, next)
+        store.discardWorkout()
+    }
+
+    /// Every set of every exercise, ticked, on the day he says - and the flag,
+    /// so History can say how the row got there.
+    func testAPastWorkoutIsStoredAsFinishedOnItsOwnDay() async throws {
+        let store = await store()
+        let routine = try XCTUnwrap(store.state?.routines.first)
+        let before = store.state?.workouts.count ?? 0
+
+        let stored = await store.logPastWorkout(routineID: routine.id,
+                                                on: "2026-09-20")
+        XCTAssertTrue(stored)
+        XCTAssertEqual(store.state?.workouts.count, before + 1)
+
+        let logged = try XCTUnwrap(store.state?.workouts.first { $0.day == "2026-09-20" })
+        XCTAssertTrue(logged.isLoggedLater)
+        XCTAssertEqual(logged.routineIDs, [routine.id])
+        XCTAssertEqual(logged.name, routine.name)
+        XCTAssertEqual(logged.entries.count, routine.exercises.count)
+        // Prefilled from the routine's TARGETS: its sets and its reps.
+        for (config, entry) in zip(routine.exercises, logged.entries) {
+            XCTAssertEqual(entry.sets.count, config.sets)
+            XCTAssertEqual(entry.doneSets.count, config.sets, "all of it counts as done")
+            XCTAssertEqual(entry.sets.first?.reps, config.reps)
+        }
+        // No duration is claimed: how long it took is not something the form
+        // asked for, and a made-up hour in a training log is worse than none.
+        XCTAssertNil(logged.durationMinutes)
+        // And nothing touched the session in progress - there isn't one.
+        XCTAssertNil(store.active)
+    }
+
+    /// Weights are empty by default. A workout he remembers doing but not the
+    /// numbers for is still worth more in the log than nothing, and zero is
+    /// openGym's own spelling for a set with no external load.
+    func testAPastWorkoutWithNoWeightsInventsNone() async throws {
+        let store = await store()
+        let routine = try XCTUnwrap(store.state?.routines.first)
+        let logged15 = await store.logPastWorkout(routineID: routine.id,
+                                                  on: "2026-09-15")
+        XCTAssertTrue(logged15)
+        let logged = try XCTUnwrap(store.state?.workouts.first { $0.day == "2026-09-15" })
+        for entry in logged.entries {
+            XCTAssertEqual(entry.sets.compactMap(\.weight).max(), 0)
+        }
+    }
+
+    /// Typed in pounds, stored in the document's unit. Demo is already in
+    /// pounds, so the number goes in as typed.
+    func testATypedWeightIsStoredInTheDocumentsUnit() async throws {
+        let store = await store()
+        XCTAssertEqual(store.documentUnit, "lb")
+        let routine = try XCTUnwrap(store.state?.routines.first)
+        let exercise = try XCTUnwrap(routine.exercises.first)
+        let logged16 = await store.logPastWorkout(
+            routineID: routine.id, on: "2026-09-16",
+            weights: [exercise.id: 185])
+        XCTAssertTrue(logged16)
+        let logged = try XCTUnwrap(store.state?.workouts.first { $0.day == "2026-09-16" })
+        let entry = try XCTUnwrap(logged.entry(forExercise: exercise.id))
+        XCTAssertEqual(entry.heaviestCompleted, 185)
+        XCTAssertEqual(GymFormat.weightInPounds(entry.heaviestCompleted,
+                                                storedIn: store.documentUnit),
+                       "185 lb")
+    }
+
+    /// The rotation counts it, which is the point of being able to log one at
+    /// all: Demo's most recent session is Ayush C, so next up is Ayush A -
+    /// and after logging an Ayush A for yesterday, next up is Ayush B.
+    ///
+    /// Written as a RELATIVE move rather than against Demo's starting point on
+    /// purpose: `DemoATARUService.gymDocument` is a `static var`, so every
+    /// test in this process writes to one document and an absolute assertion
+    /// here would pass or fail on the order the tests happen to run in. (That
+    /// is the same shared-fixture hazard behind the known order-dependent
+    /// `GymAddExerciseTests/testDiscardingASessionClearsIt`.)
+    func testLoggingAPastWorkoutMovesNextUp() async throws {
+        let store = await store()
+        let routines = try XCTUnwrap(store.state?.routines)
+        let current = try XCTUnwrap(store.nextRoutineID)
+        let index = try XCTUnwrap(routines.firstIndex { $0.id == current })
+
+        // Dated TODAY, so it is the most recent session in the document
+        // whatever else is already in there.
+        let logged = await store.logPastWorkout(routineID: current,
+                                                on: GymClock.day())
+        XCTAssertTrue(logged)
+        XCTAssertEqual(store.nextRoutineID,
+                       routines[(index + 1) % routines.count].id,
+                       "the loop moved by exactly one")
+    }
+
+    /// Filed in date order, not appended - openGym reads this array
+    /// chronologically.
+    func testAPastWorkoutIsFiledInDateOrder() async throws {
+        let store = await store()
+        let routine = try XCTUnwrap(store.state?.routines.first)
+        let loggedJan = await store.logPastWorkout(routineID: routine.id,
+                                                   on: "2026-01-02")
+        XCTAssertTrue(loggedJan)
+        let days = (store.state?.raw["workouts"]?.arrayValue ?? [])
+            .compactMap { $0.objectValue?["d"]?.stringValue }
+        XCTAssertEqual(days, days.sorted(), "ascending, the way openGym keeps it")
+        XCTAssertEqual(days.first, "2026-01-02")
+    }
+
+    func testAnUnknownRoutineIsNotLogged() async throws {
+        let store = await store()
+        let before = store.state?.workouts.count ?? 0
+        let refused = await store.logPastWorkout(routineID: "nope",
+                                                 on: "2026-09-20")
+        XCTAssertFalse(refused)
+        XCTAssertEqual(store.state?.workouts.count, before)
     }
 }

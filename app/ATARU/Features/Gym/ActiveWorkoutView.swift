@@ -153,7 +153,11 @@ struct ActiveWorkoutView: View {
         }
     }
 
-    private var unit: String { store.state?.unit ?? "kg" }
+    /// The unit the DOCUMENT stores. A session's weights are held in it, so
+    /// the finished workout needs no conversion and a prefill from the last
+    /// session needs none either - the conversion happens in the one place a
+    /// human reads or types a number, which is `ActiveSetRow`.
+    private var storedUnit: String { store.documentUnit }
 
     private var canFinish: Bool {
         (store.active?.hasAnythingLogged ?? false) && !isFinishing && !store.isSaving
@@ -222,7 +226,7 @@ struct ActiveWorkoutView: View {
                     ActiveSetRow(
                         number: row + 1,
                         set: set,
-                        unit: unit,
+                        storedUnit: storedUnit,
                         onEdit: { weight, reps in
                             // Typing is not an event worth a disk write per
                             // character; the moments that matter persist
@@ -387,7 +391,9 @@ struct ActiveWorkoutView: View {
 private struct ActiveSetRow: View {
     let number: Int
     let set: ActiveWorkout.SetEntry
-    let unit: String
+    /// The unit the SET's weight is stored in. The field shows and accepts
+    /// pounds; this is what it converts to and from.
+    let storedUnit: String
     let onEdit: (Double, Int) -> Void
     let onToggle: () -> Void
 
@@ -401,9 +407,10 @@ private struct ActiveSetRow: View {
                 .foregroundStyle(Theme.textTertiary)
                 .frame(width: 16, alignment: .leading)
 
-            field(text: $weightText, width: 66, label: "Weight in \(unit)")
+            field(text: $weightText, width: 66,
+                  label: "Weight in \(GymUnits.display)")
                 .onChange(of: weightText) { _, _ in commit() }
-            Text(unit)
+            Text(GymUnits.display)
                 .font(.ataruCaption())
                 .foregroundStyle(Theme.textTertiary)
 
@@ -428,7 +435,9 @@ private struct ActiveSetRow: View {
         }
         .padding(.vertical, 1)
         .task(id: set.id) {
-            weightText = set.weight == 0 ? "" : GymFormat.number(set.weight)
+            weightText = set.weight == 0
+                ? ""
+                : GymFormat.numberInPounds(set.weight, storedIn: storedUnit)
             repsText = String(set.reps)
         }
     }
@@ -449,8 +458,14 @@ private struct ActiveSetRow: View {
             .accessibilityLabel(label)
     }
 
+    /// Typed in pounds, stored in the document's unit.
+    ///
+    /// An empty or unparseable field is zero, which is openGym's spelling for
+    /// a set with no external load - and zero converts to zero in both
+    /// directions, so a bodyweight set stays a bodyweight set.
     private func commit() {
-        let weight = Double(weightText.replacingOccurrences(of: ",", with: ".")) ?? 0
+        let typed = Double(weightText.replacingOccurrences(of: ",", with: ".")) ?? 0
+        let weight = GymUnits.fromDisplay(typed, storedIn: storedUnit) ?? typed
         let reps = Int(repsText) ?? 0
         onEdit(weight, reps)
     }

@@ -83,6 +83,23 @@ struct ActiveWorkout: Codable, Equatable {
     /// correctly as "nothing is resting".
     var restEndsAt: Int?
 
+    /// True when this session is being RECORDED rather than performed - a
+    /// workout Arya did and is typing in afterwards.
+    ///
+    /// It rides on the same struct as a live session so that a past workout
+    /// and a finished one are built by one piece of code and land in the
+    /// document in one shape. A second builder for "the same thing, typed in
+    /// later" is a second shape nobody notices has drifted.
+    ///
+    /// OPTIONAL rather than a defaulted `Bool`, and that is not a style
+    /// choice: Swift's synthesized decoder ignores a property's default and
+    /// requires every non-optional key, so a `Bool = false` here would make
+    /// every session file written before this field existed fail to decode -
+    /// and the file it would fail on is a workout in progress, which this
+    /// phone holds the only copy of. `restEndsAt` above is optional for the
+    /// same reason.
+    var loggedLater: Bool?
+
     struct Entry: Codable, Equatable, Identifiable {
         var id: UUID = UUID()
         var exerciseID: String
@@ -154,6 +171,10 @@ struct ActiveWorkout: Codable, Equatable {
             "prs": .array([])
         ]
         if let bodyweight { raw["bw"] = .number(bodyweight) }
+        // Only when true - openGym's own convention for an optional flag, and
+        // what keeps a session logged at the rack byte-for-byte the shape it
+        // has always been. See `GymWorkout.isLoggedLater`.
+        if loggedLater == true { raw["loggedLater"] = .bool(true) }
         return GymWorkout(raw: raw)
     }
 }
@@ -320,6 +341,33 @@ final class GymStore: ObservableObject {
         self.library = library
         libraryIndex = library.index()
         libraryFetchedAt = fetchedAt
+    }
+
+    // MARK: Units and the rotation
+
+    /// The unit the DOCUMENT's numbers are in, which is whatever openGym's
+    /// settings last left it at.
+    ///
+    /// No screen ever renders this. They render `GymUnits.display` - pounds -
+    /// and pass this to the conversion, so the app says lb even on a profile
+    /// somebody switched back to kg in the browser.
+    var documentUnit: String { state?.unit ?? GymUnits.display }
+
+    /// The routine to do next: the one after whatever was finished last. See
+    /// `GymState.nextRoutineID` for why this follows completion and not the
+    /// calendar.
+    var nextRoutineID: String? { state?.nextRoutineID }
+
+    var nextRoutine: GymRoutine? {
+        guard let id = nextRoutineID else { return nil }
+        return state?.routine(id: id)
+    }
+
+    /// True when the CALENDAR has nothing planned for a day. A marker on the
+    /// card, never a gate - the rest day is a note and the button still works.
+    func isPlannedRest(on day: String = GymClock.day()) -> Bool {
+        guard let state else { return false }
+        return state.routineID(on: day) == nil
     }
 
     // MARK: Naming and media
@@ -504,9 +552,15 @@ final class GymStore: ObservableObject {
         }
     }
 
+    /// The weigh-in, typed in POUNDS and stored in the document's own unit.
+    ///
+    /// Converted here rather than in the view for the same reason the read
+    /// direction lives in `GymFormat`: one place, so a screen cannot convert
+    /// twice and a new screen cannot forget.
     @discardableResult
-    func recordBodyweight(_ weight: Double) async -> Bool {
-        await commit { $0.recordBodyweight(weight, on: GymClock.day()) }
+    func recordBodyweight(pounds: Double) async -> Bool {
+        let stored = GymUnits.fromDisplay(pounds, storedIn: documentUnit) ?? pounds
+        return await commit { $0.recordBodyweight(stored, on: GymClock.day()) }
     }
 
     @discardableResult
@@ -572,44 +626,133 @@ final class GymStore: ObservableObject {
 
     // MARK: A session
 
+    /// Starts whatever is next up - what the primary button on the Today card
+    /// does.
     func startWorkout() {
-        guard let today, let routine = today.routine, let state else { return }
-        let configs = state.routine(id: routine.id)?.exercises ?? []
-        let entries = routine.exercises.map { exercise -> ActiveWorkout.Entry in
-            let config = configs.first { $0.id == exercise.id }
-            let planned = max(1, exercise.sets ?? config?.sets ?? 1)
-            // Prefilled from the last time this exercise was actually done,
-            // and only then from the routine's own defaults. The routine's
-            // number is what was planned; the last session is what happened.
-            let last = state.lastEntry(forExercise: exercise.id)
-            let lastSets = last?.doneSets ?? []
-            let fallbackWeight = exercise.weight
-                ?? config?.weight
-                ?? state.rememberedWeight(forExercise: exercise.id)
-                ?? 0
-            let fallbackReps = exercise.reps ?? config?.reps ?? 10
-            let rows = (0..<planned).map { index -> ActiveWorkout.SetEntry in
-                let source = index < lastSets.count ? lastSets[index] : lastSets.last
-                return ActiveWorkout.SetEntry(
-                    weight: source?.weight ?? fallbackWeight,
-                    reps: source?.reps ?? fallbackReps,
-                    done: false)
+        guard let id = nextRoutineID else { return }
+        startWorkout(routineID: id)
+    }
+
+    /// Starts a session for ANY routine, on any day, including a rest day.
+    ///
+    /// ## Why this is built from the document and not from `/api/gym/today`
+    ///
+    /// It used to read `today.routine`, which names exactly one routine: the
+    /// one the CALENDAR planned for today. That is why there was no way to
+    /// start anything on a Sunday and no way to pick a different routine on a
+    /// Monday - the only routine the screen had in hand was the planned one,
+    /// and on a rest day there wasn't even that.
+    ///
+    /// The state document has all three routines and every past session, so
+    /// one code path now serves the next-up button, the "different routine"
+    /// picker and a rest day alike. The `today` payload is still fetched: it
+    /// is what teaches the name book openGym's catalogue names (see
+    /// `GymNameBook`), and it still answers "what does the calendar say".
+    /// It is no longer what decides whether anything can be started.
+    func startWorkout(routineID: String) {
+        guard let state, let routine = state.routine(id: routineID) else { return }
+        setActive(buildSession(routine: routine, in: state, on: GymClock.day(),
+                               startedAt: GymClock.milliseconds()))
+    }
+
+    /// One session builder, for a workout about to be done and for one being
+    /// typed in afterwards.
+    ///
+    /// `weights` is in POUNDS and keyed by exercise id - the past-workout form
+    /// is the only caller that passes any. A live session prefills from the
+    /// last time the exercise was actually done instead, which is what
+    /// `weights == nil` means.
+    private func buildSession(routine: GymRoutine, in state: GymState,
+                              on day: String, startedAt: Int,
+                              weights: [String: Double]? = nil,
+                              markDone: Bool = false,
+                              loggedLater: Bool = false) -> ActiveWorkout {
+        let entries = routine.exercises.map { config -> ActiveWorkout.Entry in
+            let planned = max(1, config.sets)
+            let fallbackReps = config.reps ?? 10
+            let rows: [ActiveWorkout.SetEntry]
+            if let weights {
+                // Recorded after the fact: every set of an exercise carries
+                // the one weight he remembers for it, and a blank stays blank.
+                // Zero is openGym's own spelling for a set with no external
+                // load, so nothing is invented by leaving it there.
+                let typed = weights[config.id]
+                let stored = typed.flatMap {
+                    GymUnits.fromDisplay($0, storedIn: state.unit)
+                } ?? 0
+                rows = (0..<planned).map { _ in
+                    ActiveWorkout.SetEntry(weight: stored, reps: fallbackReps,
+                                           done: markDone)
+                }
+            } else {
+                // Prefilled from the last time this exercise was actually
+                // done, and only then from the routine's own defaults. The
+                // routine's number is what was planned; the last session is
+                // what happened.
+                let last = state.lastEntry(forExercise: config.id)
+                let lastSets = last?.doneSets ?? []
+                let fallbackWeight = config.weight
+                    ?? state.rememberedWeight(forExercise: config.id)
+                    ?? 0
+                rows = (0..<planned).map { index -> ActiveWorkout.SetEntry in
+                    let source = index < lastSets.count ? lastSets[index] : lastSets.last
+                    return ActiveWorkout.SetEntry(
+                        weight: source?.weight ?? fallbackWeight,
+                        reps: source?.reps ?? fallbackReps,
+                        done: markDone)
+                }
             }
             return ActiveWorkout.Entry(
-                exerciseID: exercise.id,
-                name: displayName(for: exercise.id, fallback: exercise.name),
-                target: config?.raw ?? ["id": .string(exercise.id),
-                                        "sets": .int(planned)],
+                exerciseID: config.id,
+                name: displayName(for: config.id),
+                target: config.raw,
                 sets: rows)
         }
-        setActive(ActiveWorkout(
+        return ActiveWorkout(
             id: GymClock.uid(),
             routineID: routine.id,
-            routineName: routine.name ?? "Workout",
-            day: GymClock.day(),
-            startedAt: GymClock.milliseconds(),
+            routineName: routine.name.isEmpty ? "Workout" : routine.name,
+            day: day,
+            startedAt: startedAt,
             restSeconds: state.restSeconds,
-            entries: entries))
+            entries: entries,
+            // nil rather than false when it is a live session, so the file on
+            // the phone stays the shape it has always been.
+            loggedLater: loggedLater ? true : nil)
+    }
+
+    /// Records a workout Arya already did, on the day he did it.
+    ///
+    /// Written through the SAME builder and the same `finishedWorkout` as a
+    /// session logged at the rack, so the only differences in the document are
+    /// the day, the start time and the `loggedLater` flag. Nothing touches
+    /// `active`, so a session in progress on this phone is untouched by
+    /// filling this in.
+    ///
+    /// `weights` is in pounds, keyed by exercise id, and may be empty - a
+    /// workout he remembers doing but not the numbers for is still worth more
+    /// in the log than nothing, and it is what puts the rotation right.
+    @discardableResult
+    func logPastWorkout(routineID: String, on day: String,
+                        weights: [String: Double] = [:]) async -> Bool {
+        guard let state, let routine = state.routine(id: routineID) else { return false }
+        // Midday, in the phone's own zone. A placeholder either way, so it is
+        // one no reader can mistake for a recorded time, and one that cannot
+        // slide onto the neighbouring day.
+        let startedAt = GymClock.middayMilliseconds(onDay: day)
+            ?? GymClock.milliseconds()
+        let session = buildSession(routine: routine, in: state, on: day,
+                                   startedAt: startedAt, weights: weights,
+                                   markDone: true, loggedLater: true)
+        // The weigh-in for THAT day, if there is one - not today's.
+        let bodyweight = state.bodyweight.first { $0.day == day }?.weight
+        // `end` equals `start`: how long it took is not something this form
+        // asked for, and a made-up hour in a training log is worse than no
+        // duration at all. Every reader already treats `end <= start` as
+        // "no duration".
+        let workout = session.finishedWorkout(endedAt: startedAt,
+                                              bodyweight: bodyweight)
+        return await commit { $0.insertWorkout(workout) }
     }
 
     /// Persisted on every change, not on a timer: the events this has to
@@ -701,7 +844,7 @@ final class GymStore: ObservableObject {
         let bodyweight = state?.bodyweight.first { $0.day == active.day }?.weight
         let workout = active.finishedWorkout(endedAt: GymClock.milliseconds(),
                                              bodyweight: bodyweight)
-        let stored = await commit { $0.appendWorkout(workout) }
+        let stored = await commit { $0.insertWorkout(workout) }
         // A failed save KEEPS the session. There is no server copy of it, so
         // clearing it here would be the one place this app can lose data.
         if stored { discardWorkout() }

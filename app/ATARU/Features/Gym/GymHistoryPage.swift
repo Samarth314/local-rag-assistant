@@ -5,6 +5,8 @@ import SwiftUI
 struct GymHistoryPage: View {
     @ObservedObject var store: GymStore
 
+    @State private var isLoggingPast = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -27,19 +29,49 @@ struct GymHistoryPage: View {
             .padding(Theme.Space.screen)
         }
         .refreshable { await store.refresh() }
+        .sheet(isPresented: $isLoggingPast) {
+            GymPastWorkoutForm(store: store)
+        }
     }
 
     // MARK: - Sessions
+
+    /// Add a workout that already happened.
+    ///
+    /// Here rather than in the navigation bar: the three Gym pages share one
+    /// bar and a toolbar declared inside a page is merged into it by every
+    /// page the pager keeps alive - so a plus button in the bar would appear
+    /// on Today and Routines as well. In the content it belongs to this page
+    /// and to nothing else.
+    private var logPastButton: some View {
+        Button {
+            isLoggingPast = true
+        } label: {
+            Label("Log a past workout", systemImage: "plus")
+                .font(.ataruCaption())
+                .foregroundStyle(Theme.cyan)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: Theme.minHitTarget)
+        .accessibilityHint("Record a workout you did on an earlier day.")
+    }
 
     @ViewBuilder
     private func sessions(_ state: GymState) -> some View {
         let workouts = state.workouts
         if workouts.isEmpty {
-            ATStateView(symbol: "clock.arrow.circlepath", title: "No sessions yet",
-                        message: "Finished workouts land here, newest first.")
+            VStack(alignment: .leading, spacing: Theme.Space.xs) {
+                ATStateView(symbol: "clock.arrow.circlepath", title: "No sessions yet",
+                            message: "Finished workouts land here, newest first.")
+                logPastButton
+            }
         } else {
             VStack(alignment: .leading, spacing: Theme.Space.xs) {
-                SectionHeader(text: "Sessions")
+                HStack {
+                    SectionHeader(text: "Sessions")
+                    Spacer()
+                    logPastButton
+                }
                 // Keyed by position rather than by id: an id is optional in
                 // this document and two rows that arrive without one would
                 // collapse into a single row.
@@ -59,9 +91,17 @@ struct GymHistoryPage: View {
         ATCard {
             HStack(spacing: Theme.Space.s) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(workout.name.isEmpty ? "Workout" : workout.name)
-                        .font(.ataruBody())
-                        .foregroundStyle(Theme.textPrimary)
+                    HStack(spacing: Theme.Space.xs) {
+                        Text(workout.name.isEmpty ? "Workout" : workout.name)
+                            .font(.ataruBody())
+                            .foregroundStyle(Theme.textPrimary)
+                        // Small, grey, and only when it is true. It says how
+                        // the row got here, not that anything is wrong with
+                        // it: the session happened, the typing happened later.
+                        if workout.isLoggedLater {
+                            ATPill(text: "logged later", tone: Theme.textTertiary)
+                        }
+                    }
                     Text(subtitle(workout, unit: unit))
                         .font(.ataruCaption())
                         .foregroundStyle(Theme.textTertiary)
@@ -85,7 +125,8 @@ struct GymHistoryPage: View {
             parts.append("\(minutes) min")
         }
         if let bodyweight = workout.bodyweight {
-            parts.append("\(GymFormat.number(bodyweight)) \(unit)")
+            parts.append("\(GymFormat.numberInPounds(bodyweight, storedIn: unit)) "
+                         + GymUnits.display)
         }
         return parts.joined(separator: " · ")
     }
@@ -102,7 +143,8 @@ struct GymHistoryPage: View {
                         SectionHeader(text: "Body weight")
                         Spacer()
                         if let latest = entries.first {
-                            Text("\(GymFormat.number(latest.weight)) \(state.unit)")
+                            Text("\(GymFormat.numberInPounds(latest.weight, storedIn: state.unit)) "
+                                 + GymUnits.display)
                                 .font(.ataruBody())
                                 .foregroundStyle(Theme.textPrimary)
                         }
@@ -115,7 +157,10 @@ struct GymHistoryPage: View {
                         Chart {
                             ForEach(entries.reversed()) { entry in
                                 LineMark(x: .value("Day", entry.day),
-                                         y: .value("Weight", entry.weight))
+                                         y: .value("Weight",
+                                                   GymUnits.toDisplay(entry.weight,
+                                                                      storedIn: state.unit)
+                                                   ?? entry.weight))
                                     .foregroundStyle(Theme.cyan)
                             }
                         }
@@ -131,7 +176,8 @@ struct GymHistoryPage: View {
                                 .font(.ataruCaption())
                                 .foregroundStyle(Theme.textTertiary)
                             Spacer()
-                            Text("\(GymFormat.number(entry.weight)) \(state.unit)")
+                            Text("\(GymFormat.numberInPounds(entry.weight, storedIn: state.unit)) "
+                                 + GymUnits.display)
                                 .font(.ataruMono(12))
                                 .foregroundStyle(Theme.textSecondary)
                         }
@@ -210,7 +256,9 @@ struct GymWorkoutDetail: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var unit: String { store.state?.unit ?? "kg" }
+    /// The unit the DOCUMENT holds. Nothing on screen is labelled with it -
+    /// every number below is converted to pounds first. See `GymUnits`.
+    private var storedUnit: String { store.documentUnit }
 
     private var summary: String {
         var parts = ["\(workout.totalSets) sets"]
@@ -218,8 +266,11 @@ struct GymWorkoutDetail: View {
             parts.append("\(minutes) min")
         }
         if let bodyweight = workout.bodyweight {
-            parts.append("body weight \(GymFormat.number(bodyweight)) \(unit)")
+            parts.append("body weight "
+                         + GymFormat.numberInPounds(bodyweight, storedIn: storedUnit)
+                         + " " + GymUnits.display)
         }
+        if workout.isLoggedLater { parts.append("logged later") }
         return parts.joined(separator: " · ")
     }
 
@@ -227,6 +278,7 @@ struct GymWorkoutDetail: View {
         if let seconds = row.seconds { return "\(seconds)s" }
         let reps = row.reps.map { "\($0) reps" } ?? "-"
         guard let weight = row.weight, weight > 0 else { return reps }
-        return "\(GymFormat.number(weight)) \(unit) x \(row.reps ?? 0)"
+        return GymFormat.numberInPounds(weight, storedIn: storedUnit)
+            + " \(GymUnits.display) x \(row.reps ?? 0)"
     }
 }

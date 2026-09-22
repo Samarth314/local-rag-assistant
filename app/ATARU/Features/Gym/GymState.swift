@@ -46,6 +46,20 @@ enum GymClock {
         Int(date.timeIntervalSince1970 * 1000)
     }
 
+    /// Midday on a training day, in milliseconds, in the phone's own zone.
+    ///
+    /// What a workout logged after the fact uses for `start`. Nil for a string
+    /// that is not a day, which the caller answers with the current clock.
+    ///
+    /// Midday rather than a plausible evening: the time is a placeholder
+    /// either way, so it should be one no reader mistakes for a recorded time,
+    /// and midday is far enough from both boundaries that no zone or
+    /// daylight-saving shift can move the session onto the neighbouring day.
+    static func middayMilliseconds(onDay day: String) -> Int? {
+        guard let midnight = date(fromDay: day) else { return nil }
+        return milliseconds(midnight.addingTimeInterval(12 * 60 * 60))
+    }
+
     /// Javascript's `Date.getDay()`: 0 = Sunday through 6 = Saturday.
     static func jsWeekday(_ date: Date) -> Int {
         var calendar = Calendar(identifier: .gregorian)
@@ -68,6 +82,73 @@ enum GymClock {
         let alphabet = Array("0123456789abcdefghijklmnopqrstuvwxyz")
         let tail = (0..<5).map { _ in alphabet.randomElement() ?? "0" }
         return stamp + String(tail)
+    }
+}
+
+// MARK: - Units
+
+/// Pounds, everywhere, and the arithmetic that makes that safe.
+///
+/// ## The document is not in a canonical unit
+///
+/// openGym stores a bare number per weight and a single `unit` string beside
+/// it (`frontend/src/store/useStore.js`, `DEF.unit = 'kg'`). There is no
+/// canonical kilogram anywhere in the file: a `w` of 60 means 60 of whatever
+/// `unit` currently says. Its settings screen offers both answers when the
+/// unit is switched - "convert the numbers" walks every stored weight
+/// (`lib/units.js:convertStateUnit`), "keep the numbers, change the label"
+/// does not.
+///
+/// So this app cannot read a weight without reading `unit` in the same breath,
+/// and it cannot write one without putting it back into `unit`. That is what
+/// the two directions below are for, and why every screen goes through them
+/// rather than through a bare `Double`.
+///
+/// ## Why the constant and the rounding are copied rather than chosen
+///
+/// Both are openGym's own, to the last digit: `2.2046226218`, pounds to the
+/// nearest 0.5 and kilograms to the nearest 0.25. A different factor or a
+/// different rounding would mean a weight typed on the phone and read in the
+/// browser disagree in the last place - and 82.5 becoming 82.4 on a screen
+/// whose whole job is the number is the one mistake nobody would report as a
+/// bug, because it looks like a number.
+enum GymUnits {
+
+    /// What every field, label, row and chart in this app shows and accepts.
+    ///
+    /// Arya asked for pounds (2026-09-21) and there is deliberately no
+    /// per-screen override and no setting: a training app that shows two units
+    /// is a training app that gets a lift wrong.
+    static let display = "lb"
+
+    /// openGym's `LB_PER_KG` (`frontend/src/lib/units.js`).
+    static let poundsPerKilogram = 2.2046226218
+
+    /// The units a conversion is defined for. Anything else is left ALONE -
+    /// relabelling a number is wrong and scaling it by a guessed factor is
+    /// worse, so an unrecognised unit passes through and the label says what
+    /// the document says.
+    static let known: Set<String> = ["kg", "lb"]
+
+    static func convert(_ value: Double?, from: String, to: String) -> Double? {
+        guard let value, value.isFinite else { return value }
+        guard from != to, known.contains(from), known.contains(to) else { return value }
+        return to == "lb"
+            ? (value * poundsPerKilogram * 2).rounded() / 2
+            : (value / poundsPerKilogram * 4).rounded() / 4
+    }
+
+    /// A number out of the document, in pounds - what a screen shows.
+    static func toDisplay(_ value: Double?, storedIn unit: String) -> Double? {
+        convert(value, from: unit, to: display)
+    }
+
+    /// A number typed in pounds, in the document's unit - what a write stores.
+    ///
+    /// Zero survives unchanged in both directions, which matters: zero is
+    /// openGym's spelling for a bodyweight-only movement, not a light one.
+    static func fromDisplay(_ value: Double?, storedIn unit: String) -> Double? {
+        convert(value, from: display, to: unit)
     }
 }
 
@@ -280,6 +361,27 @@ struct GymWorkout: Identifiable, Equatable, Codable {
     var end: Int? { raw["end"]?.intValue }
     var bodyweight: Double? { raw["bw"]?.doubleValue }
 
+    /// True when this session was recorded after the fact rather than logged
+    /// at the rack.
+    ///
+    /// The key is ATARU's own, because openGym has none to reuse: its own
+    /// backfill flag lives on the ACTIVE session (`frontend/src/lib/backfill.js`),
+    /// and the server deletes `active` on every write - so nothing survives
+    /// into the stored workout for a reader to find.
+    ///
+    /// Written only when true, which is openGym's own convention for an
+    /// optional flag ("written only when set/true, so a single-routine
+    /// non-excluded session is byte-for-byte the shape it always was",
+    /// `lib/finish-workout.js`). It round-trips through the web app because
+    /// nothing there strips a key it does not understand: the store loads with
+    /// `Object.assign(clone(DEF), JSON.parse(raw))`, the sync merge spreads
+    /// whole workout objects (`lib/sync-merge.js:unionById`), and both the api
+    /// and the bridge write the document back verbatim. The one place it could
+    /// be dropped is openGym REBUILDING this workout from a session, which it
+    /// only does at finish time - and a lost mark is a lost mark, not a lost
+    /// workout.
+    var isLoggedLater: Bool { raw["loggedLater"]?.boolValue ?? false }
+
     /// Every routine the session drew on.
     ///
     /// `routineIds` is the real list and `routineId` is a legacy mirror of its
@@ -426,6 +528,52 @@ struct GymState: Equatable, Codable {
         workouts.first { $0.routineIDs.contains(id) }
     }
 
+    /// The day a routine was last trained, or nil for one that never has been.
+    func lastDay(forRoutine id: String) -> String? {
+        lastWorkout(forRoutine: id)?.day
+    }
+
+    /// The session completed most recently, by day and then start time.
+    ///
+    /// A session logged after the fact counts, because it is a session that
+    /// happened - and it counts at the day it happened on, not the day it was
+    /// typed in, which is what `sortKey` already means.
+    var mostRecentWorkout: GymWorkout? { workouts.first }
+
+    /// The routine to do next, following COMPLETION rather than the calendar.
+    ///
+    /// ## Why not the week
+    ///
+    /// "I worked out yesterday but the app had no way of me selecting a
+    /// routine and doing it today. I ended up doing Ayush A yesterday."
+    /// Yesterday was Sunday, the week's rest day, so the calendar had nothing
+    /// to offer and the app offered nothing back. Worse, the calendar had
+    /// already gone out of step: doing A on Sunday makes Monday's A a repeat.
+    ///
+    /// So the loop is the program's own - the order the routines are written
+    /// down in - and the position in it is the one thing that is actually
+    /// known: what was finished last. After A comes B whatever day it is, and
+    /// a week off leaves the loop exactly where he left it rather than
+    /// silently advancing three routines.
+    ///
+    /// `week` is still read, but only as the rest-day MARKER on the card (see
+    /// `GymTodayPage`), never as a gate on what can be started.
+    ///
+    /// Nothing ever completed - which is where Arya's own document starts -
+    /// answers the first routine rather than nil: a program with routines in
+    /// it always has a next one.
+    var nextRoutineID: String? {
+        let loop = routines
+        guard let first = loop.first else { return nil }
+        guard let previous = mostRecentWorkout?.routineIDs.first,
+              let index = loop.firstIndex(where: { $0.id == previous }) else {
+            // Never trained, or last trained a routine that has since been
+            // deleted. Start the loop again rather than guessing at a gap.
+            return first.id
+        }
+        return loop[(index + 1) % loop.count].id
+    }
+
     /// The most recent entry for an exercise, in ANY session - what a set row
     /// is prefilled from.
     func lastEntry(forExercise id: String) -> GymWorkoutEntry? {
@@ -468,11 +616,31 @@ struct GymState: Equatable, Codable {
         setRoutines(list)
     }
 
-    /// APPENDS a session. Never replaces the array - that is how a phone
-    /// deletes a month of training in one PUT.
-    mutating func appendWorkout(_ workout: GymWorkout) {
+    /// Files a session where its DAY and start time put it.
+    ///
+    /// openGym keeps `workouts` ascending and reverses it for History, so a
+    /// session logged for last Sunday cannot simply be pushed onto the end -
+    /// its own backfill does the same insertion
+    /// (`frontend/src/lib/backfill.js:insertChronological`), and after
+    /// anything sharing the same instant, which is what the `<=` there and the
+    /// `>` here both mean.
+    ///
+    /// For a session finished just now this IS an append, which is why it
+    /// replaced `appendWorkout` outright rather than sitting beside it: two
+    /// insertion paths is how one of them stops being used and starts being
+    /// wrong.
+    ///
+    /// Never replaces the array - that is how a phone deletes a month of
+    /// training in one PUT.
+    mutating func insertWorkout(_ workout: GymWorkout) {
         var list = raw["workouts"]?.arrayValue ?? []
-        list.append(.object(workout.raw))
+        let key = workout.sortKey
+        var index = list.count
+        while index > 0,
+              GymWorkout(raw: list[index - 1].objectValue ?? [:]).sortKey > key {
+            index -= 1
+        }
+        list.insert(.object(workout.raw), at: index)
         raw["workouts"] = .array(list)
     }
 

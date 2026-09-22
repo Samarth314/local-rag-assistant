@@ -163,7 +163,9 @@ struct GymRoutineDetail: View {
 
     private var key: String { "\(routineID)#\(store.revision)" }
 
-    private var unit: String { store.state?.unit ?? "kg" }
+    /// The unit the DOCUMENT stores. The draft holds stored numbers; the
+    /// field below shows and accepts pounds. See `GymUnits`.
+    private var storedUnit: String { store.documentUnit }
 
     private var isDirty: Bool {
         draft != (store.state?.routine(id: routineID)?.exercises ?? [])
@@ -230,7 +232,8 @@ struct GymRoutineDetail: View {
             return minutes + speed
         default:
             let target = GymFormat.target(sets: config.sets, reps: config.reps)
-            return "\(target) · \(GymFormat.weight(config.weight, unit: unit))"
+            return "\(target) · "
+                + GymFormat.weightInPounds(config.weight, storedIn: storedUnit)
         }
     }
 
@@ -326,11 +329,20 @@ struct GymRoutineDetail: View {
                 .font(.ataruCaption())
                 .foregroundStyle(Theme.textTertiary)
             Spacer()
+            // Pounds in and pounds out; the draft underneath keeps the
+            // document's own unit, so Save writes what openGym expects.
             TextField("0", text: Binding(
-                get: { draft[index].weight.map(GymFormat.number) ?? "" },
+                get: {
+                    guard let stored = draft[index].weight else { return "" }
+                    return GymFormat.numberInPounds(stored, storedIn: storedUnit)
+                },
                 set: { text in
                     let cleaned = text.replacingOccurrences(of: ",", with: ".")
-                    draft[index].setWeight(cleaned.isEmpty ? nil : Double(cleaned))
+                    guard !cleaned.isEmpty, let typed = Double(cleaned) else {
+                        return draft[index].setWeight(nil)
+                    }
+                    draft[index].setWeight(
+                        GymUnits.fromDisplay(typed, storedIn: storedUnit) ?? typed)
                 }))
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.trailing)
@@ -342,8 +354,8 @@ struct GymRoutineDetail: View {
                     RoundedRectangle(cornerRadius: Theme.Radius.small, style: .continuous)
                         .fill(Theme.surfaceElevated)
                 }
-                .accessibilityLabel("Weight in \(unit)")
-            Text(unit)
+                .accessibilityLabel("Weight in \(GymUnits.display)")
+            Text(GymUnits.display)
                 .font(.ataruCaption())
                 .foregroundStyle(Theme.textTertiary)
         }
